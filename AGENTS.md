@@ -21,6 +21,15 @@ Source/
                                 (incremental parser), frame encoders. NO socket I/O.
   Dext.Net.Nats.pas             TDextNatsClient: the public API. Socket I/O,
                                 threading, reconnection, pub/sub, request/reply.
+  Dext.Net.Nats.JetStream.pas   TDextNatsJetStreamContext: producer-side JetStream
+                                only — stream admin (create/info/delete) and
+                                dedup'd publish via $JS.API.* request/reply. No
+                                consumer/Ack API.
+Demo/
+  JetStreamSmokeTest/           Interactive console program that manually verifies
+                                stream create/info/delete and dedup'd publish
+                                against a local `nats-server -js`. Not a
+                                Dext.Testing suite — see its own header comment.
 Tests/                          (planned) Dext.Testing-based unit tests.
 LICENSE                         Apache 2.0.
 ```
@@ -28,6 +37,13 @@ LICENSE                         Apache 2.0.
 Keep this separation: protocol/parsing code must stay free of sockets and
 threading so it can be unit-tested in isolation; all I/O and concurrency lives
 in `Dext.Net.Nats.pas`.
+
+`Dext.Net.Nats.JetStream.pas` depends on `Dext.Net.Nats` — never the reverse.
+`TDextNatsJetStreamContext` wraps an already-connected `TDextNatsClient` by
+composition (it does not inherit from or modify the client, and does not own
+its lifetime) and reuses the `NatsJsonGetStr/Int/Int64/Bool`/`NatsBoolStr`/
+`NatsJsonEscape` helpers already exported from `Dext.Net.Nats.Protocol`'s
+interface section instead of re-implementing JSON parsing.
 
 ## Reference material — read before extending
 
@@ -123,11 +139,19 @@ parsing frames anywhere else.
 - [x] Protocol layer (`Dext.Net.Nats.Protocol.pas`)
 - [x] Client (`Dext.Net.Nats.pas`): connect, pub/sub, request/reply, reconnect,
       keepalive — now using `Dext.Collections` throughout
+- [x] JetStream, producer-side only (`Dext.Net.Nats.JetStream.pas`): stream
+      admin (create/info/delete) and dedup'd publish with a `Nats-Msg-Id`
+      header; consumer-side JetStream (pull/push consumers, Ack/Nak/Term) is
+      not implemented
 - [ ] Unit tests in `Tests/Dext.Net.Nats.Tests.pas` (use `Dext.Testing`)
-- [ ] Console demo project (`.dpr`/`.dproj`)
+- [x] Console demo project (`.dpr`/`.dproj`): `Demo/JetStreamSmokeTest/` is the
+      first one, covering the new JetStream layer; more demos may follow
 - [ ] `README.md` with usage examples
 - [ ] TLS support (currently `EDextNatsNotSupported` is raised for
-      `tls_required` servers) and JetStream are explicitly out of scope for now
+      `tls_required` servers), NKey/JWT auth, a DI extension, observability
+      (health checks/metrics/structured logging), JetStream consumer-side, and
+      the formal `Dext.Testing`-based integration-test suite are all
+      explicitly deferred to a later pass
 
 ## Working style expected of an agent here
 
@@ -135,5 +159,6 @@ parsing frames anywhere else.
   the exact method you're calling in its source unit before using it, and
   re-read your own diff afterwards looking for the kind of concurrency bugs
   described above (they don't show up as compile errors).
-- Prefer extending the existing two-file structure over adding new units
-  unless a new concern (e.g. tests, TLS) genuinely needs its own file.
+- Prefer extending the existing unit structure (protocol / client / JetStream)
+  over adding new units unless a new concern (e.g. tests, TLS) genuinely needs
+  its own file.

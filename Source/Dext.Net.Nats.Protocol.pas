@@ -184,6 +184,19 @@ type
 /// <summary>Generates a process-unique inbox subject, e.g. "_INBOX.3f2c9e1a...".</summary>
 function NatsNewInbox: string;
 
+/// <summary>Renders a Boolean as the lowercase JSON literal "true"/"false".</summary>
+function NatsBoolStr(AValue: Boolean): string;
+/// <summary>Escapes a string for safe embedding inside a JSON string literal.</summary>
+function NatsJsonEscape(const S: string): string;
+/// <summary>Reads a string field from AObj, or ADefault if absent/null.</summary>
+function NatsJsonGetStr(AObj: TJSONObject; const AKey: string; const ADefault: string = ''): string;
+/// <summary>Reads an Integer field from AObj, or ADefault if absent/null/unparsable.</summary>
+function NatsJsonGetInt(AObj: TJSONObject; const AKey: string; ADefault: Integer = 0): Integer;
+/// <summary>Reads an Int64 field from AObj, or ADefault if absent/null/unparsable.</summary>
+function NatsJsonGetInt64(AObj: TJSONObject; const AKey: string; ADefault: Int64 = 0): Int64;
+/// <summary>Reads a Boolean field from AObj, or ADefault if absent/null.</summary>
+function NatsJsonGetBool(AObj: TJSONObject; const AKey: string; ADefault: Boolean = False): Boolean;
+
 /// <summary>Encodes a CONNECT control line from the given options.</summary>
 function NatsEncodeConnect(const AOptions: TNatsConnectOptions): TBytes;
 /// <summary>Encodes a PUB frame (control line + payload + trailing CRLF).</summary>

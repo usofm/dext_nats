@@ -202,6 +202,11 @@ type
     function Request(const ASubject: string; const APayload: TBytes; ATimeoutMs: Integer = 0): TNatsMsg; overload;
     /// <summary>String payload overload of <see cref="Request"/>.</summary>
     function Request(const ASubject, AMessage: string; ATimeoutMs: Integer = 0): TNatsMsg; overload;
+    /// <summary>Same as <see cref="Request"/>, but publishes the request with NATS message headers
+    /// (via <see cref="PublishWithHeaders"/>) when AHeaders is non-empty; behaves exactly like Request
+    /// when AHeaders is empty, without requiring the server to advertise header support in that case.</summary>
+    function RequestWithHeaders(const ASubject: string; const APayload: TBytes; const AHeaders: TNatsHeaders;
+      ATimeoutMs: Integer = 0): TNatsMsg;
     /// <summary>Non-blocking request/reply: AOnReply fires on the receive thread when a reply arrives;
     /// AOnTimeout (optional) fires from a helper thread if no reply arrives within ATimeoutMs.</summary>
     procedure RequestAsync(const ASubject: string; const APayload: TBytes; const AOnReply: TNatsMsgHandler;
@@ -1001,6 +1006,17 @@ begin
 end;
 
 function TDextNatsClient.Request(const ASubject: string; const APayload: TBytes; ATimeoutMs: Integer): TNatsMsg;
+begin
+  Result := RequestWithHeaders(ASubject, APayload, nil, ATimeoutMs);
+end;
+
+function TDextNatsClient.Request(const ASubject, AMessage: string; ATimeoutMs: Integer): TNatsMsg;
+begin
+  Result := Request(ASubject, TEncoding.UTF8.GetBytes(AMessage), ATimeoutMs);
+end;
+
+function TDextNatsClient.RequestWithHeaders(const ASubject: string; const APayload: TBytes;
+  const AHeaders: TNatsHeaders; ATimeoutMs: Integer): TNatsMsg;
 var
   inbox: string;
   sid: Integer;
@@ -1029,7 +1045,10 @@ begin
       end);
     Unsubscribe(sid, 1); // ask the server to auto-cancel this subscription after exactly one reply
 
-    Publish(ASubject, APayload, inbox);
+    if Length(AHeaders) > 0 then
+      PublishWithHeaders(ASubject, APayload, AHeaders, inbox)
+    else
+      Publish(ASubject, APayload, inbox);
 
     if evt.WaitFor(ATimeoutMs) <> wrSignaled then
     begin
@@ -1048,11 +1067,6 @@ begin
   end;
 
   Result := reply;
-end;
-
-function TDextNatsClient.Request(const ASubject, AMessage: string; ATimeoutMs: Integer): TNatsMsg;
-begin
-  Result := Request(ASubject, TEncoding.UTF8.GetBytes(AMessage), ATimeoutMs);
 end;
 
 procedure TDextNatsClient.RequestAsync(const ASubject: string; const APayload: TBytes;
