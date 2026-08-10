@@ -1,7 +1,7 @@
 ﻿# برنامهٔ جامع تست — Dext.Nats (`TEST_PLAN`)
 
 > **هدف:** پوشش کامل لایهٔ پروتکل، کلاینت cleartext، JetStream (pull)، TLS، همزمانی، و مسیرهای خطا — بدون پیاده‌سازی در این سند.  
-> **وضعیت فعلی:** suite پیش‌فرض با سرور `-js` (Unit+Integration+JetStream+KeyValue+ObjectStore+DI+Observability؛ TLS/NKey soft-skip بدون env؛ Stress Explicit کنار). `DEXT_NATS_REQUIRE_LIVE=1` برای fail سخت. Fixture TLS: `Tests/tls/`؛ NKey: `Tests/nkey/`. KV: `TDextNatsKeyValueTests` (Put/Get/Delete/Purge/Keys/History/WatchAll؛ CAS deferred). Object Store: Put/Get/Delete/List/Keys؛ Watch/Seal/UpdateMeta deferred.  
+> **وضعیت فعلی:** suite پیش‌فرض با سرور `-js` (Unit+Integration+JetStream+KeyValue+ObjectStore+DI+Observability؛ TLS/NKey soft-skip بدون env؛ Stress Explicit کنار). `DEXT_NATS_REQUIRE_LIVE=1` برای fail سخت. Fixture TLS: `Tests/tls/`؛ NKey: `Tests/nkey/`. KV: `TDextNatsKeyValueTests` (Put/Get/Delete/Purge/Keys/History/WatchAll/CAS Create+Update). Object Store: Put/Get/Delete/List/Keys؛ Watch/Seal/UpdateMeta deferred.  
 > **کامپایلر:** فقط Delphi 12 / Studio **23.0** (`dcc32`).  
 > **چارچوب:** `Dext.Testing` + `Should()`؛ فقط `Dext.Collections`.  
 > **مرجع تاریخی فازها:** `nats_complete_phased_d5d5e289.plan.md` (فاز ۱–۳ feature کامل شده؛ این سند فازهای *تست* بعدی است).

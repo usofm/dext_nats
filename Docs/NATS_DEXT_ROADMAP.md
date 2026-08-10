@@ -368,18 +368,20 @@ function RequestAsync(const ASubject: string; const APayload: TBytes;
 
 1. یونیت `Dext.Net.Nats.KeyValue.pas`: `TDextNatsKeyValue` روی `TDextNatsJetStreamContext` (composition؛ مالک کلاینت/JS نیست).
 2. Bucket = stream `KV_<bucket>` با subjects `$KV.<bucket>.>`؛ کلید = `$KV.<bucket>.<key>`.
-3. API MVP: `CreateBucket` / `DeleteBucket` / `BucketExists` / `GetStatus` / `Open`، و روی store: `Put` / `Get` / `TryGet` / `Delete` / `Purge` / `Status`.
+3. API MVP: `CreateBucket` / `DeleteBucket` / `BucketExists` / `GetStatus` / `Open`، و روی store: `Put` / `Get` / `TryGet` / `Delete` / `Purge` / `Status` / CAS `Create` / `Update`.
 4. Delete = header `KV-Operation: DEL`؛ Purge = `KV-Operation: PURGE` + `Nats-Rollup: sub`.
 5. Get از `STREAM.MSG.GET` (`last_by_subj`)؛ tombstone → not found.
 6. `Keys` / `ListKeys` (pull `last_per_subject`)، `History(key)` (pull `all`)، `Watch` / `WatchAll` (push `last_per_subject` + updates؛ بدون marker پایان snapshot اولیه).
-7. `Dext.Json.Utf8` / `Dext.Collections`؛ بدون `System.JSON` / `System.Generics.Collections`.
+7. CAS: `Create` = `Nats-Expected-Last-Subject-Sequence: 0` (+ retry روی tombstone revision مثل nats.go)؛ `Update(key, value, revision)` همان header با revision؛ conflict → `EDextNatsKeyExists` / `EDextNatsKeyRevisionMismatch`.
+8. `Dext.Json.Utf8` / `Dext.Collections`؛ بدون `System.JSON` / `System.Generics.Collections`.
 
 **Acceptance:**
 
 - [x] Unit: `ToStreamConfig` / `TNatsStoredMsg.Parse` / نام نامعتبر.
 - [x] Integration soft-skip: Put/Get/Delete (+ Purge) روی `nats-server -js`.
 - [x] Integration soft-skip: `Keys` / `History` / `WatchAll` روی `nats-server -js`.
-- [ ] **Deferred:** `Create`/`Update` CAS، per-key TTL، Watch end-of-initial marker / MetaOnly.
+- [x] Integration soft-skip: CAS `Create` / `Update` (+ KeyExists / revision mismatch) روی `nats-server -js`.
+- [ ] **Deferred:** per-key TTL، Watch end-of-initial marker / MetaOnly.
 
 ---
 
@@ -390,7 +392,7 @@ function RequestAsync(const ASubject: string; const APayload: TBytes;
 | `Source/Dext.Net.Nats.Protocol.pas` | PERF, AUTH | Utf8 JSON، writer، parse span، CONNECT auth fields |
 | `Source/Dext.Net.Nats.pas` | LOG, MET, ASYNC, AUTH | Logger، metrics flag، async overloads، sig handshake |
 | `Source/Dext.Net.Nats.JetStream.pas` | PERF-03b, PUSH, KV | Utf8 parse admin؛ push API؛ MSG.GET / KV stream flags |
-| `Source/Dext.Net.Nats.KeyValue.pas` | KV | **جدید** — Put/Get/Delete/Purge + Keys/History/Watch |
+| `Source/Dext.Net.Nats.KeyValue.pas` | KV | **جدید** — Put/Get/Delete/Purge + Keys/History/Watch + CAS Create/Update |
 | `Source/Dext.Net.Nats.DependencyInjection.pas` | DI | **جدید** |
 | `Source/Dext.Net.Nats.HealthChecks.pas` | HLTH | **جدید** (یا ادغام در DI unit اگر کوچک ماند) |
 | `Tests/Dext.Net.Nats.Tests.pas` | همه | fixtureهای جدید per SPEC |

@@ -39,8 +39,8 @@ Source/
                                 InProgress via $JS.API.*.
   Dext.Net.Nats.KeyValue.pas    TDextNatsKeyValue: JetStream KV buckets
                                 (CreateBucket/Put/Get/Delete/Purge, Keys/ListKeys,
-                                History, Watch/WatchAll). Composition over
-                                JetStream; CAS Create/Update + per-key TTL deferred
+                                History, Watch/WatchAll, CAS Create/Update).
+                                Composition over JetStream; per-key TTL deferred
                                 (SPEC-KV-01).
   Dext.Net.Nats.ObjectStore.pas TDextNatsObjectStoreContext / TDextNatsObjectStore:
                                 JetStream Object Store MVP (CreateStore /
@@ -236,8 +236,9 @@ parsing frames anywhere else.
       callback `RequestAsync` overload retained
 - [x] JetStream Key-Value (`Dext.Net.Nats.KeyValue.pas` / SPEC-KV-01):
       CreateBucket / DeleteBucket / BucketExists / Put / Get / Delete / Purge,
-      Keys / ListKeys, History, Watch / WatchAll (push last_per_subject MVP);
-      deferred: Create/Update CAS, per-key TTL, Watch end-of-initial marker
+      Keys / ListKeys, History, Watch / WatchAll (push last_per_subject MVP),
+      CAS Create / Update (`Nats-Expected-Last-Subject-Sequence`);
+      deferred: per-key TTL, Watch end-of-initial marker
 
 ## Working style expected of an agent here
 

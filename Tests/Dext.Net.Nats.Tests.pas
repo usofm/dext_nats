@@ -307,6 +307,16 @@ type
     procedure History_ShouldReturnRevisions;
     [Test, Category('JetStream'), Category('KeyValue')]
     procedure WatchAll_ShouldDeliverCurrentAndUpdates;
+    [Test, Category('JetStream'), Category('KeyValue')]
+    procedure Create_ShouldPutOnlyIfAbsent;
+    [Test, Category('JetStream'), Category('KeyValue'), Category('Negative')]
+    procedure Create_ExistingKey_ShouldRaiseKeyExists;
+    [Test, Category('JetStream'), Category('KeyValue')]
+    procedure Create_AfterDelete_ShouldSucceed;
+    [Test, Category('JetStream'), Category('KeyValue')]
+    procedure Update_ShouldSucceedWhenRevisionMatches;
+    [Test, Category('JetStream'), Category('KeyValue'), Category('Negative')]
+    procedure Update_WrongRevision_ShouldRaiseMismatch;
   end;
 
   [TestFixture('NATS TLS Integration')]
@@ -2911,6 +2921,147 @@ begin
     gotInitial.Free;
     gotUpdate.Free;
     lock.Free;
+    kv.Free;
+    TDextNatsKeyValue.DeleteBucket(FJs, bucket);
+  end;
+end;
+
+procedure TDextNatsKeyValueTests.Create_ShouldPutOnlyIfAbsent;
+var
+  bucket: string;
+  cfg: TNatsKeyValueConfig;
+  kv: TDextNatsKeyValue;
+  entry: TNatsKeyValueEntry;
+  rev: UInt64;
+begin
+  if not EnsureJetStreamOrFail then
+    Exit;
+
+  bucket := UniqueBucket('DEXTKVC');
+  cfg := TNatsKeyValueConfig.CreateDefault(bucket);
+  cfg.Storage := ssMemory;
+  cfg.History := 1;
+  kv := TDextNatsKeyValue.CreateBucket(FJs, cfg);
+  try
+    rev := kv.Create('widget-blue', 'first');
+    Should(Int64(rev) > 0).BeTrue;
+    entry := kv.Get('widget-blue');
+    Should(entry.AsString).Be('first');
+    Should(Int64(entry.Revision)).Be(Int64(rev));
+  finally
+    kv.Free;
+    TDextNatsKeyValue.DeleteBucket(FJs, bucket);
+  end;
+end;
+
+procedure TDextNatsKeyValueTests.Create_ExistingKey_ShouldRaiseKeyExists;
+var
+  bucket: string;
+  cfg: TNatsKeyValueConfig;
+  kv: TDextNatsKeyValue;
+begin
+  if not EnsureJetStreamOrFail then
+    Exit;
+
+  bucket := UniqueBucket('DEXTKVCE');
+  cfg := TNatsKeyValueConfig.CreateDefault(bucket);
+  cfg.Storage := ssMemory;
+  kv := TDextNatsKeyValue.CreateBucket(FJs, cfg);
+  try
+    kv.Create('widget-blue', 'first');
+    Should(
+      procedure
+      begin
+        kv.Create('widget-blue', 'second');
+      end).Throw(EDextNatsKeyExists);
+    Should(kv.Get('widget-blue').AsString).Be('first');
+  finally
+    kv.Free;
+    TDextNatsKeyValue.DeleteBucket(FJs, bucket);
+  end;
+end;
+
+procedure TDextNatsKeyValueTests.Create_AfterDelete_ShouldSucceed;
+var
+  bucket: string;
+  cfg: TNatsKeyValueConfig;
+  kv: TDextNatsKeyValue;
+  rev: UInt64;
+begin
+  if not EnsureJetStreamOrFail then
+    Exit;
+
+  bucket := UniqueBucket('DEXTKVCD');
+  cfg := TNatsKeyValueConfig.CreateDefault(bucket);
+  cfg.Storage := ssMemory;
+  cfg.History := 5;
+  kv := TDextNatsKeyValue.CreateBucket(FJs, cfg);
+  try
+    kv.Create('lock', 'held');
+    kv.Delete('lock');
+    rev := kv.Create('lock', 'held-again');
+    Should(Int64(rev) > 0).BeTrue;
+    Should(kv.Get('lock').AsString).Be('held-again');
+  finally
+    kv.Free;
+    TDextNatsKeyValue.DeleteBucket(FJs, bucket);
+  end;
+end;
+
+procedure TDextNatsKeyValueTests.Update_ShouldSucceedWhenRevisionMatches;
+var
+  bucket: string;
+  cfg: TNatsKeyValueConfig;
+  kv: TDextNatsKeyValue;
+  entry: TNatsKeyValueEntry;
+  rev1, rev2: UInt64;
+begin
+  if not EnsureJetStreamOrFail then
+    Exit;
+
+  bucket := UniqueBucket('DEXTKVU');
+  cfg := TNatsKeyValueConfig.CreateDefault(bucket);
+  cfg.Storage := ssMemory;
+  cfg.History := 5;
+  kv := TDextNatsKeyValue.CreateBucket(FJs, cfg);
+  try
+    rev1 := kv.Put('counter', '41');
+    rev2 := kv.Update('counter', '40', rev1);
+    Should(Int64(rev2) > Int64(rev1)).BeTrue;
+    entry := kv.Get('counter');
+    Should(entry.AsString).Be('40');
+    Should(Int64(entry.Revision)).Be(Int64(rev2));
+  finally
+    kv.Free;
+    TDextNatsKeyValue.DeleteBucket(FJs, bucket);
+  end;
+end;
+
+procedure TDextNatsKeyValueTests.Update_WrongRevision_ShouldRaiseMismatch;
+var
+  bucket: string;
+  cfg: TNatsKeyValueConfig;
+  kv: TDextNatsKeyValue;
+  rev: UInt64;
+begin
+  if not EnsureJetStreamOrFail then
+    Exit;
+
+  bucket := UniqueBucket('DEXTKVUM');
+  cfg := TNatsKeyValueConfig.CreateDefault(bucket);
+  cfg.Storage := ssMemory;
+  cfg.History := 5;
+  kv := TDextNatsKeyValue.CreateBucket(FJs, cfg);
+  try
+    rev := kv.Put('counter', '41');
+    kv.Put('counter', '42'); { bump revision }
+    Should(
+      procedure
+      begin
+        kv.Update('counter', '40', rev);
+      end).Throw(EDextNatsKeyRevisionMismatch);
+    Should(kv.Get('counter').AsString).Be('42');
+  finally
     kv.Free;
     TDextNatsKeyValue.DeleteBucket(FJs, bucket);
   end;

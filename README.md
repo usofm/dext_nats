@@ -12,7 +12,7 @@ Native [NATS](https://nats.io) client for the [Dext Framework](https://github.co
 | `Source/Dext.Net.Nats.DependencyInjection.pas` | `AddNatsClient` / configure / config bind (`Nats` section) / `AddNatsJetStream` |
 | `Source/Dext.Net.Nats.HealthChecks.pas` | `TNatsHealthCheck` / `AddNatsHealthCheck` (Connected probe) |
 | `Source/Dext.Net.Nats.JetStream.pas` | `TDextNatsJetStreamContext` — streams, pull/push consumers, Fetch, SubscribePush, Ack/Nak/Term |
-| `Source/Dext.Net.Nats.KeyValue.pas` | `TDextNatsKeyValue` — JetStream KV (Put/Get/Delete/Purge, Keys, History, Watch/WatchAll; CAS deferred) |
+| `Source/Dext.Net.Nats.KeyValue.pas` | `TDextNatsKeyValue` — JetStream KV (Put/Get/Delete/Purge, Keys, History, Watch/WatchAll, CAS Create/Update) |
 | `Source/Dext.Net.Nats.ObjectStore.pas` | Object Store MVP (`CreateStore` / `Put` / `Get` / `Delete` / `List` / `Keys`; Watch/Seal/UpdateMeta deferred) |
 
 ## Quick start
@@ -63,7 +63,7 @@ end;
 
 ### JetStream Key-Value
 
-Buckets are JetStream streams (`KV_<bucket>`, subjects `$KV.<bucket>.>`). API: create/put/get/delete/purge, `Keys`/`ListKeys`, `History`, and minimal `Watch`/`WatchAll` (push `last_per_subject` + updates). Deferred: CAS Create/Update, per-key TTL.
+Buckets are JetStream streams (`KV_<bucket>`, subjects `$KV.<bucket>.>`). API: put/get/delete/purge, CAS `Create`/`Update`, `Keys`/`ListKeys`, `History`, and minimal `Watch`/`WatchAll` (push `last_per_subject` + updates). Deferred: per-key TTL.
 
 ```delphi
 uses Dext.Collections, Dext.Net.Nats, Dext.Net.Nats.JetStream, Dext.Net.Nats.KeyValue;
@@ -75,6 +75,7 @@ var
   Entry: TNatsKeyValueEntry;
   Cfg: TNatsKeyValueConfig;
   KeyNames: IList<string>;
+  Rev: UInt64;
 begin
   Client := TDextNatsClient.Create;
   try
@@ -86,9 +87,10 @@ begin
       Cfg.History := 5;
       Kv := TDextNatsKeyValue.CreateBucket(Js, Cfg);
       try
-        Kv.Put('widget-blue', '42');
-        Entry := Kv.Get('widget-blue'); // Entry.AsString = '42'
-        KeyNames := Kv.Keys;            // live keys via last_per_subject
+        Rev := Kv.Create('widget-blue', '42'); // fails with EDextNatsKeyExists if present
+        Entry := Kv.Get('widget-blue');        // Entry.AsString = '42'
+        Rev := Kv.Update('widget-blue', '41', Entry.Revision); // CAS; mismatch → EDextNatsKeyRevisionMismatch
+        KeyNames := Kv.Keys;                   // live keys via last_per_subject
         // Hist := Kv.History('widget-blue');
         // Watcher := Kv.WatchAll(procedure(const E: TNatsKeyValueEntry) begin ... end);
         Kv.Delete('widget-blue');

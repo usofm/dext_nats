@@ -23,7 +23,8 @@
 {  TDextNatsKeyValue wraps an existing TDextNatsJetStreamContext by         }
 {  composition and does not own its lifetime. Keys / History / Watch(All)   }
 {  use ephemeral JetStream consumers (pull for Keys/History, push for       }
-{  Watch). CAS Create/Update and per-key TTL remain deferred — see          }
+{  Watch). CAS Create/Update use Nats-Expected-Last-Subject-Sequence;       }
+{  per-key TTL and Watch end-of-initial marker remain deferred — see       }
 {  Docs/NATS_DEXT_ROADMAP.md SPEC-KV-01.                                    }
 {                                                                           }
 {***************************************************************************}
@@ -60,6 +61,12 @@ type
 
   /// <summary>Raised when Get cannot find a live (non-deleted) value for a key.</summary>
   EDextNatsKeyNotFound = class(EDextNatsKeyValueError);
+
+  /// <summary>Raised by Create when the key already has a live (non-tombstone) value.</summary>
+  EDextNatsKeyExists = class(EDextNatsKeyValueError);
+
+  /// <summary>Raised by Update when ARevision does not match the key's current revision.</summary>
+  EDextNatsKeyRevisionMismatch = class(EDextNatsKeyValueError);
 
   /// <summary>Operation encoded on a KV entry (PUT, or tombstone DEL / PURGE).</summary>
   TNatsKvOperation = (kvoPut, kvoDelete, kvoPurge);
@@ -153,13 +160,18 @@ type
     function EntryFromStored(const AKey: string; const AMsg: TNatsStoredMsg): TNatsKeyValueEntry;
     function EntryFromJsMsg(const AMsg: TNatsJsMsg): TNatsKeyValueEntry;
     procedure PublishMarker(const AKey, AOperation: string; APurge: Boolean);
+    class function IsWrongLastSequence(const E: EDextNatsJetStreamError): Boolean; static;
+    /// <summary>Publishes with Nats-Expected-Last-Subject-Sequence = ARevision (CAS).</summary>
+    function PutExpected(const AKey: string; const AValue: TBytes; ARevision: UInt64): UInt64;
+    /// <summary>CAS create implementation shared by Create overloads (avoids ctor name clash).</summary>
+    function CreateKey(const AKey: string; const AValue: TBytes): UInt64;
     function PullSubjectEntries(const AFilterSubject: string; ADeliver: TNatsDeliverPolicy;
       AIncludeDeletes: Boolean): IList<TNatsKeyValueEntry>;
     function StartWatch(const AFilterSubject: string;
       AHandler: TNatsKeyValueWatchHandler): TDextNatsKeyValueWatcher;
   public
     /// <summary>Binds to an existing bucket (does not create it). Validates the name only.</summary>
-    constructor Create(AJs: TDextNatsJetStreamContext; const ABucket: string);
+    constructor Create(AJs: TDextNatsJetStreamContext; const ABucket: string); overload;
 
     /// <summary>Creates the backing KV_* stream and returns a store bound to it.
     /// Caller must Free the result; the JetStream context remains owned by the caller.</summary>
@@ -179,6 +191,22 @@ type
     function Put(const AKey: string; const AValue: TBytes): UInt64; overload;
     /// <summary>UTF-8 convenience overload of Put.</summary>
     function Put(const AKey, AValue: string): UInt64; overload;
+    /// <summary>
+    ///   Creates AKey only if it does not exist (CAS expected last subject sequence 0).
+    ///   After Delete/Purge, retries against the tombstone revision (official NATS KV semantics).
+    ///   Raises <see cref="EDextNatsKeyExists"/> if a live value is already present.
+    /// </summary>
+    function Create(const AKey: string; const AValue: TBytes): UInt64; overload;
+    /// <summary>UTF-8 convenience overload of Create (CAS).</summary>
+    function Create(const AKey, AValue: string): UInt64; overload;
+    /// <summary>
+    ///   Updates AKey only if its current revision equals ARevision
+    ///   (Nats-Expected-Last-Subject-Sequence). Raises
+    ///   <see cref="EDextNatsKeyRevisionMismatch"/> on conflict.
+    /// </summary>
+    function Update(const AKey: string; const AValue: TBytes; ARevision: UInt64): UInt64; overload;
+    /// <summary>UTF-8 convenience overload of Update.</summary>
+    function Update(const AKey, AValue: string; ARevision: UInt64): UInt64; overload;
     /// <summary>Returns the latest live value. Raises EDextNatsKeyNotFound if absent or tombstoned.</summary>
     function Get(const AKey: string): TNatsKeyValueEntry;
     /// <summary>Like Get but returns False instead of raising when the key is missing/deleted.</summary>
@@ -484,6 +512,28 @@ begin
     Result.Operation := kvoPurge;
 end;
 
+class function TDextNatsKeyValue.IsWrongLastSequence(const E: EDextNatsJetStreamError): Boolean;
+begin
+  { 10071 = stream wrong last sequence; 10164 = same on replicated (R>1) streams.
+    Also match description for older servers / mismatched err_code. }
+  Result := (E.ErrCode = 10071) or (E.ErrCode = 10164) or
+    (Pos('wrong last sequence', LowerCase(E.Message)) > 0);
+end;
+
+function TDextNatsKeyValue.PutExpected(const AKey: string; const AValue: TBytes;
+  ARevision: UInt64): UInt64;
+var
+  opts: TNatsJetStreamPublishOptions;
+  ack: TNatsPublishAck;
+begin
+  ValidateKeyName(AKey);
+  opts := TNatsJetStreamPublishOptions.CreateDefault;
+  opts.ExpectedLastSubjectSequence := ARevision;
+  opts.ExpectedLastSubjectSequenceSet := True;
+  ack := FJs.Publish(SubjectForKey(FBucket, AKey), AValue, opts);
+  Result := ack.Sequence;
+end;
+
 function TDextNatsKeyValue.Put(const AKey: string; const AValue: TBytes): UInt64;
 var
   ack: TNatsPublishAck;
@@ -496,6 +546,75 @@ end;
 function TDextNatsKeyValue.Put(const AKey, AValue: string): UInt64;
 begin
   Result := Put(AKey, TEncoding.UTF8.GetBytes(AValue));
+end;
+
+function TDextNatsKeyValue.CreateKey(const AKey: string; const AValue: TBytes): UInt64;
+var
+  msg: TNatsStoredMsg;
+  entry: TNatsKeyValueEntry;
+begin
+  ValidateKeyName(AKey);
+  try
+    Result := PutExpected(AKey, AValue, 0);
+    Exit;
+  except
+    on E: EDextNatsJetStreamError do
+    begin
+      if not IsWrongLastSequence(E) then
+        raise;
+      { Tombstone (DEL/PURGE) still occupies a subject sequence; Create must CAS
+        against that revision — same as nats.go kvs.Create. }
+      try
+        msg := FJs.GetLastMessage(FStreamName, SubjectForKey(FBucket, AKey));
+        entry := EntryFromStored(AKey, msg);
+        if not entry.IsPut then
+        begin
+          Result := PutExpected(AKey, AValue, entry.Revision);
+          Exit;
+        end;
+      except
+        on EGet: EDextNatsJetStreamError do
+        begin
+          if not ((EGet.ErrCode = 10037) or (EGet.Code = 404)) then
+            raise;
+        end;
+      end;
+      raise EDextNatsKeyExists.CreateFmt('KV key already exists: %s.%s', [FBucket, AKey]);
+    end;
+  end;
+end;
+
+function TDextNatsKeyValue.Create(const AKey: string; const AValue: TBytes): UInt64;
+begin
+  Result := CreateKey(AKey, AValue);
+end;
+
+function TDextNatsKeyValue.Create(const AKey, AValue: string): UInt64;
+begin
+  Result := CreateKey(AKey, TEncoding.UTF8.GetBytes(AValue));
+end;
+
+function TDextNatsKeyValue.Update(const AKey: string; const AValue: TBytes;
+  ARevision: UInt64): UInt64;
+begin
+  try
+    Result := PutExpected(AKey, AValue, ARevision);
+  except
+    on E: EDextNatsJetStreamError do
+    begin
+      if IsWrongLastSequence(E) then
+        raise EDextNatsKeyRevisionMismatch.CreateFmt(
+          'KV revision mismatch for %s.%s (expected %s)',
+          [FBucket, AKey, UIntToStr(ARevision)])
+      else
+        raise;
+    end;
+  end;
+end;
+
+function TDextNatsKeyValue.Update(const AKey, AValue: string; ARevision: UInt64): UInt64;
+begin
+  Result := Update(AKey, TEncoding.UTF8.GetBytes(AValue), ARevision);
 end;
 
 function TDextNatsKeyValue.TryGet(const AKey: string; out AEntry: TNatsKeyValueEntry): Boolean;
