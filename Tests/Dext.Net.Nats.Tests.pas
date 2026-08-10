@@ -260,11 +260,15 @@ type
     [Test, Category('JetStream')]
     procedure Stream_CRUD_ShouldRoundTrip;
     [Test, Category('JetStream')]
+    procedure Stream_List_ShouldIncludeCreatedStream;
+    [Test, Category('JetStream')]
     procedure Stream_Update_ShouldChangeMaxMsgs;
     [Test, Category('JetStream')]
     procedure Publish_Dedup_ShouldMarkDuplicate;
     [Test, Category('JetStream')]
     procedure Consumer_CRUD_ShouldRoundTrip;
+    [Test, Category('JetStream')]
+    procedure Consumer_List_ShouldIncludeCreatedConsumer;
     [Test, Category('JetStream')]
     procedure Fetch_Batch_ShouldReturnMultiple;
     [Test, Category('JetStream')]
@@ -2414,6 +2418,57 @@ begin
   end;
 end;
 
+procedure TDextNatsJetStreamTests.Stream_List_ShouldIncludeCreatedStream;
+var
+  stream, subject: string;
+  cfg: TNatsStreamConfig;
+  names: IList<string>;
+  infos: IList<TNatsStreamInfo>;
+  foundName, foundInfo: Boolean;
+  i: Integer;
+begin
+  if not EnsureJetStreamOrFail then
+    Exit;
+  stream := UniqueName('DEXT_JS_LIST');
+  subject := JsUniqueSubject(stream);
+  cfg := TNatsStreamConfig.CreateDefault(stream, [subject]);
+  cfg.Storage := ssMemory;
+  FJs.CreateStream(cfg);
+  try
+    names := FJs.ListStreamNames;
+    foundName := False;
+    for i := 0 to names.Count - 1 do
+      if names[i] = stream then
+      begin
+        foundName := True;
+        Break;
+      end;
+    Should(foundName).BeTrue;
+
+    names := FJs.ListStreamNames(subject);
+    foundName := False;
+    for i := 0 to names.Count - 1 do
+      if names[i] = stream then
+      begin
+        foundName := True;
+        Break;
+      end;
+    Should(foundName).BeTrue;
+
+    infos := FJs.ListStreams(subject);
+    foundInfo := False;
+    for i := 0 to infos.Count - 1 do
+      if infos[i].Name = stream then
+      begin
+        foundInfo := True;
+        Break;
+      end;
+    Should(foundInfo).BeTrue;
+  finally
+    FJs.DeleteStream(stream);
+  end;
+end;
+
 procedure TDextNatsJetStreamTests.Stream_Update_ShouldChangeMaxMsgs;
 var
   stream, subject: string;
@@ -2487,6 +2542,52 @@ begin
     info := FJs.GetConsumerInfo(stream, consumer);
     Should(info.DurableName).Be(consumer);
     Should(FJs.DeleteConsumer(stream, consumer)).BeTrue;
+  finally
+    FJs.DeleteStream(stream);
+  end;
+end;
+
+procedure TDextNatsJetStreamTests.Consumer_List_ShouldIncludeCreatedConsumer;
+var
+  stream, consumer, subject: string;
+  streamCfg: TNatsStreamConfig;
+  consumerCfg: TNatsConsumerConfig;
+  names: IList<string>;
+  infos: IList<TNatsConsumerInfo>;
+  foundName, foundInfo: Boolean;
+  i: Integer;
+begin
+  if not EnsureJetStreamOrFail then
+    Exit;
+  stream := UniqueName('DEXT_JS_CLIST');
+  consumer := UniqueName('DEXT_JS_CLISTC');
+  subject := JsUniqueSubject(stream);
+  streamCfg := TNatsStreamConfig.CreateDefault(stream, [subject]);
+  streamCfg.Storage := ssMemory;
+  FJs.CreateStream(streamCfg);
+  try
+    consumerCfg := TNatsConsumerConfig.CreateDefault(consumer, subject);
+    FJs.CreateConsumer(stream, consumerCfg);
+
+    names := FJs.ListConsumerNames(stream);
+    foundName := False;
+    for i := 0 to names.Count - 1 do
+      if names[i] = consumer then
+      begin
+        foundName := True;
+        Break;
+      end;
+    Should(foundName).BeTrue;
+
+    infos := FJs.ListConsumers(stream);
+    foundInfo := False;
+    for i := 0 to infos.Count - 1 do
+      if infos[i].Name = consumer then
+      begin
+        foundInfo := True;
+        Break;
+      end;
+    Should(foundInfo).BeTrue;
   finally
     FJs.DeleteStream(stream);
   end;
