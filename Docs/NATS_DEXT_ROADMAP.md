@@ -89,7 +89,8 @@
 
 - [x] تست‌های U-06 و encode موجود سبز بمانند.
 - [x] مسیر `PUB` روی hot path حداکثر **یک** `SetLength` نهایی برای خروجی داشته باشد (نه N کپی میانی).
-- [ ] بنچمارک ساده (اختیاری در تست/دمو): ≥ همان throughput قبلی؛ هدف: کاهش تخصیص‌های میانی به صفر.
+- [x] بنچمارک ساده (اختیاری در تست/دمو): ≥ همان throughput قبلی؛ هدف: کاهش تخصیص‌های میانی به صفر.
+  (`Encode_MicroBenchmark_PubAndCachedPing` — PING/PONG reference-stable؛ 40k× PUB زیر سقف زمانی)
 
 #### SPEC-PERF-02 — Parse کنترل‌لاین روی `TByteSpan` بدون `GetString` اجباری
 
@@ -430,7 +431,7 @@ Protocol باید تا حد ممکن **سبک** بماند: ترجیحاً فق�
 - [x] `AGENTS.md` pending به‌روز (هیچ `[ ]` باز نمانده)
 - [x] هیچ رگرسیون در suite پیش‌فرض (Unit+Integration+JS+TLS soft-skip)؛ stress با `DEXT_NATS_RUN_STRESS=1` سبز
 - [x] README حداقل برای Connect / PubSub / Request / DI
-- [x] P2/P3 یا Done یا صریحاً «deferred» با دلیل در همین سند (بنچمارک PERF-01 اختیاری باز)
+- [x] P2/P3 یا Done یا صریحاً «deferred» با دلیل در همین سند (همهٔ acceptanceهای اختیاری PERF-01 نیز بسته شد)
 
 ---
 

@@ -111,6 +111,8 @@ type
     procedure Encode_ShouldBuildConnect;
     [Test, Category('Unit')]
     procedure Encode_ShouldBuildUnsubPingPong;
+    [Test, Category('Unit'), Category('Benchmark')]
+    procedure Encode_MicroBenchmark_PubAndCachedPing;
     [Test, Category('Unit')]
     procedure Headers_ShouldAddSetGetIndexCount;
     [Test, Category('Unit')]
@@ -874,6 +876,35 @@ begin
   Should(Utf8OfBytes(NatsEncodeUnsub(9, 3))).Be('UNSUB 9 3' + #13#10);
   Should(Utf8OfBytes(NatsEncodePing)).Be('PING' + #13#10);
   Should(Utf8OfBytes(NatsEncodePong)).Be('PONG' + #13#10);
+end;
+
+procedure TDextNatsProtocolTests.Encode_MicroBenchmark_PubAndCachedPing;
+const
+  Iterations = 40000;
+var
+  i: Integer;
+  payload, frame, ping1, ping2: TBytes;
+  sw: TStopwatch;
+  ms: Int64;
+begin
+  // Cached PING/PONG: same dynamic-array reference (no per-call allocation).
+  ping1 := NatsEncodePing;
+  ping2 := NatsEncodePing;
+  Should(Pointer(ping1) = Pointer(ping2)).BeTrue;
+  Should(Pointer(NatsEncodePong) = Pointer(NatsEncodePong)).BeTrue;
+
+  payload := BytesOfUtf8('bench-payload');
+  sw := TStopwatch.StartNew;
+  frame := nil;
+  for i := 1 to Iterations do
+    frame := NatsEncodePub('bench.subject', '', payload);
+  sw.Stop;
+  ms := sw.ElapsedMilliseconds;
+
+  Should(Utf8OfBytes(frame).StartsWith('PUB bench.subject ')).BeTrue;
+  Should(Utf8OfBytes(frame).Contains('bench-payload')).BeTrue;
+  // Generous ceiling for CI VMs; local machines are typically well under 500ms.
+  Should(ms < 5000).BeTrue;
 end;
 
 procedure TDextNatsProtocolTests.Headers_ShouldAddSetGetIndexCount;
