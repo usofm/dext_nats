@@ -26,7 +26,9 @@
 {  Watch). CAS Create/Update use Nats-Expected-Last-Subject-Sequence.       }
 {  Per-key TTL (NATS 2.11+, ADR-48): bucket LimitMarkerTTL enables          }
 {  allow_msg_ttl + subject_delete_marker_ttl; Create/Purge accept Nats-TTL. }
-{  Watch end-of-initial marker remains deferred — SPEC-KV-01.               }
+{  Watch delivers an EndOfInitial marker (nats.go nil-entry equivalent)     }
+{  when the last_per_subject snapshot is done; MetaOnly / UpdatesOnly via   }
+{  consumer headers_only / deliver_policy=new.                              }
 {                                                                           }
 {***************************************************************************}
 unit Dext.Net.Nats.KeyValue;
@@ -36,6 +38,7 @@ interface
 uses
   System.SysUtils,
   System.Classes,
+  System.SyncObjs,
   Dext.Collections,
   Dext.Net.Nats.Protocol,
   Dext.Net.Nats,
@@ -123,20 +126,46 @@ type
     Revision: UInt64;
     Operation: TNatsKvOperation;
     Created: string;
+    /// <summary>
+    ///   True for the synthetic end-of-initial-values marker (nats.go <c>nil</c> entry).
+    ///   Key/Value are empty; this is not a close signal — live updates continue after it.
+    /// </summary>
+    EndOfInitial: Boolean;
     /// <summary>Decodes Value as UTF-8.</summary>
     function AsString: string;
-    /// <summary>True when Operation is a PUT (not a delete/purge marker).</summary>
+    /// <summary>True when this is a live PUT (not delete/purge and not EndOfInitial).</summary>
     function IsPut: Boolean;
+    /// <summary>True when this entry is the end-of-initial snapshot marker.</summary>
+    function IsEndOfInitial: Boolean;
+    /// <summary>Builds the end-of-initial marker entry (empty key/value).</summary>
+    class function EndOfInitialMarker: TNatsKeyValueEntry; static;
   end;
 
   /// <summary>Callback for <see cref="TDextNatsKeyValue.Watch"/> / WatchAll deliveries.</summary>
   TNatsKeyValueWatchHandler = reference to procedure(const AEntry: TNatsKeyValueEntry);
 
+  /// <summary>Options for <see cref="TDextNatsKeyValue.Watch"/> / WatchAll.</summary>
+  TNatsKeyValueWatchOptions = record
+    /// <summary>
+    ///   Headers-only consumer: entry metadata (key, revision, operation) without values.
+    ///   Maps to JetStream <c>headers_only</c>.
+    /// </summary>
+    MetaOnly: Boolean;
+    /// <summary>
+    ///   Skip the last-per-subject snapshot; deliver only new updates
+    ///   (<c>deliver_policy=new</c>). No EndOfInitial marker is sent (nats.go semantics).
+    /// </summary>
+    UpdatesOnly: Boolean;
+    /// <summary>Defaults: MetaOnly=False, UpdatesOnly=False (snapshot + updates + marker).</summary>
+    class function CreateDefault: TNatsKeyValueWatchOptions; static;
+  end;
+
   /// <summary>
   ///   Active KV watch (ephemeral push consumer + deliver-subject SUB).
   ///   Does not own the JetStream context. Call <see cref="Stop"/> or Free before
   ///   freeing the KeyValue store. Handlers run on the client's receive thread —
-  ///   do not block with Request/Fetch.
+  ///   do not block with Request/Fetch. The EndOfInitial marker may also be
+  ///   delivered on the Watch caller thread when the snapshot is already empty.
   /// </summary>
   TDextNatsKeyValueWatcher = class
   private
@@ -145,14 +174,18 @@ type
     FConsumerName: string;
     FPushSub: TDextNatsJetStreamPushSubscription;
     FActive: Boolean;
+    FGate: TObject; { TNatsKvWatchGate }
+    function GetInitialDone: Boolean;
   public
     constructor Create(AJs: TDextNatsJetStreamContext; const AStreamName, AConsumerName: string;
-      APushSub: TDextNatsJetStreamPushSubscription);
+      APushSub: TDextNatsJetStreamPushSubscription; AGate: TObject);
     destructor Destroy; override;
     /// <summary>Unsubscribes the push SUB and deletes the ephemeral consumer. Idempotent.</summary>
     procedure Stop;
     property Active: Boolean read FActive;
     property ConsumerName: string read FConsumerName;
+    /// <summary>True after the end-of-initial marker has been delivered (or UpdatesOnly watch).</summary>
+    property InitialDone: Boolean read GetInitialDone;
   end;
 
   /// <summary>
@@ -183,7 +216,8 @@ type
     function PullSubjectEntries(const AFilterSubject: string; ADeliver: TNatsDeliverPolicy;
       AIncludeDeletes: Boolean): IList<TNatsKeyValueEntry>;
     function StartWatch(const AFilterSubject: string;
-      AHandler: TNatsKeyValueWatchHandler): TDextNatsKeyValueWatcher;
+      AHandler: TNatsKeyValueWatchHandler;
+      const AOptions: TNatsKeyValueWatchOptions): TDextNatsKeyValueWatcher;
     class procedure ValidateTTLNanos(ATTLNanos: Int64; const ALabel: string); static;
     class function OperationFromHeaders(const AHeaders: TNatsHeaders): TNatsKvOperation; static;
   public
@@ -261,15 +295,23 @@ type
     /// </summary>
     function History(const AKey: string): IList<TNatsKeyValueEntry>;
     /// <summary>
-    ///   Watches one key: delivers the current last-per-subject value (if any), then updates.
+    ///   Watches one key: delivers the current last-per-subject value (if any), then
+    ///   an <see cref="TNatsKeyValueEntry.EndOfInitial"/> marker, then live updates.
     ///   Caller must Free the watcher (or Stop) before freeing this store.
     /// </summary>
-    function Watch(const AKey: string; AHandler: TNatsKeyValueWatchHandler): TDextNatsKeyValueWatcher;
+    function Watch(const AKey: string; AHandler: TNatsKeyValueWatchHandler): TDextNatsKeyValueWatcher; overload;
+    /// <summary>Watch one key with <see cref="TNatsKeyValueWatchOptions"/>.</summary>
+    function Watch(const AKey: string; AHandler: TNatsKeyValueWatchHandler;
+      const AOptions: TNatsKeyValueWatchOptions): TDextNatsKeyValueWatcher; overload;
     /// <summary>
-    ///   Watches the whole bucket (last-per-subject snapshot + subsequent updates).
-    ///   Minimal MVP: no end-of-initial marker; handlers run on the receive thread.
+    ///   Watches the whole bucket (last-per-subject snapshot + EndOfInitial marker +
+    ///   subsequent updates). Handlers run on the receive thread (marker may also
+    ///   fire on the caller thread when the snapshot is empty).
     /// </summary>
-    function WatchAll(AHandler: TNatsKeyValueWatchHandler): TDextNatsKeyValueWatcher;
+    function WatchAll(AHandler: TNatsKeyValueWatchHandler): TDextNatsKeyValueWatcher; overload;
+    /// <summary>WatchAll with <see cref="TNatsKeyValueWatchOptions"/>.</summary>
+    function WatchAll(AHandler: TNatsKeyValueWatchHandler;
+      const AOptions: TNatsKeyValueWatchOptions): TDextNatsKeyValueWatcher; overload;
 
     property Bucket: string read FBucket;
     property StreamName: string read FStreamName;
@@ -384,7 +426,25 @@ end;
 
 function TNatsKeyValueEntry.IsPut: Boolean;
 begin
-  Result := Operation = kvoPut;
+  Result := (not EndOfInitial) and (Operation = kvoPut);
+end;
+
+function TNatsKeyValueEntry.IsEndOfInitial: Boolean;
+begin
+  Result := EndOfInitial;
+end;
+
+class function TNatsKeyValueEntry.EndOfInitialMarker: TNatsKeyValueEntry;
+begin
+  Result := Default(TNatsKeyValueEntry);
+  Result.EndOfInitial := True;
+end;
+
+{ TNatsKeyValueWatchOptions }
+
+class function TNatsKeyValueWatchOptions.CreateDefault: TNatsKeyValueWatchOptions;
+begin
+  Result := Default(TNatsKeyValueWatchOptions);
 end;
 
 { TDextNatsKeyValue }
@@ -838,10 +898,154 @@ begin
   Result := PullSubjectEntries(SubjectForKey(FBucket, AKey), dpAll, True);
 end;
 
+{ TNatsKvWatchGate — coordinates EndOfInitial using consumer NumPending
+  (nats.go Watch semantics). Owned by TDextNatsKeyValueWatcher. }
+
+type
+  TNatsKvWatchGate = class
+  private
+    FLock: TCriticalSection;
+    FHandler: TNatsKeyValueWatchHandler;
+    FUpdatesOnly: Boolean;
+    FStopped: Boolean;
+    FInitDone: Boolean;
+    FInitPendingKnown: Boolean;
+    FInitPending: UInt64;
+    FReceived: UInt64;
+  public
+    constructor Create(AHandler: TNatsKeyValueWatchHandler; AUpdatesOnly: Boolean);
+    destructor Destroy; override;
+    procedure Stop;
+    procedure HandleJsMsg(const AEntry: TNatsKeyValueEntry; ANumPending: Integer);
+    procedure NotifyConsumerPending(ANumPending: UInt64);
+    function InitialDone: Boolean;
+  end;
+
+constructor TNatsKvWatchGate.Create(AHandler: TNatsKeyValueWatchHandler; AUpdatesOnly: Boolean);
+begin
+  inherited Create;
+  FLock := TCriticalSection.Create;
+  FHandler := AHandler;
+  FUpdatesOnly := AUpdatesOnly;
+  { UpdatesOnly skips the snapshot marker entirely (nats.go). }
+  FInitDone := AUpdatesOnly;
+  FInitPendingKnown := AUpdatesOnly;
+end;
+
+destructor TNatsKvWatchGate.Destroy;
+begin
+  Stop;
+  FreeAndNil(FLock);
+  inherited;
+end;
+
+procedure TNatsKvWatchGate.Stop;
+begin
+  FLock.Enter;
+  try
+    FStopped := True;
+  finally
+    FLock.Leave;
+  end;
+end;
+
+function TNatsKvWatchGate.InitialDone: Boolean;
+begin
+  FLock.Enter;
+  try
+    Result := FInitDone;
+  finally
+    FLock.Leave;
+  end;
+end;
+
+procedure TNatsKvWatchGate.NotifyConsumerPending(ANumPending: UInt64);
+var
+  fireMarker: Boolean;
+  handler: TNatsKeyValueWatchHandler;
+begin
+  fireMarker := False;
+  handler := nil;
+  FLock.Enter;
+  try
+    if FStopped or FUpdatesOnly then
+      Exit;
+    if not FInitPendingKnown then
+    begin
+      FInitPending := ANumPending;
+      FInitPendingKnown := True;
+    end;
+    if (not FInitDone) and (FReceived >= FInitPending) then
+    begin
+      FInitDone := True;
+      fireMarker := True;
+      handler := FHandler;
+    end;
+  finally
+    FLock.Leave;
+  end;
+  if fireMarker and Assigned(handler) then
+    handler(TNatsKeyValueEntry.EndOfInitialMarker);
+end;
+
+procedure TNatsKvWatchGate.HandleJsMsg(const AEntry: TNatsKeyValueEntry; ANumPending: Integer);
+var
+  fireMarker: Boolean;
+  handler: TNatsKeyValueWatchHandler;
+  pending: UInt64;
+begin
+  fireMarker := False;
+  handler := nil;
+  if ANumPending < 0 then
+    pending := 0
+  else
+    pending := UInt64(ANumPending);
+
+  FLock.Enter;
+  try
+    if FStopped then
+      Exit;
+    handler := FHandler;
+    if not FInitDone then
+    begin
+      if not FInitPendingKnown then
+      begin
+        { Bootstrap from this delivery: NumPending is remaining after this msg. }
+        FInitPending := pending + 1;
+        FInitPendingKnown := True;
+      end;
+      Inc(FReceived);
+    end;
+  finally
+    FLock.Leave;
+  end;
+
+  if Assigned(handler) then
+    handler(AEntry);
+
+  FLock.Enter;
+  try
+    if FStopped or FInitDone or FUpdatesOnly then
+      Exit;
+    if (FReceived >= FInitPending) or (pending = 0) then
+    begin
+      FInitDone := True;
+      fireMarker := True;
+      handler := FHandler;
+    end;
+  finally
+    FLock.Leave;
+  end;
+
+  if fireMarker and Assigned(handler) then
+    handler(TNatsKeyValueEntry.EndOfInitialMarker);
+end;
+
 { TDextNatsKeyValueWatcher }
 
 constructor TDextNatsKeyValueWatcher.Create(AJs: TDextNatsJetStreamContext;
-  const AStreamName, AConsumerName: string; APushSub: TDextNatsJetStreamPushSubscription);
+  const AStreamName, AConsumerName: string; APushSub: TDextNatsJetStreamPushSubscription;
+  AGate: TObject);
 begin
   inherited Create;
   if AJs = nil then
@@ -852,13 +1056,23 @@ begin
   FStreamName := AStreamName;
   FConsumerName := AConsumerName;
   FPushSub := APushSub;
+  FGate := AGate;
   FActive := True;
 end;
 
 destructor TDextNatsKeyValueWatcher.Destroy;
 begin
   Stop;
+  FreeAndNil(FGate);
   inherited;
+end;
+
+function TDextNatsKeyValueWatcher.GetInitialDone: Boolean;
+begin
+  if FGate is TNatsKvWatchGate then
+    Result := TNatsKvWatchGate(FGate).InitialDone
+  else
+    Result := False;
 end;
 
 procedure TDextNatsKeyValueWatcher.Stop;
@@ -866,6 +1080,8 @@ begin
   if not FActive then
     Exit;
   FActive := False;
+  if FGate is TNatsKvWatchGate then
+    TNatsKvWatchGate(FGate).Stop;
   if FPushSub <> nil then
   begin
     try
@@ -882,12 +1098,14 @@ begin
 end;
 
 function TDextNatsKeyValue.StartWatch(const AFilterSubject: string;
-  AHandler: TNatsKeyValueWatchHandler): TDextNatsKeyValueWatcher;
+  AHandler: TNatsKeyValueWatchHandler;
+  const AOptions: TNatsKeyValueWatchOptions): TDextNatsKeyValueWatcher;
 var
   deliver, consumerName: string;
   cons: TNatsConsumerConfig;
   consInfo: TNatsConsumerInfo;
   push: TDextNatsJetStreamPushSubscription;
+  gate: TNatsKvWatchGate;
 begin
   if not Assigned(AHandler) then
     raise EDextNatsKeyValueError.Create('Watch requires a handler');
@@ -896,41 +1114,61 @@ begin
 
   deliver := FJs.Client.NewInbox;
   consumerName := 'kvwatch_' + KvNewNuid;
-
-  { Subscribe before CONSUMER.CREATE so the deliver subject has interest. }
-  push := FJs.SubscribePush(deliver,
-    procedure(const AMsg: TNatsJsMsg)
-    begin
-      AHandler(EntryFromJsMsg(AMsg));
-    end);
+  gate := TNatsKvWatchGate.Create(AHandler, AOptions.UpdatesOnly);
+  push := nil;
   try
+    { Subscribe before CONSUMER.CREATE so the deliver subject has interest. }
+    push := FJs.SubscribePush(deliver,
+      procedure(const AMsg: TNatsJsMsg)
+      begin
+        gate.HandleJsMsg(EntryFromJsMsg(AMsg), AMsg.NumPending);
+      end);
     cons := TNatsConsumerConfig.CreateDefault;
     cons.Name := consumerName;
     cons.FilterSubject := AFilterSubject;
     cons.DeliverSubject := deliver;
-    cons.DeliverPolicy := dpLastPerSubject;
+    if AOptions.UpdatesOnly then
+      cons.DeliverPolicy := dpNew
+    else
+      cons.DeliverPolicy := dpLastPerSubject;
     cons.AckPolicy := apNone;
     { ack_policy=none rejects a positive max_ack_pending (JS API 10082). }
     cons.MaxAckPending := 0;
+    cons.HeadersOnly := AOptions.MetaOnly;
     consInfo := FJs.CreateConsumer(FStreamName, cons);
+    gate.NotifyConsumerPending(consInfo.NumPending);
   except
-    push.Free;
+    if push <> nil then
+      push.Free;
+    gate.Free;
     raise;
   end;
 
-  Result := TDextNatsKeyValueWatcher.Create(FJs, FStreamName, consInfo.Name, push);
+  Result := TDextNatsKeyValueWatcher.Create(FJs, FStreamName, consInfo.Name, push, gate);
 end;
 
 function TDextNatsKeyValue.Watch(const AKey: string;
   AHandler: TNatsKeyValueWatchHandler): TDextNatsKeyValueWatcher;
 begin
+  Result := Watch(AKey, AHandler, TNatsKeyValueWatchOptions.CreateDefault);
+end;
+
+function TDextNatsKeyValue.Watch(const AKey: string; AHandler: TNatsKeyValueWatchHandler;
+  const AOptions: TNatsKeyValueWatchOptions): TDextNatsKeyValueWatcher;
+begin
   ValidateKeyName(AKey);
-  Result := StartWatch(SubjectForKey(FBucket, AKey), AHandler);
+  Result := StartWatch(SubjectForKey(FBucket, AKey), AHandler, AOptions);
 end;
 
 function TDextNatsKeyValue.WatchAll(AHandler: TNatsKeyValueWatchHandler): TDextNatsKeyValueWatcher;
 begin
-  Result := StartWatch(Format(NATS_KV_SUBJECTS, [FBucket]), AHandler);
+  Result := WatchAll(AHandler, TNatsKeyValueWatchOptions.CreateDefault);
+end;
+
+function TDextNatsKeyValue.WatchAll(AHandler: TNatsKeyValueWatchHandler;
+  const AOptions: TNatsKeyValueWatchOptions): TDextNatsKeyValueWatcher;
+begin
+  Result := StartWatch(Format(NATS_KV_SUBJECTS, [FBucket]), AHandler, AOptions);
 end;
 
 end.

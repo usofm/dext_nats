@@ -371,7 +371,7 @@ function RequestAsync(const ASubject: string; const APayload: TBytes;
 3. API MVP: `CreateBucket` / `DeleteBucket` / `BucketExists` / `GetStatus` / `Open`، و روی store: `Put` / `Get` / `TryGet` / `Delete` / `Purge` / `Status` / CAS `Create` / `Update`.
 4. Delete = header `KV-Operation: DEL`؛ Purge = `KV-Operation: PURGE` + `Nats-Rollup: sub`.
 5. Get از `STREAM.MSG.GET` (`last_by_subj`)؛ tombstone → not found.
-6. `Keys` / `ListKeys` (pull `last_per_subject`)، `History(key)` (pull `all`)، `Watch` / `WatchAll` (push `last_per_subject` + updates؛ بدون marker پایان snapshot اولیه).
+6. `Keys` / `ListKeys` (pull `last_per_subject`)، `History(key)` (pull `all`)، `Watch` / `WatchAll` (push `last_per_subject` + updates + EndOfInitial marker؛ گزینه‌های `MetaOnly` / `UpdatesOnly`).
 7. CAS: `Create` = `Nats-Expected-Last-Subject-Sequence: 0` (+ retry روی tombstone revision مثل nats.go)؛ `Update(key, value, revision)` همان header با revision؛ conflict → `EDextNatsKeyExists` / `EDextNatsKeyRevisionMismatch`.
 8. `Dext.Json.Utf8` / `Dext.Collections`؛ بدون `System.JSON` / `System.Generics.Collections`.
 
@@ -382,7 +382,7 @@ function RequestAsync(const ASubject: string; const APayload: TBytes;
 - [x] Integration soft-skip: `Keys` / `History` / `WatchAll` روی `nats-server -js`.
 - [x] Integration soft-skip: CAS `Create` / `Update` (+ KeyExists / revision mismatch) روی `nats-server -js`.
 - [x] Per-key TTL (NATS 2.11+ / ADR-48): `LimitMarkerTTL` → `allow_msg_ttl` + `subject_delete_marker_ttl`; `Create`/`Purge` emit `Nats-TTL`; Put/Update do not accept TTL.
-- [ ] **Deferred:** Watch end-of-initial marker / MetaOnly.
+- [x] Watch EndOfInitial marker (`TNatsKeyValueEntry.EndOfInitial` / `Watcher.InitialDone`؛ NumPending مثل nats.go) + `TNatsKeyValueWatchOptions.MetaOnly` / `UpdatesOnly`.
 
 ---
 

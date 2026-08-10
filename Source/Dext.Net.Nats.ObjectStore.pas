@@ -23,6 +23,7 @@
 {  chunk subjects $O.<bucket>.C.> and metadata $O.<bucket>.M.>.             }
 {  CreateStore / DeleteStore / Put / Get / Delete / List / Keys,            }
 {  Watch / WatchAll, UpdateMeta, Seal, AddLink / AddBucketLink.             }
+{  Streaming Put/Get: TStream + PutFile/GetFile (chunked, no full TBytes).  }
 {  Get follows object links (same or other bucket); bucket links raise.     }
 {  TDextNatsObjectStoreContext wraps a TDextNatsJetStreamContext (or        }
 {  creates one from TDextNatsClient); it does not own the client.           }
@@ -161,7 +162,15 @@ type
     function TryGetInfo(const AObjectName: string; out AInfo: TNatsObjectInfo): Boolean;
     procedure PublishMeta(const AInfo: TNatsObjectInfo);
     procedure PurgeSubject(const ASubject: string);
-    function FetchChunks(const ANuid: string; AChunkCount: Cardinal): TBytes;
+    /// <summary>
+    ///   Pulls chunks in modest batches and writes each payload to AStream while
+    ///   hashing (avoids assembling one giant TBytes).
+    /// </summary>
+    procedure WriteChunksToStream(const ANuid: string; AChunkCount: Cardinal;
+      AStream: TStream; out AWritten: UInt64; out ADigest: string);
+    function PutFromStream(const AName: string; AStream: TStream;
+      const ADescription: string; const AHeaders: TNatsHeaders;
+      const AMetadata: IDictionary<string, string>): TNatsObjectInfo;
     function InfoFromJsMsg(const AMsg: TNatsJsMsg): TNatsObjectInfo;
     function StartWatch(const AFilterSubject: string;
       AHandler: TNatsObjectStoreWatchHandler): TDextNatsObjectStoreWatcher;
@@ -170,7 +179,22 @@ type
       AChunkSize: Integer = 0);
 
     /// <summary>Stores AData under AName (chunked). Overwrites prior object of the same name.</summary>
-    function Put(const AName: string; const AData: TBytes): TNatsObjectInfo;
+    function Put(const AName: string; const AData: TBytes): TNatsObjectInfo; overload;
+    /// <summary>
+    ///   Streams AStream to EOF under AName in store chunk-size pieces (SHA-256 +
+    ///   meta rollup). Does not require the whole payload in one TBytes.
+    ///   AStream position advances to EOF.
+    /// </summary>
+    function Put(const AName: string; AStream: TStream): TNatsObjectInfo; overload;
+    /// <summary>
+    ///   Like Put(name, stream) with Name / Description / Headers / Metadata from
+    ///   AMeta (nats.go <c>Put(ObjectMeta, reader)</c>).
+    /// </summary>
+    function Put(const AMeta: TNatsObjectMeta; AStream: TStream): TNatsObjectInfo; overload;
+    /// <summary>Opens AFileName and Puts under AName (chunked from the file stream).</summary>
+    function PutFile(const AName, AFileName: string): TNatsObjectInfo; overload;
+    /// <summary>Puts AFileName using <c>ExtractFileName</c> as the object name.</summary>
+    function PutFile(const AFileName: string): TNatsObjectInfo; overload;
     /// <summary>
     ///   Reassembles chunks for AName. Object links are followed (same or other
     ///   bucket via OpenStore) like nats.go; the returned / out info is the
@@ -180,6 +204,16 @@ type
     function Get(const AName: string): TBytes; overload;
     /// <summary>Same as Get; AInfo is the resolved target metadata after link follow.</summary>
     function Get(const AName: string; out AInfo: TNatsObjectInfo): TBytes; overload;
+    /// <summary>
+    ///   Writes object bytes into AStream (batched chunk fetch + digest verify).
+    ///   Object links are followed like Get(TBytes). Returns resolved target info.
+    /// </summary>
+    function Get(const AName: string; AStream: TStream): TNatsObjectInfo; overload;
+    /// <summary>
+    ///   Downloads AName into AFileName (creates or overwrites). Returns resolved
+    ///   target info after link follow.
+    /// </summary>
+    function GetFile(const AName, AFileName: string): TNatsObjectInfo;
     /// <summary>
     ///   Current metadata for a live (non-deleted) object. Does not follow links —
     ///   link entries surface their own meta (<see cref="TNatsObjectInfo.Link"/>).
@@ -1045,18 +1079,29 @@ begin
   ObjParseSuccessResponse(reply);
 end;
 
-function TDextNatsObjectStore.FetchChunks(const ANuid: string; AChunkCount: Cardinal): TBytes;
+procedure TDextNatsObjectStore.WriteChunksToStream(const ANuid: string;
+  AChunkCount: Cardinal; AStream: TStream; out AWritten: UInt64; out ADigest: string);
+const
+  CHUNK_FETCH_BATCH = 16;
 var
   cons: TNatsConsumerConfig;
   consInfo: TNatsConsumerInfo;
   consumerName: string;
-  batch: Integer;
+  remaining: Cardinal;
+  batch, i, n: Integer;
   msgs: IList<TNatsJsMsg>;
-  i, offset, total: Integer;
+  hash: THashSHA2;
+  got: Cardinal;
 begin
-  SetLength(Result, 0);
+  AWritten := 0;
+  hash := THashSHA2.Create(THashSHA2.TSHA2Version.SHA256);
   if (ANuid = '') or (AChunkCount = 0) then
+  begin
+    ADigest := ObjDigestValue(hash.HashAsBytes);
     Exit;
+  end;
+  if AStream = nil then
+    raise EDextNatsObjectStoreError.Create('Object Store Get stream is required');
 
   consumerName := 'osget_' + ObjNewNuid;
   cons := TNatsConsumerConfig.CreateDefault;
@@ -1067,48 +1112,71 @@ begin
   cons.MaxDeliver := 1;
   consInfo := FContext.FJs.CreateConsumer(FStreamName, cons);
   try
-    batch := Integer(AChunkCount);
-    if batch < 1 then
-      batch := 1;
-    msgs := FContext.FJs.Fetch(FStreamName, consInfo.Name, batch, 30000);
-    if msgs.Count <> Integer(AChunkCount) then
+    remaining := AChunkCount;
+    got := 0;
+    while remaining > 0 do
+    begin
+      batch := Integer(remaining);
+      if batch > CHUNK_FETCH_BATCH then
+        batch := CHUNK_FETCH_BATCH;
+      msgs := FContext.FJs.Fetch(FStreamName, consInfo.Name, batch, 30000);
+      if msgs.Count = 0 then
+        raise EDextNatsObjectStoreError.CreateFmt(
+          'Object Store chunk fetch stalled for nuid %s: got %d of %d',
+          [ANuid, got, AChunkCount]);
+      if msgs.Count > batch then
+        raise EDextNatsObjectStoreError.CreateFmt(
+          'Object Store chunk batch overflow for nuid %s', [ANuid]);
+
+      for i := 0 to msgs.Count - 1 do
+      begin
+        n := Length(msgs[i].Payload);
+        if n > 0 then
+        begin
+          hash.Update(msgs[i].Payload);
+          if AStream.Write(msgs[i].Payload[0], n) <> n then
+            raise EDextNatsObjectStoreError.Create(
+              'Object Store failed to write chunk to stream');
+          Inc(AWritten, UInt64(n));
+        end;
+        Inc(got);
+      end;
+      if Cardinal(msgs.Count) > remaining then
+        raise EDextNatsObjectStoreError.CreateFmt(
+          'Object Store chunk count mismatch for nuid %s: expected %d',
+          [ANuid, AChunkCount]);
+      Dec(remaining, Cardinal(msgs.Count));
+    end;
+    if got <> AChunkCount then
       raise EDextNatsObjectStoreError.CreateFmt(
         'Object Store chunk count mismatch for nuid %s: expected %d got %d',
-        [ANuid, AChunkCount, msgs.Count]);
-
-    total := 0;
-    for i := 0 to msgs.Count - 1 do
-      Inc(total, Length(msgs[i].Payload));
-    SetLength(Result, total);
-    offset := 0;
-    for i := 0 to msgs.Count - 1 do
-    begin
-      if Length(msgs[i].Payload) > 0 then
-      begin
-        Move(msgs[i].Payload[0], Result[offset], Length(msgs[i].Payload));
-        Inc(offset, Length(msgs[i].Payload));
-      end;
-    end;
+        [ANuid, AChunkCount, got]);
   finally
     try
       FContext.FJs.DeleteConsumer(FStreamName, consInfo.Name);
     except
     end;
   end;
+  ADigest := ObjDigestValue(hash.HashAsBytes);
 end;
 
-function TDextNatsObjectStore.Put(const AName: string; const AData: TBytes): TNatsObjectInfo;
+function TDextNatsObjectStore.PutFromStream(const AName: string; AStream: TStream;
+  const ADescription: string; const AHeaders: TNatsHeaders;
+  const AMetadata: IDictionary<string, string>): TNatsObjectInfo;
 var
   existing: TNatsObjectInfo;
   hadExisting: Boolean;
   nuid: string;
   chunkSubj: string;
-  chunkSize, offset, n, chunks: Integer;
+  chunkSize, n, got, chunks: Integer;
   chunk: TBytes;
   hash: THashSHA2;
+  total: UInt64;
 begin
   if AName = '' then
     raise EDextNatsObjectStoreError.Create('Object name is required');
+  if AStream = nil then
+    raise EDextNatsObjectStoreError.Create('Object Store Put stream is required');
 
   hadExisting := TryGetInfo(AName, existing);
   nuid := ObjNewNuid;
@@ -1119,46 +1187,97 @@ begin
 
   hash := THashSHA2.Create(THashSHA2.TSHA2Version.SHA256);
   chunks := 0;
-  offset := 0;
-  while offset < Length(AData) do
+  total := 0;
+  SetLength(chunk, chunkSize);
+  while True do
   begin
-    n := Length(AData) - offset;
-    if n > chunkSize then
-      n := chunkSize;
-    SetLength(chunk, n);
-    Move(AData[offset], chunk[0], n);
-    hash.Update(chunk);
+    got := 0;
+    while got < chunkSize do
+    begin
+      n := AStream.Read(chunk[got], chunkSize - got);
+      if n <= 0 then
+        Break;
+      Inc(got, n);
+    end;
+    if got = 0 then
+      Break;
+    if got < chunkSize then
+      SetLength(chunk, got);
+    hash.Update(chunk, Cardinal(got));
     FContext.FJs.Publish(chunkSubj, chunk);
     Inc(chunks);
-    Inc(offset, n);
+    Inc(total, UInt64(got));
+    if got < chunkSize then
+      Break;
+    if Length(chunk) <> chunkSize then
+      SetLength(chunk, chunkSize);
   end;
 
   Result := Default(TNatsObjectInfo);
   Result.Name := AName;
+  Result.Description := ADescription;
+  Result.Headers := AHeaders;
+  Result.Metadata := AMetadata;
   Result.Bucket := FBucket;
   Result.Nuid := nuid;
-  Result.Size := UInt64(Length(AData));
+  Result.Size := total;
   Result.Chunks := Cardinal(chunks);
   Result.Digest := ObjDigestValue(hash.HashAsBytes);
   Result.Deleted := False;
   Result.ChunkSize := chunkSize;
   PublishMeta(Result);
 
-  if hadExisting and (existing.Nuid <> '') and (not existing.Deleted) then
+  if hadExisting and (existing.Nuid <> '') then
   begin
     try
       PurgeSubject(ChunkSubject(existing.Nuid));
     except
       { Best-effort old-chunk cleanup; new object is already readable. }
     end;
-  end
-  else if hadExisting and existing.Deleted and (existing.Nuid <> '') then
-  begin
-    try
-      PurgeSubject(ChunkSubject(existing.Nuid));
-    except
-    end;
   end;
+end;
+
+function TDextNatsObjectStore.Put(const AName: string; const AData: TBytes): TNatsObjectInfo;
+var
+  ms: TBytesStream;
+begin
+  ms := TBytesStream.Create(AData);
+  try
+    Result := Put(AName, ms);
+  finally
+    ms.Free;
+  end;
+end;
+
+function TDextNatsObjectStore.Put(const AName: string; AStream: TStream): TNatsObjectInfo;
+begin
+  Result := PutFromStream(AName, AStream, '', nil, nil);
+end;
+
+function TDextNatsObjectStore.Put(const AMeta: TNatsObjectMeta; AStream: TStream): TNatsObjectInfo;
+begin
+  if AMeta.Name = '' then
+    raise EDextNatsObjectStoreError.Create('Object Store Put requires a non-empty Name');
+  Result := PutFromStream(AMeta.Name, AStream, AMeta.Description, AMeta.Headers, AMeta.Metadata);
+end;
+
+function TDextNatsObjectStore.PutFile(const AName, AFileName: string): TNatsObjectInfo;
+var
+  fs: TFileStream;
+begin
+  if AFileName = '' then
+    raise EDextNatsObjectStoreError.Create('Object Store PutFile requires a file path');
+  fs := TFileStream.Create(AFileName, fmOpenRead or fmShareDenyWrite);
+  try
+    Result := Put(AName, fs);
+  finally
+    fs.Free;
+  end;
+end;
+
+function TDextNatsObjectStore.PutFile(const AFileName: string): TNatsObjectInfo;
+begin
+  Result := PutFile(ExtractFileName(AFileName), AFileName);
 end;
 
 function TDextNatsObjectStore.GetInfo(const AName: string): TNatsObjectInfo;
@@ -1231,55 +1350,59 @@ begin
   PublishMeta(Result);
 end;
 
-function TDextNatsObjectStore.Get(const AName: string; out AInfo: TNatsObjectInfo): TBytes;
+function TDextNatsObjectStore.Get(const AName: string; AStream: TStream): TNatsObjectInfo;
 var
-  hash: THashSHA2;
   digest: string;
+  written: UInt64;
   targetStore: TDextNatsObjectStore;
   linkBucket, linkName: string;
 begin
-  AInfo := GetInfo(AName);
+  if AStream = nil then
+    raise EDextNatsObjectStoreError.Create('Object Store Get stream is required');
+
+  Result := GetInfo(AName);
 
   { Follow object links (nats.go Get); bucket links cannot be retrieved as bytes. }
-  if AInfo.IsLink then
+  if Result.IsLink then
   begin
-    if AInfo.IsBucketLink then
+    if Result.IsBucketLink then
       raise EDextNatsObjectStoreError.CreateFmt(
         'Object Store cannot get bucket link: %s', [AName]);
-    linkBucket := AInfo.Link.Bucket;
-    linkName := AInfo.Link.Name;
+    linkBucket := Result.Link.Bucket;
+    linkName := Result.Link.Name;
     if linkBucket = FBucket then
-      Exit(Get(linkName, AInfo));
+      Exit(Get(linkName, AStream));
     targetStore := FContext.OpenStore(linkBucket);
     try
-      Result := targetStore.Get(linkName, AInfo);
+      Result := targetStore.Get(linkName, AStream);
     finally
       targetStore.Free;
     end;
     Exit;
   end;
 
-  if AInfo.Chunks = 0 then
-  begin
-    SetLength(Result, 0);
-    hash := THashSHA2.Create(THashSHA2.TSHA2Version.SHA256);
-    digest := ObjDigestValue(hash.HashAsBytes);
-    if (AInfo.Digest <> '') and (digest <> AInfo.Digest) then
-      raise EDextNatsObjectStoreError.CreateFmt('Object Store digest mismatch for %s', [AName]);
-    Exit;
-  end;
-
-  Result := FetchChunks(AInfo.Nuid, AInfo.Chunks);
-  hash := THashSHA2.Create(THashSHA2.TSHA2Version.SHA256);
-  if Length(Result) > 0 then
-    hash.Update(Result);
-  digest := ObjDigestValue(hash.HashAsBytes);
-  if (AInfo.Digest <> '') and (digest <> AInfo.Digest) then
+  WriteChunksToStream(Result.Nuid, Result.Chunks, AStream, written, digest);
+  if (Result.Digest <> '') and (digest <> Result.Digest) then
     raise EDextNatsObjectStoreError.CreateFmt('Object Store digest mismatch for %s', [AName]);
-  if UInt64(Length(Result)) <> AInfo.Size then
+  if written <> Result.Size then
     raise EDextNatsObjectStoreError.CreateFmt(
       'Object Store size mismatch for %s: expected %d got %d',
-      [AName, AInfo.Size, Length(Result)]);
+      [AName, Result.Size, written]);
+end;
+
+function TDextNatsObjectStore.Get(const AName: string; out AInfo: TNatsObjectInfo): TBytes;
+var
+  ms: TBytesStream;
+begin
+  ms := TBytesStream.Create;
+  try
+    AInfo := Get(AName, ms);
+    SetLength(Result, ms.Size);
+    if ms.Size > 0 then
+      Move(ms.Memory^, Result[0], ms.Size);
+  finally
+    ms.Free;
+  end;
 end;
 
 function TDextNatsObjectStore.Get(const AName: string): TBytes;
@@ -1287,6 +1410,20 @@ var
   info: TNatsObjectInfo;
 begin
   Result := Get(AName, info);
+end;
+
+function TDextNatsObjectStore.GetFile(const AName, AFileName: string): TNatsObjectInfo;
+var
+  fs: TFileStream;
+begin
+  if AFileName = '' then
+    raise EDextNatsObjectStoreError.Create('Object Store GetFile requires a file path');
+  fs := TFileStream.Create(AFileName, fmCreate);
+  try
+    Result := Get(AName, fs);
+  finally
+    fs.Free;
+  end;
 end;
 
 procedure TDextNatsObjectStore.Delete(const AName: string);

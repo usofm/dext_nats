@@ -39,18 +39,20 @@ Source/
                                 InProgress via $JS.API.*.
   Dext.Net.Nats.KeyValue.pas    TDextNatsKeyValue: JetStream KV buckets
                                 (CreateBucket/Put/Get/Delete/Purge, Keys/ListKeys,
-                                History, Watch/WatchAll, CAS Create/Update,
+                                History, Watch/WatchAll (EndOfInitial marker,
+                                MetaOnly / UpdatesOnly), CAS Create/Update,
                                 per-key TTL via LimitMarkerTTL + Create/Purge
                                 Nats-TTL; NATS 2.11+ / ADR-48). Composition over
-                                JetStream; Watch end-of-initial marker deferred
-                                (SPEC-KV-01).
+                                JetStream.
   Dext.Net.Nats.ObjectStore.pas TDextNatsObjectStoreContext / TDextNatsObjectStore:
                                 JetStream Object Store (CreateStore /
                                 DeleteStore / Put / Get / Delete / List / Keys,
                                 Watch/WatchAll, UpdateMeta, Seal, AddLink /
                                 AddBucketLink on OBJ_ / $O.<bucket>.{C,M}.*).
-                                Get follows object links; bucket links raise.
-                                Composition over JetStream; does not own the client.
+                                Streaming Put/Get (TStream, PutFile/GetFile,
+                                Put with TNatsObjectMeta); Get follows object
+                                links; bucket links raise. Composition over
+                                JetStream; does not own the client.
 Demo/
   PubSubE2E/                    One-way core pub/sub E2E console smoke test
                                 against a plain local `nats-server` (no JetStream).
@@ -211,7 +213,11 @@ parsing frames anywhere else.
       `last_per_subject` MVP on meta subjects), UpdateMeta (name / description /
       headers / metadata; no chunk rewrite), Seal (`config.sealed` on OBJ_ stream),
       AddLink / AddBucketLink (`options.link`; Get follows object links like
-      nats.go, bucket links raise; GetInfo surfaces link meta without following)
+      nats.go, bucket links raise; GetInfo surfaces link meta without following),
+      streaming Put/Get (`TStream`, `PutFile` / `GetFile`, `Put(TNatsObjectMeta, TStream)`
+      chunked SHA-256 without loading whole payload into one `TBytes`);
+      deferred vs nats.go: lazy ObjectResult reader, Get/Put show-deleted opts,
+      Watch end-of-initial marker
 - [x] Unit/integration tests in `Tests/Dext.Net.Nats.Tests.pas` (use `Dext.Testing`)
 - [x] Console demo projects (`.dpr`/`.dproj`): `Demo/PubSubE2E/` (core one-way
   pub/sub), `Demo/RequestReplyE2E/` (request/reply + no-responders),
@@ -247,10 +253,10 @@ parsing frames anywhere else.
       callback `RequestAsync` overload retained
 - [x] JetStream Key-Value (`Dext.Net.Nats.KeyValue.pas` / SPEC-KV-01):
       CreateBucket / DeleteBucket / BucketExists / Put / Get / Delete / Purge,
-      Keys / ListKeys, History, Watch / WatchAll (push last_per_subject MVP),
+      Keys / ListKeys, History, Watch / WatchAll (push last_per_subject +
+      EndOfInitial marker via NumPending; MetaOnly / UpdatesOnly options),
       CAS Create / Update (`Nats-Expected-Last-Subject-Sequence`),
-      per-key TTL (`LimitMarkerTTL` + `Create`/`Purge` with `Nats-TTL`; NATS 2.11+);
-      deferred: Watch end-of-initial marker
+      per-key TTL (`LimitMarkerTTL` + `Create`/`Purge` with `Nats-TTL`; NATS 2.11+)
 
 ## Working style expected of an agent here
 

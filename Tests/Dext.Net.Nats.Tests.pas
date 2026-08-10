@@ -25,6 +25,7 @@ interface
 uses
   System.SysUtils,
   System.Classes,
+  System.IOUtils,
   System.SyncObjs,
   System.Diagnostics,
   Dext.Collections,
@@ -309,8 +310,20 @@ type
     procedure Keys_ShouldListLiveKeysOnly;
     [Test, Category('JetStream'), Category('KeyValue')]
     procedure History_ShouldReturnRevisions;
+    [Test, Category('Unit'), Category('KeyValue')]
+    procedure Entry_EndOfInitialMarker_ShouldNotBePut;
+    [Test, Category('Unit'), Category('KeyValue')]
+    procedure WatchOptions_ShouldDefaultFalse;
     [Test, Category('JetStream'), Category('KeyValue')]
     procedure WatchAll_ShouldDeliverCurrentAndUpdates;
+    [Test, Category('JetStream'), Category('KeyValue')]
+    procedure WatchAll_ShouldSignalEndOfInitial;
+    [Test, Category('JetStream'), Category('KeyValue')]
+    procedure WatchAll_EmptyBucket_ShouldSignalEndOfInitial;
+    [Test, Category('JetStream'), Category('KeyValue')]
+    procedure WatchAll_UpdatesOnly_ShouldSkipInitialAndMarker;
+    [Test, Category('JetStream'), Category('KeyValue')]
+    procedure WatchAll_MetaOnly_ShouldOmitValues;
     [Test, Category('JetStream'), Category('KeyValue')]
     procedure Create_ShouldPutOnlyIfAbsent;
     [Test, Category('JetStream'), Category('KeyValue'), Category('Negative')]
@@ -448,6 +461,8 @@ type
     procedure ObjectInfo_Link_ParseToJson_ShouldRoundTrip;
     [Test, Category('JetStream'), Category('ObjectStore')]
     procedure Store_CreatePutGetDelete_ShouldRoundTrip;
+    [Test, Category('JetStream'), Category('ObjectStore')]
+    procedure Store_PutGet_StreamAndFile_ShouldRoundTrip;
     [Test, Category('JetStream'), Category('ObjectStore')]
     procedure Store_PutOverwrite_ShouldReturnLatest;
     [Test, Category('JetStream'), Category('ObjectStore'), Category('Negative')]
@@ -2912,6 +2927,27 @@ begin
   end;
 end;
 
+procedure TDextNatsKeyValueTests.Entry_EndOfInitialMarker_ShouldNotBePut;
+var
+  entry: TNatsKeyValueEntry;
+begin
+  entry := TNatsKeyValueEntry.EndOfInitialMarker;
+  Should(entry.IsEndOfInitial).BeTrue;
+  Should(entry.EndOfInitial).BeTrue;
+  Should(entry.IsPut).BeFalse;
+  Should(entry.Key).Be('');
+  Should(entry.AsString).Be('');
+end;
+
+procedure TDextNatsKeyValueTests.WatchOptions_ShouldDefaultFalse;
+var
+  opts: TNatsKeyValueWatchOptions;
+begin
+  opts := TNatsKeyValueWatchOptions.CreateDefault;
+  Should(opts.MetaOnly).BeFalse;
+  Should(opts.UpdatesOnly).BeFalse;
+end;
+
 procedure TDextNatsKeyValueTests.WatchAll_ShouldDeliverCurrentAndUpdates;
 var
   bucket: string;
@@ -2990,6 +3026,270 @@ begin
       watcher.Free;
     gotInitial.Free;
     gotUpdate.Free;
+    lock.Free;
+    kv.Free;
+    TDextNatsKeyValue.DeleteBucket(FJs, bucket);
+  end;
+end;
+
+procedure TDextNatsKeyValueTests.WatchAll_ShouldSignalEndOfInitial;
+var
+  bucket: string;
+  cfg: TNatsKeyValueConfig;
+  kv: TDextNatsKeyValue;
+  watcher: TDextNatsKeyValueWatcher;
+  lock: TCriticalSection;
+  gotKeys: IList<string>;
+  markerAt: Integer;
+  gotMarker, gotUpdate: TEvent;
+  i: Integer;
+begin
+  if not EnsureJetStreamOrFail then
+    Exit;
+
+  bucket := UniqueBucket('DEXTKVEOI');
+  cfg := TNatsKeyValueConfig.CreateDefault(bucket);
+  cfg.Storage := ssMemory;
+  cfg.History := 1;
+  kv := TDextNatsKeyValue.CreateBucket(FJs, cfg);
+  lock := TCriticalSection.Create;
+  gotKeys := TCollections.CreateList<string>;
+  gotMarker := TEvent.Create(nil, True, False, '');
+  gotUpdate := TEvent.Create(nil, True, False, '');
+  watcher := nil;
+  markerAt := -1;
+  try
+    kv.Put('a', '1');
+    kv.Put('b', '2');
+
+    watcher := kv.WatchAll(
+      procedure(const AEntry: TNatsKeyValueEntry)
+      begin
+        lock.Enter;
+        try
+          if AEntry.IsEndOfInitial then
+          begin
+            if markerAt < 0 then
+              markerAt := gotKeys.Count;
+            gotMarker.SetEvent;
+          end
+          else if AEntry.IsPut then
+          begin
+            gotKeys.Add(AEntry.Key + '=' + AEntry.AsString);
+            if AEntry.Key = 'a' then
+              if AEntry.AsString = '9' then
+                gotUpdate.SetEvent;
+          end;
+        finally
+          lock.Leave;
+        end;
+      end);
+
+    Should(gotMarker.WaitFor(5000) = wrSignaled).BeTrue;
+    Should(watcher.InitialDone).BeTrue;
+    lock.Enter;
+    try
+      Should(markerAt >= 0).BeTrue;
+      { Marker after both snapshot puts (order of a/b not guaranteed). }
+      Should(markerAt >= 2).BeTrue;
+      for i := 0 to markerAt - 1 do
+        Should((gotKeys[i] = 'a=1') or (gotKeys[i] = 'b=2')).BeTrue;
+    finally
+      lock.Leave;
+    end;
+
+    kv.Put('a', '9');
+    Should(gotUpdate.WaitFor(5000) = wrSignaled).BeTrue;
+  finally
+    if watcher <> nil then
+      watcher.Free;
+    gotMarker.Free;
+    gotUpdate.Free;
+    lock.Free;
+    kv.Free;
+    TDextNatsKeyValue.DeleteBucket(FJs, bucket);
+  end;
+end;
+
+procedure TDextNatsKeyValueTests.WatchAll_EmptyBucket_ShouldSignalEndOfInitial;
+var
+  bucket: string;
+  cfg: TNatsKeyValueConfig;
+  kv: TDextNatsKeyValue;
+  watcher: TDextNatsKeyValueWatcher;
+  gotMarker: TEvent;
+  sawEntry: Boolean;
+begin
+  if not EnsureJetStreamOrFail then
+    Exit;
+
+  bucket := UniqueBucket('DEXTKVEMP');
+  cfg := TNatsKeyValueConfig.CreateDefault(bucket);
+  cfg.Storage := ssMemory;
+  cfg.History := 1;
+  kv := TDextNatsKeyValue.CreateBucket(FJs, cfg);
+  gotMarker := TEvent.Create(nil, True, False, '');
+  watcher := nil;
+  sawEntry := False;
+  try
+    watcher := kv.WatchAll(
+      procedure(const AEntry: TNatsKeyValueEntry)
+      begin
+        if AEntry.IsEndOfInitial then
+          gotMarker.SetEvent
+        else
+          sawEntry := True;
+      end);
+
+    Should(gotMarker.WaitFor(5000) = wrSignaled).BeTrue;
+    Should(watcher.InitialDone).BeTrue;
+    Should(sawEntry).BeFalse;
+  finally
+    if watcher <> nil then
+      watcher.Free;
+    gotMarker.Free;
+    kv.Free;
+    TDextNatsKeyValue.DeleteBucket(FJs, bucket);
+  end;
+end;
+
+procedure TDextNatsKeyValueTests.WatchAll_UpdatesOnly_ShouldSkipInitialAndMarker;
+var
+  bucket: string;
+  cfg: TNatsKeyValueConfig;
+  kv: TDextNatsKeyValue;
+  watcher: TDextNatsKeyValueWatcher;
+  opts: TNatsKeyValueWatchOptions;
+  lock: TCriticalSection;
+  got: IList<string>;
+  gotUpdate: TEvent;
+  sawMarker: Boolean;
+  i: Integer;
+begin
+  if not EnsureJetStreamOrFail then
+    Exit;
+
+  bucket := UniqueBucket('DEXTKVUO');
+  cfg := TNatsKeyValueConfig.CreateDefault(bucket);
+  cfg.Storage := ssMemory;
+  cfg.History := 1;
+  kv := TDextNatsKeyValue.CreateBucket(FJs, cfg);
+  lock := TCriticalSection.Create;
+  got := TCollections.CreateList<string>;
+  gotUpdate := TEvent.Create(nil, True, False, '');
+  watcher := nil;
+  sawMarker := False;
+  try
+    kv.Put('seed', 'old');
+    opts := TNatsKeyValueWatchOptions.CreateDefault;
+    opts.UpdatesOnly := True;
+
+    watcher := kv.WatchAll(
+      procedure(const AEntry: TNatsKeyValueEntry)
+      begin
+        lock.Enter;
+        try
+          if AEntry.IsEndOfInitial then
+            sawMarker := True
+          else if AEntry.IsPut then
+          begin
+            got.Add(AEntry.Key + '=' + AEntry.AsString);
+            if (AEntry.Key = 'seed') and (AEntry.AsString = 'new') then
+              gotUpdate.SetEvent;
+          end;
+        finally
+          lock.Leave;
+        end;
+      end,
+      opts);
+
+    Should(watcher.InitialDone).BeTrue;
+    Sleep(300);
+    kv.Put('seed', 'new');
+    Should(gotUpdate.WaitFor(5000) = wrSignaled).BeTrue;
+
+    lock.Enter;
+    try
+      Should(sawMarker).BeFalse;
+      Should(got.Count > 0).BeTrue;
+      for i := 0 to got.Count - 1 do
+        Should(got[i] <> 'seed=old').BeTrue;
+      Should(got[got.Count - 1]).Be('seed=new');
+    finally
+      lock.Leave;
+    end;
+  finally
+    if watcher <> nil then
+      watcher.Free;
+    gotUpdate.Free;
+    lock.Free;
+    kv.Free;
+    TDextNatsKeyValue.DeleteBucket(FJs, bucket);
+  end;
+end;
+
+procedure TDextNatsKeyValueTests.WatchAll_MetaOnly_ShouldOmitValues;
+var
+  bucket: string;
+  cfg: TNatsKeyValueConfig;
+  kv: TDextNatsKeyValue;
+  watcher: TDextNatsKeyValueWatcher;
+  opts: TNatsKeyValueWatchOptions;
+  lock: TCriticalSection;
+  gotKey: string;
+  gotLen: Integer;
+  gotMarker: TEvent;
+begin
+  if not EnsureJetStreamOrFail then
+    Exit;
+
+  bucket := UniqueBucket('DEXTKVMO');
+  cfg := TNatsKeyValueConfig.CreateDefault(bucket);
+  cfg.Storage := ssMemory;
+  cfg.History := 1;
+  kv := TDextNatsKeyValue.CreateBucket(FJs, cfg);
+  lock := TCriticalSection.Create;
+  gotMarker := TEvent.Create(nil, True, False, '');
+  watcher := nil;
+  gotKey := '';
+  gotLen := -1;
+  try
+    kv.Put('meta', 'secret-value');
+    opts := TNatsKeyValueWatchOptions.CreateDefault;
+    opts.MetaOnly := True;
+
+    watcher := kv.WatchAll(
+      procedure(const AEntry: TNatsKeyValueEntry)
+      begin
+        if AEntry.IsEndOfInitial then
+        begin
+          gotMarker.SetEvent;
+          Exit;
+        end;
+        if not AEntry.IsPut then
+          Exit;
+        lock.Enter;
+        try
+          gotKey := AEntry.Key;
+          gotLen := Length(AEntry.Value);
+        finally
+          lock.Leave;
+        end;
+      end,
+      opts);
+
+    Should(gotMarker.WaitFor(5000) = wrSignaled).BeTrue;
+    lock.Enter;
+    try
+      Should(gotKey).Be('meta');
+      Should(gotLen).Be(0);
+    finally
+      lock.Leave;
+    end;
+  finally
+    if watcher <> nil then
+      watcher.Free;
+    gotMarker.Free;
     lock.Free;
     kv.Free;
     TDextNatsKeyValue.DeleteBucket(FJs, bucket);
@@ -4091,6 +4391,110 @@ begin
       begin
         store.Get('docs/a.bin');
       end).Throw(EDextNatsObjectStoreError);
+  finally
+    store.Free;
+    FOs.DeleteStore(bucket);
+  end;
+end;
+
+procedure TDextNatsObjectStoreTests.Store_PutGet_StreamAndFile_ShouldRoundTrip;
+var
+  cfg: TNatsObjectStoreConfig;
+  store: TDextNatsObjectStore;
+  bucket: string;
+  putInfo, getInfo, fileInfo, metaInfo: TNatsObjectInfo;
+  payload, got: TBytes;
+  src, dst: TMemoryStream;
+  meta: TNatsObjectMeta;
+  inFile, outFile: string;
+  i: Integer;
+  fs: TFileStream;
+begin
+  if not EnsureJetStreamOrFail then
+    Exit;
+
+  bucket := UniqueBucket('DEXTOBJST');
+  cfg := TNatsObjectStoreConfig.CreateDefault(bucket);
+  cfg.ChunkSize := 16;
+  store := FOs.CreateStore(cfg);
+  try
+    SetLength(payload, 40);
+    for i := 0 to High(payload) do
+      payload[i] := Byte((i * 3) + 1);
+
+    src := TMemoryStream.Create;
+    dst := TMemoryStream.Create;
+    try
+      src.WriteBuffer(payload[0], Length(payload));
+      src.Position := 0;
+      putInfo := store.Put('stream.bin', src);
+      Should(putInfo.Size).Be(UInt64(Length(payload)));
+      Should(Integer(putInfo.Chunks)).Be(3);
+
+      getInfo := store.Get('stream.bin', dst);
+      Should(getInfo.Digest).Be(putInfo.Digest);
+      Should(dst.Size).Be(Length(payload));
+      SetLength(got, dst.Size);
+      dst.Position := 0;
+      dst.ReadBuffer(got[0], Length(got));
+      Should(CompareMem(@got[0], @payload[0], Length(payload))).BeTrue;
+    finally
+      dst.Free;
+      src.Free;
+    end;
+
+    meta := TNatsObjectMeta.Create('meta.bin');
+    meta.Description := 'from-stream-meta';
+    meta.Headers.Add('X-Doc', 'yes');
+    src := TMemoryStream.Create;
+    try
+      src.WriteBuffer(payload[0], Length(payload));
+      src.Position := 0;
+      metaInfo := store.Put(meta, src);
+      Should(metaInfo.Name).Be('meta.bin');
+      Should(metaInfo.Description).Be('from-stream-meta');
+      Should(metaInfo.Headers.GetValue('X-Doc')).Be('yes');
+    finally
+      src.Free;
+    end;
+
+    inFile := TPath.Combine(TPath.GetTempPath, 'dext_os_put_' +
+      IntToHex(Random(MaxInt), 8) + '.bin');
+    outFile := TPath.Combine(TPath.GetTempPath, 'dext_os_get_' +
+      IntToHex(Random(MaxInt), 8) + '.bin');
+    fs := TFileStream.Create(inFile, fmCreate);
+    try
+      fs.WriteBuffer(payload[0], Length(payload));
+    finally
+      fs.Free;
+    end;
+    try
+      fileInfo := store.PutFile('file.bin', inFile);
+      Should(fileInfo.Size).Be(UInt64(Length(payload)));
+      getInfo := store.GetFile('file.bin', outFile);
+      Should(getInfo.Digest).Be(fileInfo.Digest);
+
+      fs := TFileStream.Create(outFile, fmOpenRead or fmShareDenyWrite);
+      try
+        SetLength(got, fs.Size);
+        if Length(got) > 0 then
+          fs.ReadBuffer(got[0], Length(got));
+      finally
+        fs.Free;
+      end;
+      Should(Length(got)).Be(Length(payload));
+      Should(CompareMem(@got[0], @payload[0], Length(payload))).BeTrue;
+
+      fileInfo := store.PutFile(inFile);
+      Should(fileInfo.Name).Be(ExtractFileName(inFile));
+      got := store.Get(fileInfo.Name);
+      Should(Length(got)).Be(Length(payload));
+    finally
+      if FileExists(inFile) then
+        DeleteFile(inFile);
+      if FileExists(outFile) then
+        DeleteFile(outFile);
+    end;
   finally
     store.Free;
     FOs.DeleteStore(bucket);

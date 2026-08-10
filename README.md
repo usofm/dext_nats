@@ -13,7 +13,7 @@ Native [NATS](https://nats.io) client for the [Dext Framework](https://github.co
 | `Source/Dext.Net.Nats.HealthChecks.pas` | `TNatsHealthCheck` / `AddNatsHealthCheck` (Connected probe) |
 | `Source/Dext.Net.Nats.JetStream.pas` | `TDextNatsJetStreamContext` — streams, pull/push consumers, Fetch, SubscribePush, Ack/Nak/Term |
 | `Source/Dext.Net.Nats.KeyValue.pas` | `TDextNatsKeyValue` — JetStream KV (Put/Get/Delete/Purge, Keys, History, Watch/WatchAll, CAS Create/Update) |
-| `Source/Dext.Net.Nats.ObjectStore.pas` | Object Store (`CreateStore` / `Put` / `Get` / `Delete` / `List` / `Keys`, `Watch`/`WatchAll`, `UpdateMeta`, `Seal`, `AddLink` / `AddBucketLink`) |
+| `Source/Dext.Net.Nats.ObjectStore.pas` | Object Store (`CreateStore` / `Put` / `Get` / `Delete` / `List` / `Keys`, `Watch`/`WatchAll`, `UpdateMeta`, `Seal`, `AddLink` / `AddBucketLink`, streaming `Put`/`Get` via `TStream` + `PutFile`/`GetFile`) |
 
 ## Quick start
 
@@ -55,6 +55,9 @@ begin
     // Os := TDextNatsObjectStoreContext.Create(Client);
     // Store := Os.CreateStore(TNatsObjectStoreConfig.CreateDefault('INVOICES'));
     // Store.Put('invoice.pdf', Bytes); Got := Store.Get('invoice.pdf');
+    // Store.PutFile('invoice.pdf', 'C:\data\invoice.pdf');      // chunked from file
+    // Store.GetFile('invoice.pdf', 'C:\out\invoice.pdf');
+    // Store.Put(Meta, SomeStream); Store.Get('invoice.pdf', OutStream);
     // Store.AddLink('label.png', Store.GetInfo('invoice.pdf')); // Get follows
     // Store.AddBucketLink('other', OtherStore);                 // Get raises
     // Watcher := Store.WatchAll(procedure(const Info: TNatsObjectInfo) begin ... end);
@@ -66,7 +69,7 @@ end;
 
 ### JetStream Key-Value
 
-Buckets are JetStream streams (`KV_<bucket>`, subjects `$KV.<bucket>.>`). API: put/get/delete/purge, CAS `Create`/`Update`, `Keys`/`ListKeys`, `History`, minimal `Watch`/`WatchAll` (push `last_per_subject` + updates), and per-key TTL (NATS 2.11+: set `LimitMarkerTTL` on the bucket, then `Create(key, value, ttlNanos)` / `Purge(key, ttlNanos)` via `Nats-TTL`; bucket-level `TTL` remains stream `MaxAge`. Put/Update do not take a TTL — ADR-48).
+Buckets are JetStream streams (`KV_<bucket>`, subjects `$KV.<bucket>.>`). API: put/get/delete/purge, CAS `Create`/`Update`, `Keys`/`ListKeys`, `History`, `Watch`/`WatchAll` (push `last_per_subject` + updates; delivers an `EndOfInitial` marker when the snapshot is done — check `AEntry.IsEndOfInitial` or `Watcher.InitialDone`; optional `TNatsKeyValueWatchOptions.MetaOnly` / `UpdatesOnly`), and per-key TTL (NATS 2.11+: set `LimitMarkerTTL` on the bucket, then `Create(key, value, ttlNanos)` / `Purge(key, ttlNanos)` via `Nats-TTL`; bucket-level `TTL` remains stream `MaxAge`. Put/Update do not take a TTL — ADR-48).
 
 ```delphi
 uses Dext.Collections, Dext.Net.Nats, Dext.Net.Nats.JetStream, Dext.Net.Nats.KeyValue;
@@ -95,7 +98,8 @@ begin
         Rev := Kv.Update('widget-blue', '41', Entry.Revision); // CAS; mismatch → EDextNatsKeyRevisionMismatch
         KeyNames := Kv.Keys;                   // live keys via last_per_subject
         // Hist := Kv.History('widget-blue');
-        // Watcher := Kv.WatchAll(procedure(const E: TNatsKeyValueEntry) begin ... end);
+        // Watcher := Kv.WatchAll(procedure(const E: TNatsKeyValueEntry)
+        //   begin if E.IsEndOfInitial then Exit; ... end);
         Kv.Delete('widget-blue');
       finally
         Kv.Free;

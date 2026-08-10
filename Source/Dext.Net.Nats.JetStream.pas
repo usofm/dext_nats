@@ -136,6 +136,11 @@ type
     /// <summary>Pull-only: max outstanding Fetch waits. Ignored when DeliverSubject is set.</summary>
     MaxWaiting: Integer;
     ReplayPolicy: TNatsReplayPolicy;
+    /// <summary>
+    ///   When True, the consumer delivers headers only (empty payload).
+    ///   Used by KV <c>MetaOnly</c> watches.
+    /// </summary>
+    HeadersOnly: Boolean;
     /// <summary>Defaults for a durable pull consumer: deliver all, ack_policy=explicit.</summary>
     class function CreateDefault(const ADurableName: string = '';
       const AFilterSubject: string = ''): TNatsConsumerConfig; static;
@@ -1110,6 +1115,11 @@ begin
   end;
   jw.WritePropertyName('replay_policy');
   jw.WriteString(replayStr);
+  if HeadersOnly then
+  begin
+    jw.WritePropertyName('headers_only');
+    jw.WriteBoolean(True);
+  end;
   jw.WriteEndObject;
   Result := TEncoding.UTF8.GetString(w.ToBytes);
 end;
