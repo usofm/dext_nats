@@ -26,8 +26,10 @@
 {  keepalive PING/PONG, and optional TLS (upgrade after INFO when the       }
 {  server sets tls_required or Options.TLS.Enabled is True).                }
 {                                                                           }
-{  JetStream API lives in Dext.Net.Nats.JetStream. NKey/JWT auth is         }
-{  deferred.                                                                }
+{  JetStream API lives in Dext.Net.Nats.JetStream. NKey/JWT auth is in      }
+{  Dext.Net.Nats.NKeys (seed / .creds → CONNECT jwt|nkey + sig).            }
+{  DI: Dext.Net.Nats.DependencyInjection. Health: Dext.Net.Nats.HealthChecks.}
+{  Optional ILogger + opt-in TMetrics (EnableMetrics).                       }
 {                                                                           }
 {***************************************************************************}
 unit Dext.Net.Nats;
@@ -42,9 +44,23 @@ uses
   Dext.Collections.Dict,
   Dext.Collections,
   Dext.Core.Span,
+  Dext.Logging,
   Dext.Net.Tcp,
   Dext.Net.Security,
-  Dext.Net.Nats.Protocol;
+  Dext.Net.Nats.Protocol,
+  Dext.Net.Nats.NKeys;
+
+const
+  /// <summary>Messages delivered to a subscription handler (MSG/HMSG).</summary>
+  NATS_METRIC_MSGS_RECEIVED = 'nats.msgs.received';
+  /// <summary>PUB/HPUB frames handed to the socket send path.</summary>
+  NATS_METRIC_MSGS_PUBLISHED = 'nats.msgs.published';
+  /// <summary>Successful automatic reconnects.</summary>
+  NATS_METRIC_RECONNECTS = 'nats.reconnects';
+  /// <summary>Counted FireError paths (-ERR, handler failures, reconnect failures).</summary>
+  NATS_METRIC_ERRORS = 'nats.errors';
+  /// <summary>1 while connected after handshake; 0 otherwise.</summary>
+  NATS_METRIC_CONNECTED = 'nats.connected';
 
 type
   /// <summary>A fully decoded application message delivered to a subscription handler.</summary>
@@ -70,6 +86,14 @@ type
   TNatsDisconnectedEvent = reference to procedure;
   TNatsRequestTimeoutHandler = reference to procedure;
 
+  /// <summary>Process-local counters for a <see cref="TDextNatsClient"/> (thread-safe snapshot).</summary>
+  TNatsClientMetrics = record
+    MessagesReceived: Int64;
+    MessagesPublished: Int64;
+    Reconnects: Int64;
+    Errors: Int64;
+  end;
+
   /// <summary>Tunable behaviour for a <see cref="TDextNatsClient"/> instance.</summary>
   TDextNatsOptions = record
     /// <summary>Optional client name advertised to the server (shown in `nats server info`, monitoring, etc.).</summary>
@@ -77,6 +101,15 @@ type
     User: string;
     Password: string;
     AuthToken: string;
+    /// <summary>User JWT for decentralized auth (often loaded from a <c>.creds</c> file).</summary>
+    JWT: string;
+    /// <summary>NKey seed (<c>SU…</c>) used to sign the server INFO nonce for CONNECT <c>sig</c>.</summary>
+    NKeySeed: string;
+    /// <summary>
+    ///   Optional path to a NATS credentials file (<c>.creds</c> with JWT + seed, or a bare seed file).
+    ///   Loaded on each handshake when set; field JWT/NKeySeed override file values when non-empty.
+    /// </summary>
+    CredentialsFile: string;
     Verbose: Boolean;
     Pedantic: Boolean;
     /// <summary>When True (default) the server echoes this client's own publishes back to it if subscribed.</summary>
@@ -103,7 +136,16 @@ type
     ///   <c>tls_required</c> also triggers an upgrade even if Enabled is False.
     /// </summary>
     TLS: TDextTLSOptions;
-    /// <summary>Sensible defaults: 5s handshake/request timeouts, 2 minute keepalive, unlimited reconnects, TLS off.</summary>
+    /// <summary>Default host used by DI helpers and parameterless <c>Connect</c> (default <c>localhost</c>).</summary>
+    Host: string;
+    /// <summary>Default port used by DI helpers and parameterless <c>Connect</c> (default 4222).</summary>
+    Port: Word;
+    /// <summary>
+    ///   When True, also publish counters/gauges to <c>TMetrics</c> (<c>nats.*</c> names).
+    ///   Default False (opt-in).
+    /// </summary>
+    EnableMetrics: Boolean;
+    /// <summary>Sensible defaults: localhost:4222, 5s timeouts, 2 minute keepalive, unlimited reconnects, TLS/metrics off.</summary>
     class function CreateDefault: TDextNatsOptions; static;
   end;
 
@@ -163,9 +205,16 @@ type
     FOnConnected: TNatsConnectedEvent;
     FOnDisconnected: TNatsDisconnectedEvent;
     FOnError: TNatsErrorEvent;
+    FLogger: ILogger;
+
+    FMetricMessagesReceived: Int64;
+    FMetricMessagesPublished: Int64;
+    FMetricReconnects: Int64;
+    FMetricErrors: Int64;
 
     function GetConnected: Boolean;
     function GetSubscriptionCount: Integer;
+    function GetMetrics: TNatsClientMetrics;
     function NextSid: Integer;
 
     procedure RecvLoop;
@@ -178,6 +227,7 @@ type
     procedure HandleConnectionLost(const AReason: string);
 
     procedure DoHandshake;
+    procedure ApplyAuthCredentials(var AConnectOpts: TNatsConnectOptions);
     procedure UpgradeToTlsIfNeeded;
     procedure PerformTlsHandshake;
     procedure DrainTlsOutput;
@@ -195,6 +245,8 @@ type
     procedure SendRaw(const ABytes: TBytes);
     procedure DispatchOutgoing(const AData: TBytes);
 
+    procedure NoteMetric(const AName: string; var ACounter: Int64);
+    procedure SetConnectedGauge(AConnected: Boolean);
     procedure FireError(const AMessage: string);
     procedure FireConnected(AIsReconnect: Boolean);
     procedure FireDisconnected;
@@ -203,9 +255,11 @@ type
     constructor Create; overload;
     destructor Destroy; override;
 
+    /// <summary>Opens a TCP connection using <c>Options.Host</c>/<c>Options.Port</c> (defaults localhost:4222).</summary>
+    procedure Connect; overload;
     /// <summary>Opens a TCP connection to a NATS server and performs the CONNECT handshake.
     /// Any subscriptions registered before this call are sent once the handshake completes.</summary>
-    procedure Connect(const AHost: string = 'localhost'; APort: Word = NATS_DEFAULT_PORT);
+    procedure Connect(const AHost: string; APort: Word = NATS_DEFAULT_PORT); overload;
     /// <summary>Gracefully closes the connection. Automatic reconnection is disabled until Connect is called again.</summary>
     procedure Disconnect;
 
@@ -247,6 +301,11 @@ type
     procedure Flush(ATimeoutMs: Integer = 0);
     /// <summary>Sends a bare PING without waiting for the PONG.</summary>
     procedure Ping;
+    /// <summary>
+    ///   Records an application-visible error through the same path as server <c>-ERR</c>
+    ///   (metrics, optional logger, <see cref="OnError"/>). Useful for tests and host adapters.
+    /// </summary>
+    procedure NotifyError(const AMessage: string);
 
     /// <summary>True while the socket is open and the CONNECT handshake has completed.</summary>
     property Connected: Boolean read GetConnected;
@@ -256,6 +315,13 @@ type
     property Host: string read FHost;
     property Port: Word read FPort;
     property SubscriptionCount: Integer read GetSubscriptionCount;
+    /// <summary>Thread-safe snapshot of process-local message/reconnect/error counters.</summary>
+    property Metrics: TNatsClientMetrics read GetMetrics;
+    /// <summary>
+    ///   Optional structured logger (category typically <c>Dext.Net.Nats</c>). Nil keeps prior behaviour.
+    ///   Never logs passwords, tokens, or NKey seeds.
+    /// </summary>
+    property Logger: ILogger read FLogger write FLogger;
 
     /// <summary>Fires after a successful (re)connect, on the connecting thread.</summary>
     property OnConnected: TNatsConnectedEvent read FOnConnected write FOnConnected;
@@ -268,7 +334,8 @@ type
 implementation
 
 uses
-  Dext.Net.Security.OpenSSL;
+  Dext.Net.Security.OpenSSL,
+  Dext.Telemetry.Metrics;
 
 { TNatsMsg }
 
@@ -295,6 +362,8 @@ end;
 class function TDextNatsOptions.CreateDefault: TDextNatsOptions;
 begin
   FillChar(Result, SizeOf(Result), 0);
+  Result.Host := 'localhost';
+  Result.Port := NATS_DEFAULT_PORT;
   Result.Verbose := False;
   Result.Pedantic := False;
   Result.Echo := True;
@@ -306,6 +375,7 @@ begin
   Result.MaxReconnectAttempts := -1;
   Result.ReconnectWaitMs := 2000;
   Result.MaxPendingBufferBytes := 8 * 1024 * 1024;
+  Result.EnableMetrics := False;
   FillChar(Result.TLS, SizeOf(Result.TLS), 0);
   Result.TLS.Enabled := False;
   Result.TLS.Mode := tlsmClient;
@@ -620,8 +690,45 @@ begin
   end;
 end;
 
+function TDextNatsClient.GetMetrics: TNatsClientMetrics;
+begin
+  Result.MessagesReceived := TInterlocked.Read(FMetricMessagesReceived);
+  Result.MessagesPublished := TInterlocked.Read(FMetricMessagesPublished);
+  Result.Reconnects := TInterlocked.Read(FMetricReconnects);
+  Result.Errors := TInterlocked.Read(FMetricErrors);
+end;
+
+procedure TDextNatsClient.NoteMetric(const AName: string; var ACounter: Int64);
+begin
+  TInterlocked.Increment(ACounter);
+  if FOptions.EnableMetrics then
+    TMetrics.Increment(AName);
+end;
+
+procedure TDextNatsClient.SetConnectedGauge(AConnected: Boolean);
+begin
+  if FOptions.EnableMetrics then
+  begin
+    if AConnected then
+      TMetrics.Gauge(NATS_METRIC_CONNECTED, 1)
+    else
+      TMetrics.Gauge(NATS_METRIC_CONNECTED, 0);
+  end;
+end;
+
+procedure TDextNatsClient.NotifyError(const AMessage: string);
+begin
+  FireError(AMessage);
+end;
+
 procedure TDextNatsClient.FireError(const AMessage: string);
 begin
+  NoteMetric(NATS_METRIC_ERRORS, FMetricErrors);
+  if Assigned(FLogger) and FLogger.IsEnabled(TLogLevel.Error) then
+  try
+    FLogger.LogError(AMessage);
+  except
+  end;
   if Assigned(FOnError) then
   try
     FOnError(AMessage);
@@ -631,6 +738,19 @@ end;
 
 procedure TDextNatsClient.FireConnected(AIsReconnect: Boolean);
 begin
+  SetConnectedGauge(True);
+  if AIsReconnect then
+    NoteMetric(NATS_METRIC_RECONNECTS, FMetricReconnects);
+  if Assigned(FLogger) and FLogger.IsEnabled(TLogLevel.Information) then
+  try
+    if AIsReconnect then
+      FLogger.LogInformation('NATS reconnected to {Host}:{Port} server_id={ServerId}',
+        [FHost, FPort, FServerInfo.ServerId])
+    else
+      FLogger.LogInformation('NATS connected to {Host}:{Port} server_id={ServerId}',
+        [FHost, FPort, FServerInfo.ServerId]);
+  except
+  end;
   if Assigned(FOnConnected) then
   try
     FOnConnected(FServerInfo, AIsReconnect);
@@ -640,6 +760,12 @@ end;
 
 procedure TDextNatsClient.FireDisconnected;
 begin
+  SetConnectedGauge(False);
+  if Assigned(FLogger) and FLogger.IsEnabled(TLogLevel.Information) then
+  try
+    FLogger.LogInformation('NATS disconnected from {Host}:{Port}', [FHost, FPort]);
+  except
+  end;
   if Assigned(FOnDisconnected) then
   try
     FOnDisconnected();
@@ -676,6 +802,29 @@ begin
   end;
 end;
 
+procedure TDextNatsClient.ApplyAuthCredentials(var AConnectOpts: TNatsConnectOptions);
+var
+  Creds: TNatsCredentials;
+  JWT, Seed: string;
+begin
+  JWT := Trim(FOptions.JWT);
+  Seed := Trim(FOptions.NKeySeed);
+
+  if Trim(FOptions.CredentialsFile) <> '' then
+  begin
+    Creds := TNatsCredentials.FromFile(FOptions.CredentialsFile);
+    if JWT = '' then
+      JWT := Creds.JWT;
+    if Seed = '' then
+      Seed := Creds.Seed;
+  end;
+
+  if (JWT = '') and (Seed = '') then
+    Exit;
+
+  NatsApplyCredentialsToConnect(AConnectOpts, JWT, Seed, FServerInfo.Nonce);
+end;
+
 procedure TDextNatsClient.DoHandshake;
 var
   frame: TNatsFrame;
@@ -704,6 +853,14 @@ begin
   connOpts.Password := FOptions.Password;
   connOpts.AuthToken := FOptions.AuthToken;
   connOpts.Headers := FServerInfo.HeadersSupported;
+  ApplyAuthCredentials(connOpts);
+
+  if FServerInfo.AuthRequired
+    and (connOpts.User = '') and (connOpts.AuthToken = '')
+    and (connOpts.JWT = '') and (connOpts.Nkey = '') and (connOpts.Sig = '') then
+    raise EDextNatsAuthError.Create(
+      'NATS server requires authentication but no credentials were configured ' +
+      '(set User/Password, AuthToken, JWT+NKeySeed, or CredentialsFile)');
 
   SendRaw(NatsEncodeConnect(connOpts));
   SendRaw(NatsEncodePing);
@@ -726,6 +883,20 @@ begin
       raise EDextNatsProtocolError.Create('Unexpected message from the NATS server during the connect handshake');
     end;
   end;
+end;
+
+procedure TDextNatsClient.Connect;
+var
+  Host: string;
+  Port: Word;
+begin
+  Host := FOptions.Host;
+  if Host = '' then
+    Host := 'localhost';
+  Port := FOptions.Port;
+  if Port = 0 then
+    Port := NATS_DEFAULT_PORT;
+  Connect(Host, Port);
 end;
 
 procedure TDextNatsClient.Connect(const AHost: string; APort: Word);
@@ -804,6 +975,7 @@ begin
   finally
     FLock.Leave;
   end;
+  SetConnectedGauge(False);
 end;
 
 procedure TDextNatsClient.InterruptibleSleep(AMilliseconds: Integer);
@@ -824,7 +996,9 @@ end;
 procedure TDextNatsClient.ResendSubscriptions;
 var
   sub: TDextNatsSubscription;
+  count: Integer;
 begin
+  count := 0;
   FLock.Enter;
   try
     for sub in FSubscriptions.Values do
@@ -832,9 +1006,15 @@ begin
       SendRaw(NatsEncodeSub(sub.Subject, sub.Queue, sub.Sid));
       if sub.MaxMsgs >= 0 then
         SendRaw(NatsEncodeUnsub(sub.Sid, sub.MaxMsgs - sub.Received));
+      Inc(count);
     end;
   finally
     FLock.Leave;
+  end;
+  if (count > 0) and Assigned(FLogger) and FLogger.IsEnabled(TLogLevel.Debug) then
+  try
+    FLogger.LogDebug('NATS replayed {Count} subscription(s) after (re)connect', [count]);
+  except
   end;
 end;
 
@@ -1032,6 +1212,12 @@ begin
     Exit;
   end;
 
+  if Assigned(FLogger) and FLogger.IsEnabled(TLogLevel.Warning) then
+  try
+    FLogger.LogWarning('NATS reconnecting after connection loss: {Reason}', [AReason]);
+  except
+  end;
+
   if not TryReconnect then
     FRunning := False;
 end;
@@ -1090,6 +1276,13 @@ begin
 
     if FOutstandingPings >= FOptions.MaxPingsOutstanding then
     begin
+      if Assigned(FLogger) and FLogger.IsEnabled(TLogLevel.Warning) then
+      try
+        FLogger.LogWarning(
+          'NATS stale keepalive: no PONG after {Count} PING(s); closing socket for RecvLoop reconnect',
+          [FOutstandingPings]);
+      except
+      end;
       FireError(Format('No PONG received after %d keepalive PING(s); closing the connection so the receive ' +
         'thread can reconnect', [FOutstandingPings]));
       // Only close the socket here; RecvLoop (the single owner of FTcpClient's read side) will observe the
@@ -1183,6 +1376,8 @@ begin
   msg.Sid := AFrame.Sid;
   msg.StatusCode := AFrame.StatusCode;
 
+  NoteMetric(NATS_METRIC_MSGS_RECEIVED, FMetricMessagesReceived);
+
   if Assigned(handler) then
   try
     handler(msg);
@@ -1250,6 +1445,7 @@ begin
     raise EDextNatsException.Create('Publish requires a non-empty subject');
   EnsurePayloadAllowed(APayload);
   DispatchOutgoing(NatsEncodePub(ASubject, AReplyTo, APayload));
+  NoteMetric(NATS_METRIC_MSGS_PUBLISHED, FMetricMessagesPublished);
 end;
 
 procedure TDextNatsClient.Publish(const ASubject, AMessage: string; const AReplyTo: string);
@@ -1268,6 +1464,7 @@ begin
   EnsurePayloadAllowed(APayload);
 
   DispatchOutgoing(NatsEncodeHPub(ASubject, AReplyTo, AHeaders, APayload));
+  NoteMetric(NATS_METRIC_MSGS_PUBLISHED, FMetricMessagesPublished);
 end;
 
 function TDextNatsClient.Subscribe(const ASubject: string; const AHandler: TNatsMsgHandler;

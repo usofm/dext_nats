@@ -1,7 +1,7 @@
 ﻿# برنامهٔ جامع تست — Dext.Nats (`TEST_PLAN`)
 
 > **هدف:** پوشش کامل لایهٔ پروتکل، کلاینت cleartext، JetStream (pull)، TLS، همزمانی، و مسیرهای خطا — بدون پیاده‌سازی در این سند.  
-> **وضعیت فعلی:** **۷۵ تست سبز** در اجرای پیش‌فرض با سرور `-js` (Unit+Integration+JetStream+TLS soft-skip بدون env)؛ بدون سرور Unit+negatives سبز و live soft-skip؛ `DEXT_NATS_REQUIRE_LIVE=1` برای fail سخت. با `DEXT_NATS_TLS_PORT` + `DEXT_NATS_RUN_STRESS=1` → **۸۰/۸۰**. Fixture TLS: `Tests/tls/`.  
+> **وضعیت فعلی:** **۸۹ تست سبز** در اجرای پیش‌فرض با سرور `-js` (Unit+Integration+JetStream+DI+Observability؛ TLS/NKey soft-skip بدون env؛ Stress Explicit کنار). `DEXT_NATS_REQUIRE_LIVE=1` برای fail سخت. Fixture TLS: `Tests/tls/`؛ NKey: `Tests/nkey/`.  
 > **کامپایلر:** فقط Delphi 12 / Studio **23.0** (`dcc32`).  
 > **چارچوب:** `Dext.Testing` + `Should()`؛ فقط `Dext.Collections`.  
 > **مرجع تاریخی فازها:** `nats_complete_phased_d5d5e289.plan.md` (فاز ۱–۳ feature کامل شده؛ این سند فازهای *تست* بعدی است).
@@ -111,7 +111,7 @@
 
 **عمداً خارج از scope (مطابق AGENTS.md):**
 
-- NKey/JWT، DI، observability، push consumers، KV/Object Store، README
+- DI، observability، push consumers، KV/Object Store (NKey/JWT و README اضافه شده‌اند)
 
 ---
 
@@ -389,6 +389,8 @@ procedure SkipUnless(ACond: Boolean; const AReason: string);
 | `DEXT_NATS_SKIP_LIVE` | soft-skip همهٔ live (Integration/JS/TLS/Stress) |
 | `DEXT_NATS_REQUIRE_LIVE` | **پیش‌فرض خاموش**؛ `=1` → fail سخت وقتی cleartext/JS (یا TLS با port) در دسترس نیست — برای CI زنده |
 | `DEXT_NATS_TLS_HOST` / `DEXT_NATS_TLS_PORT` | endpoint TLS |
+| `DEXT_NATS_NKEY_HOST` / `DEXT_NATS_NKEY_PORT` | endpoint NKey (port الزامی برای live) |
+| `DEXT_NATS_NKEY_SEED` / `DEXT_NATS_NKEY_SEED_FILE` / `DEXT_NATS_CREDS_FILE` | seed یا `.creds` |
 | `DEXT_NATS_RUN_STRESS` | فعال‌سازی stress |
 
 ---

@@ -123,6 +123,8 @@ type
     Headers: Boolean;
     NoResponders: Boolean;
     JWT: string;
+    /// <summary>Public NKey (e.g. <c>U…</c>) for bare NKey auth; empty when using JWT credentials.</summary>
+    Nkey: string;
     Sig: string;
     /// <summary>Returns sensible defaults: Delphi client identity, protocol 1, headers, echo and no_responders enabled.</summary>
     class function CreateDefault: TNatsConnectOptions; static;
@@ -505,6 +507,8 @@ begin
       sb.Append('"pass":"').Append(NatsJsonEscape(Password)).Append('",');
     if JWT <> '' then
       sb.Append('"jwt":"').Append(NatsJsonEscape(JWT)).Append('",');
+    if Nkey <> '' then
+      sb.Append('"nkey":"').Append(NatsJsonEscape(Nkey)).Append('",');
     if Sig <> '' then
       sb.Append('"sig":"').Append(NatsJsonEscape(Sig)).Append('",');
     sb.Append('"name":"').Append(NatsJsonEscape(Name)).Append('",');

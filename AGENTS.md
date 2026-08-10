@@ -19,8 +19,19 @@ Source/
   Dext.Net.Nats.Protocol.pas   Pure wire-protocol layer: constants, INFO/CONNECT
                                 JSON, headers, TNatsFrame, TDextNatsFrameParser
                                 (incremental parser), frame encoders. NO socket I/O.
+  Dext.Net.Nats.NKeys.pas       NKey/JWT helpers: seed decode, Ed25519 nonce
+                                signing (OpenSSL libcrypto), .creds parse,
+                                CONNECT jwt|nkey+sig. NO socket I/O.
   Dext.Net.Nats.pas             TDextNatsClient: the public API. Socket I/O,
-                                threading, reconnection, pub/sub, request/reply.
+                                threading, reconnection, pub/sub, request/reply,
+                                NKey/JWT auth, optional ILogger + opt-in TMetrics.
+  Dext.Net.Nats.DependencyInjection.pas
+                                Dext.DI helpers: AddNatsClient (singleton),
+                                AddNatsClientAndConnect, AddNatsJetStream
+                                (transient, does not own the client).
+  Dext.Net.Nats.HealthChecks.pas
+                                TNatsHealthCheck / AddNatsHealthCheck (Connected
+                                probe; Web-free — map to IHealthCheck in apps).
   Dext.Net.Nats.JetStream.pas   TDextNatsJetStreamContext: stream admin
                                 (create/update/info/delete), dedup'd publish,
                                 pull-consumer admin, Fetch, Ack/Nak/Term/
@@ -148,8 +159,14 @@ parsing frames anywhere else.
 - [x] TLS on `TDextNatsClient` via `TDextTLSOptions` / `IDextTLSEngine`
       (upgrade after cleartext INFO when `tls_required` or `Options.TLS.Enabled`)
 - [x] `README.md` with usage examples
-- [ ] NKey/JWT auth, a DI extension, observability (health checks/metrics/
-      structured logging), and push consumers are deferred to a later pass
+- [x] NKey/JWT auth (`Dext.Net.Nats.NKeys` + `TDextNatsOptions.JWT` /
+      `NKeySeed` / `CredentialsFile`; signs INFO nonce into CONNECT)
+- [x] DI extension (`Dext.Net.Nats.DependencyInjection`: `AddNatsClient`,
+      `AddNatsClientAndConnect`, `AddNatsJetStream`)
+- [x] Observability: optional `ILogger`, opt-in `TMetrics` (`EnableMetrics`),
+      `TNatsClientMetrics`, `Dext.Net.Nats.HealthChecks`
+- [ ] JetStream push consumers are deferred to a later pass
+- [ ] Protocol hot-path PERF (`Docs/NATS_DEXT_ROADMAP.md` SPEC-PERF-*)
 
 ## Working style expected of an agent here
 

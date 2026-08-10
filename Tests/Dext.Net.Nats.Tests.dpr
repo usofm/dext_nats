@@ -30,8 +30,11 @@ uses
   Dext.Testing.Fluent,
   Dext.Utils,
   Dext.Net.Nats.Protocol in '..\Source\Dext.Net.Nats.Protocol.pas',
+  Dext.Net.Nats.NKeys in '..\Source\Dext.Net.Nats.NKeys.pas',
   Dext.Net.Nats in '..\Source\Dext.Net.Nats.pas',
   Dext.Net.Nats.JetStream in '..\Source\Dext.Net.Nats.JetStream.pas',
+  Dext.Net.Nats.DependencyInjection in '..\Source\Dext.Net.Nats.DependencyInjection.pas',
+  Dext.Net.Nats.HealthChecks in '..\Source\Dext.Net.Nats.HealthChecks.pas',
   Dext.Net.Nats.Tests in 'Dext.Net.Nats.Tests.pas';
 
 var
@@ -45,6 +48,8 @@ begin
     SafeWriteLn('===================');
     if Trim(GetEnvironmentVariable('DEXT_NATS_TLS_PORT')) = '' then
       SafeWriteLn('TLS: soft-skip (set DEXT_NATS_TLS_PORT to enable live TLS tests)');
+    if Trim(GetEnvironmentVariable('DEXT_NATS_NKEY_PORT')) = '' then
+      SafeWriteLn('NKey: soft-skip (set DEXT_NATS_NKEY_PORT + SEED to enable live NKey tests)');
     RunStress := SameText(Trim(GetEnvironmentVariable('DEXT_NATS_RUN_STRESS')), '1')
       or SameText(Trim(GetEnvironmentVariable('DEXT_NATS_RUN_STRESS')), 'true');
     if not RunStress then
@@ -60,7 +65,10 @@ begin
       TDextNatsIntegrationTests,
       TDextNatsJetStreamTests,
       TDextNatsTlsIntegrationTests,
-      TDextNatsStressTests
+      TDextNatsNKeyIntegrationTests,
+      TDextNatsStressTests,
+      TDextNatsDiTests,
+      TDextNatsObservabilityTests
     ]));
   except
     on E: Exception do

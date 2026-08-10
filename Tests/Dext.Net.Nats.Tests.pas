@@ -32,12 +32,38 @@ uses
   Dext.Testing,
   Dext.Testing.Attributes,
   Dext.Testing.Fluent,
+  Dext.DI.Interfaces,
+  Dext.DI.Core,
+  Dext.Logging,
+  Dext.Telemetry.Metrics,
   Dext.Net.Security,
   Dext.Net.Nats.Protocol,
+  Dext.Net.Nats.NKeys,
   Dext.Net.Nats,
-  Dext.Net.Nats.JetStream;
+  Dext.Net.Nats.JetStream,
+  Dext.Net.Nats.DependencyInjection,
+  Dext.Net.Nats.HealthChecks;
 
 type
+  /// <summary>In-memory ILogger for observability unit tests.</summary>
+  TRecordingNatsLogger = class(TAbstractLogger)
+  private
+    FLock: TCriticalSection;
+    FEntries: IList<string>;
+    FMinLevel: TLogLevel;
+  public
+    constructor Create(AMinLevel: TLogLevel = TLogLevel.Trace);
+    destructor Destroy; override;
+    procedure Log(ALevel: TLogLevel; const AMessage: string; const AArgs: array of const); override;
+    procedure Log(ALevel: TLogLevel; const AException: Exception; const AMessage: string;
+      const AArgs: array of const); override;
+    function IsEnabled(ALevel: TLogLevel): Boolean; override;
+    function BeginScope(const AMessage: string; const AArgs: array of const): IDisposable; overload; override;
+    function BeginScope(const AState: TObject): IDisposable; overload; override;
+    function Contains(const AFragment: string): Boolean;
+    function Count: Integer;
+  end;
+
   [TestFixture('NATS Protocol Parser')]
   TDextNatsProtocolTests = class
   public
@@ -95,6 +121,14 @@ type
     procedure ConnectOptions_ShouldDefaultNoResponders;
     [Test, Category('Unit')]
     procedure ClientOptions_ShouldDefaultTlsDisabled;
+    [Test, Category('Unit')]
+    procedure NKey_DecodeSeed_ShouldMatchKnownVector;
+    [Test, Category('Unit')]
+    procedure NKey_PublicKeyAndSignNonce_ShouldMatchKnownVector;
+    [Test, Category('Unit')]
+    procedure NKey_ParseCreds_ShouldExtractJwtAndSeed;
+    [Test, Category('Unit')]
+    procedure Encode_Connect_ShouldIncludeJwtNkeySig;
     [Test, Category('Unit')]
     procedure ConsumerConfig_ShouldSerializeDefaults;
     [Test, Category('Unit')]
@@ -243,6 +277,26 @@ type
     procedure RequestReply_Tls_ShouldRoundTripWhenConfigured;
   end;
 
+  [TestFixture('NATS NKey Integration')]
+  TDextNatsNKeyIntegrationTests = class
+  private
+    FClient: TDextNatsClient;
+    function TryGetNKeyEndpoint(out AHost: string; out APort: Word;
+      out ASeed: string): Boolean;
+    /// <summary>Resolve NKey endpoint + seed and connect. True = ready; False = soft-skip.</summary>
+    function EnsureNKeyOrSoftSkip(out AHost: string; out APort: Word): Boolean;
+  public
+    [SetUp]
+    procedure SetUp;
+    [TearDown]
+    procedure TearDown;
+
+    [Test, Category('NKey')]
+    procedure Connect_NKey_ShouldHandshakeWhenConfigured;
+    [Test, Category('NKey')]
+    procedure PublishSubscribe_NKey_ShouldDeliverWhenConfigured;
+  end;
+
   [TestFixture('NATS Concurrency / Stress')]
   TDextNatsStressTests = class
   private
@@ -270,7 +324,107 @@ type
     procedure PendingBuffer_ShouldRejectWhenFullDuringReconnect;
   end;
 
+  [TestFixture('NATS DI')]
+  TDextNatsDiTests = class
+  public
+    [Test, Category('DI')]
+    procedure AddNatsClient_ShouldResolveSingleton;
+    [Test, Category('DI')]
+    procedure AddNatsJetStream_ShouldResolveTransientBoundToSameClient;
+    [Test, Category('DI')]
+    procedure ClientOptions_ShouldDefaultHostAndPort;
+    [Test, Category('DI')]
+    procedure AddNatsClient_ConfigureCallback_ShouldApplyOptions;
+    [Test, Category('DI')]
+    procedure HealthCheck_ShouldReportUnhealthyWhenDisconnected;
+  end;
+
+  [TestFixture('NATS Observability')]
+  TDextNatsObservabilityTests = class
+  public
+    [Test, Category('Unit')]
+    procedure Metrics_ShouldDefaultDisabled;
+    [Test, Category('Unit')]
+    procedure Metrics_Publish_ShouldIncrementLocalCounter;
+    [Test, Category('Unit')]
+    procedure Logger_FireError_ShouldRecordWhenAttached;
+  end;
+
 implementation
+
+{ TRecordingNatsLogger }
+
+constructor TRecordingNatsLogger.Create(AMinLevel: TLogLevel);
+begin
+  inherited Create;
+  FLock := TCriticalSection.Create;
+  FEntries := TCollections.CreateList<string>;
+  FMinLevel := AMinLevel;
+end;
+
+destructor TRecordingNatsLogger.Destroy;
+begin
+  FLock.Free;
+  inherited;
+end;
+
+procedure TRecordingNatsLogger.Log(ALevel: TLogLevel; const AMessage: string; const AArgs: array of const);
+begin
+  if not IsEnabled(ALevel) then
+    Exit;
+  FLock.Enter;
+  try
+    FEntries.Add(TLogFormatter.FormatMessage(AMessage, AArgs));
+  finally
+    FLock.Leave;
+  end;
+end;
+
+procedure TRecordingNatsLogger.Log(ALevel: TLogLevel; const AException: Exception; const AMessage: string;
+  const AArgs: array of const);
+begin
+  Log(ALevel, AMessage, AArgs);
+end;
+
+function TRecordingNatsLogger.IsEnabled(ALevel: TLogLevel): Boolean;
+begin
+  Result := Ord(ALevel) >= Ord(FMinLevel);
+end;
+
+function TRecordingNatsLogger.BeginScope(const AMessage: string; const AArgs: array of const): IDisposable;
+begin
+  Result := TNullDisposable.Create;
+end;
+
+function TRecordingNatsLogger.BeginScope(const AState: TObject): IDisposable;
+begin
+  Result := TNullDisposable.Create;
+end;
+
+function TRecordingNatsLogger.Contains(const AFragment: string): Boolean;
+var
+  S: string;
+begin
+  Result := False;
+  FLock.Enter;
+  try
+    for S in FEntries do
+      if S.Contains(AFragment) then
+        Exit(True);
+  finally
+    FLock.Leave;
+  end;
+end;
+
+function TRecordingNatsLogger.Count: Integer;
+begin
+  FLock.Enter;
+  try
+    Result := FEntries.Count;
+  finally
+    FLock.Leave;
+  end;
+end;
 
 function BytesOfUtf8(const S: string): TBytes;
 begin
@@ -791,6 +945,98 @@ begin
   opts := TDextNatsOptions.CreateDefault;
   Should(opts.TLS.Enabled).BeFalse;
   Should(Ord(opts.TLS.Mode)).Be(Ord(tlsmClient));
+  Should(opts.JWT).Be('');
+  Should(opts.NKeySeed).Be('');
+  Should(opts.CredentialsFile).Be('');
+  Should(opts.Host).Be('localhost');
+  Should(opts.Port).Be(NATS_DEFAULT_PORT);
+  Should(opts.EnableMetrics).BeFalse;
+end;
+
+procedure TDextNatsProtocolTests.NKey_DecodeSeed_ShouldMatchKnownVector;
+var
+  raw: TBytes;
+  role: Byte;
+  hex: string;
+  I: Integer;
+const
+  Seed = 'SUACSSL3UAHUDXKFSNVUZRF5UHPMWZ6BFDTJ7M6USDXIEDNPPQYYYCU3VY';
+  ExpectedSeedHex = '29497ba00f41dd45936b4cc4bda1decb67c128e69fb3d490ee820daf7c318c0a';
+begin
+  NatsDecodeSeed(Seed, raw, role);
+  try
+    Should(Length(raw)).Be(32);
+    Should(role).Be($A0); // user prefix
+    hex := '';
+    for I := 0 to High(raw) do
+      hex := hex + LowerCase(IntToHex(raw[I], 2));
+    Should(hex).Be(ExpectedSeedHex);
+  finally
+    if Length(raw) > 0 then
+      FillChar(raw[0], Length(raw), 0);
+  end;
+end;
+
+procedure TDextNatsProtocolTests.NKey_PublicKeyAndSignNonce_ShouldMatchKnownVector;
+const
+  Seed = 'SUACSSL3UAHUDXKFSNVUZRF5UHPMWZ6BFDTJ7M6USDXIEDNPPQYYYCU3VY';
+  ExpectedPub = 'UDXU4RCSJNZOIQHZNWXHXORDPRTGNJAHAHFRGZNEEJCPQTT2M7NLCNF4';
+  Nonce = 'nonce-challenge-1234567890';
+  ExpectedSig =
+    'qR6EjGCIjLX1njDVSXdVqTC0pw5Y4g57vCNFA6MIL590yTysHvczYlc1Mbjhbt4e8R7ug_2CZrt896AW5ghJBw';
+var
+  opts: TNatsConnectOptions;
+begin
+  // Signing needs OpenSSL libcrypto-3.dll (same as TLS); soft-skip if absent.
+  if not NatsNKeyCryptoAvailable then
+    Exit;
+
+  Should(NatsPublicKeyFromSeed(Seed)).Be(ExpectedPub);
+  Should(NatsSignNonce(Seed, Nonce)).Be(ExpectedSig);
+
+  opts := TNatsConnectOptions.CreateDefault;
+  NatsApplyCredentialsToConnect(opts, '', Seed, Nonce);
+  Should(opts.Nkey).Be(ExpectedPub);
+  Should(opts.JWT).Be('');
+  Should(opts.Sig).Be(ExpectedSig);
+end;
+
+procedure TDextNatsProtocolTests.NKey_ParseCreds_ShouldExtractJwtAndSeed;
+var
+  creds: TNatsCredentials;
+  text: string;
+const
+  Seed = 'SUACSSL3UAHUDXKFSNVUZRF5UHPMWZ6BFDTJ7M6USDXIEDNPPQYYYCU3VY';
+begin
+  text :=
+    '-----BEGIN NATS USER JWT-----' + sLineBreak +
+    'eyJtest.jwt.payload' + sLineBreak +
+    '------END NATS USER JWT------' + sLineBreak + sLineBreak +
+    '-----BEGIN USER NKEY SEED-----' + sLineBreak +
+    Seed + sLineBreak +
+    '------END USER NKEY SEED------';
+  creds := TNatsCredentials.Parse(text);
+  Should(creds.JWT).Be('eyJtest.jwt.payload');
+  Should(creds.Seed).Be(Seed);
+
+  creds := TNatsCredentials.Parse('# comment' + sLineBreak + Seed + sLineBreak);
+  Should(creds.HasJWT).BeFalse;
+  Should(creds.Seed).Be(Seed);
+end;
+
+procedure TDextNatsProtocolTests.Encode_Connect_ShouldIncludeJwtNkeySig;
+var
+  opts: TNatsConnectOptions;
+  encoded: string;
+begin
+  opts := TNatsConnectOptions.CreateDefault;
+  opts.JWT := 'header.payload.sig';
+  opts.Nkey := 'UDUMMY';
+  opts.Sig := 'abc_def';
+  encoded := opts.ToJson;
+  Should(encoded.Contains('"jwt":"header.payload.sig"')).BeTrue;
+  Should(encoded.Contains('"nkey":"UDUMMY"')).BeTrue;
+  Should(encoded.Contains('"sig":"abc_def"')).BeTrue;
 end;
 
 procedure TDextNatsProtocolTests.ConsumerConfig_ShouldSerializeDefaults;
@@ -2176,6 +2422,135 @@ begin
   Should(reply.AsString).Be('tls-reply:ping');
 end;
 
+{ TDextNatsNKeyIntegrationTests }
+
+function TDextNatsNKeyIntegrationTests.TryGetNKeyEndpoint(out AHost: string;
+  out APort: Word; out ASeed: string): Boolean;
+var
+  portStr, seedFile, credsFile: string;
+  creds: TNatsCredentials;
+begin
+  AHost := Trim(GetEnvironmentVariable('DEXT_NATS_NKEY_HOST'));
+  if AHost = '' then
+    AHost := '127.0.0.1';
+  portStr := Trim(GetEnvironmentVariable('DEXT_NATS_NKEY_PORT'));
+  APort := Word(StrToIntDef(portStr, 0));
+  ASeed := Trim(GetEnvironmentVariable('DEXT_NATS_NKEY_SEED'));
+  seedFile := Trim(GetEnvironmentVariable('DEXT_NATS_NKEY_SEED_FILE'));
+  credsFile := Trim(GetEnvironmentVariable('DEXT_NATS_CREDS_FILE'));
+
+  if (ASeed = '') and (seedFile <> '') and FileExists(seedFile) then
+  begin
+    creds := TNatsCredentials.FromFile(seedFile);
+    ASeed := creds.Seed;
+  end;
+  if (ASeed = '') and (credsFile <> '') and FileExists(credsFile) then
+  begin
+    creds := TNatsCredentials.FromFile(credsFile);
+    ASeed := creds.Seed;
+  end;
+
+  Result := (APort > 0) and (ASeed <> '');
+end;
+
+function TDextNatsNKeyIntegrationTests.EnsureNKeyOrSoftSkip(out AHost: string;
+  out APort: Word): Boolean;
+var
+  seed: string;
+  opts: TDextNatsOptions;
+begin
+  Result := False;
+  if LiveSkippedByEnv then
+    Exit;
+
+  // NKey remains env-gated: missing DEXT_NATS_NKEY_PORT/SEED soft-skips even with REQUIRE_LIVE.
+  if not TryGetNKeyEndpoint(AHost, APort, seed) then
+    Exit;
+
+  if not NatsNKeyCryptoAvailable then
+  begin
+    Result := LiveSoftSkipOrFail(
+      'OpenSSL libcrypto-3.dll not available for NKey signing (place beside the test exe).');
+    Exit;
+  end;
+
+  opts := TDextNatsOptions.CreateDefault;
+  opts.NKeySeed := seed;
+  opts.CredentialsFile := Trim(GetEnvironmentVariable('DEXT_NATS_CREDS_FILE'));
+  if Assigned(FClient) then
+    FreeAndNil(FClient);
+  FClient := TDextNatsClient.Create(opts);
+
+  try
+    FClient.Connect(AHost, APort);
+    Result := True;
+  except
+    on E: Exception do
+      Result := LiveSoftSkipOrFail(
+        Format('NATS NKey server not reachable at %s:%d (%s). Start nats-server -c Tests/nkey/nats-nkey.conf, ' +
+          'set DEXT_NATS_NKEY_PORT/SEED, or omit DEXT_NATS_REQUIRE_LIVE for soft-skip.',
+          [AHost, APort, E.Message]));
+  end;
+end;
+
+procedure TDextNatsNKeyIntegrationTests.SetUp;
+begin
+  FClient := nil;
+end;
+
+procedure TDextNatsNKeyIntegrationTests.TearDown;
+begin
+  if Assigned(FClient) then
+  begin
+    try
+      FClient.Disconnect;
+    except
+    end;
+    FreeAndNil(FClient);
+  end;
+end;
+
+procedure TDextNatsNKeyIntegrationTests.Connect_NKey_ShouldHandshakeWhenConfigured;
+var
+  host: string;
+  port: Word;
+begin
+  if not EnsureNKeyOrSoftSkip(host, port) then
+    Exit;
+
+  Should(FClient.Connected).BeTrue;
+  Should(FClient.ServerInfo.AuthRequired).BeTrue;
+  Should(FClient.ServerInfo.ServerId).NotBeEmpty;
+end;
+
+procedure TDextNatsNKeyIntegrationTests.PublishSubscribe_NKey_ShouldDeliverWhenConfigured;
+var
+  host: string;
+  port: Word;
+  subject: string;
+  received: TEvent;
+  payload: string;
+begin
+  if not EnsureNKeyOrSoftSkip(host, port) then
+    Exit;
+
+  subject := 'dext.nats.nkey.' + FormatDateTime('hhnnsszzz', Now);
+  received := TEvent.Create(nil, True, False, '');
+  try
+    FClient.Subscribe(subject,
+      procedure(const AMsg: TNatsMsg)
+      begin
+        payload := AMsg.AsString;
+        received.SetEvent;
+      end);
+    FClient.Publish(subject, 'nkey-ok');
+    Should(received.WaitFor(3000) = wrSignaled).BeTrue;
+    Should(payload).Be('nkey-ok');
+  finally
+    received.Free;
+  end;
+end;
+
 { TDextNatsStressTests }
 
 procedure TDextNatsStressTests.StabilizePingAfterForcedDisconnect;
@@ -2468,6 +2843,159 @@ begin
   finally
     disconnected.Free;
     done.Free;
+  end;
+end;
+
+{ TDextNatsDiTests }
+
+procedure TDextNatsDiTests.ClientOptions_ShouldDefaultHostAndPort;
+var
+  opts: TDextNatsOptions;
+begin
+  opts := TDextNatsOptions.CreateDefault;
+  Should(opts.Host).Be('localhost');
+  Should(opts.Port).Be(NATS_DEFAULT_PORT);
+end;
+
+procedure TDextNatsDiTests.AddNatsClient_ShouldResolveSingleton;
+var
+  Services: TDextServices;
+  Provider: IServiceProvider;
+  A, B: TDextNatsClient;
+begin
+  Services := TDextServices.New;
+  AddNatsClient(Services.Unwrap, '127.0.0.1', 4222);
+  Provider := Services.BuildServiceProvider;
+  A := TDextServices.GetRequiredServiceObject<TDextNatsClient>(Provider);
+  B := TDextServices.GetRequiredServiceObject<TDextNatsClient>(Provider);
+  Should(A <> nil).BeTrue;
+  Should(Pointer(A) = Pointer(B)).BeTrue;
+  Should(A.Connected).BeFalse;
+  Should(A.Options.Host).Be('127.0.0.1');
+  Should(A.Options.Port).Be(4222);
+end;
+
+procedure TDextNatsDiTests.AddNatsJetStream_ShouldResolveTransientBoundToSameClient;
+var
+  Services: TDextServices;
+  Provider: IServiceProvider;
+  Client: TDextNatsClient;
+  Js1, Js2: TDextNatsJetStreamContext;
+begin
+  Services := TDextServices.New;
+  AddNatsClient(Services.Unwrap);
+  AddNatsJetStream(Services.Unwrap);
+  Provider := Services.BuildServiceProvider;
+  Client := TDextServices.GetRequiredServiceObject<TDextNatsClient>(Provider);
+  Js1 := TDextServices.GetRequiredServiceObject<TDextNatsJetStreamContext>(Provider);
+  Js2 := TDextServices.GetRequiredServiceObject<TDextNatsJetStreamContext>(Provider);
+  try
+    Should(Js1 <> nil).BeTrue;
+    Should(Js2 <> nil).BeTrue;
+    Should(Pointer(Js1) <> Pointer(Js2)).BeTrue;
+    Should(Pointer(Js1.Client) = Pointer(Client)).BeTrue;
+    Should(Pointer(Js2.Client) = Pointer(Client)).BeTrue;
+  finally
+    // Transient instances are not owned by the provider the same way as singletons;
+    // free what we resolved as transient. Singleton client is owned by the provider.
+    Js1.Free;
+    Js2.Free;
+  end;
+end;
+
+procedure TDextNatsDiTests.AddNatsClient_ConfigureCallback_ShouldApplyOptions;
+var
+  Services: TDextServices;
+  Provider: IServiceProvider;
+  Client: TDextNatsClient;
+begin
+  Services := TDextServices.New;
+  AddNatsClient(Services.Unwrap,
+    procedure(var AOptions: TDextNatsOptions)
+    begin
+      AOptions.Host := 'nats.example';
+      AOptions.Port := 4229;
+      AOptions.Name := 'di-test';
+      AOptions.EnableMetrics := True;
+    end);
+  Provider := Services.BuildServiceProvider;
+  Client := TDextServices.GetRequiredServiceObject<TDextNatsClient>(Provider);
+  Should(Client.Options.Host).Be('nats.example');
+  Should(Client.Options.Port).Be(4229);
+  Should(Client.Options.Name).Be('di-test');
+  Should(Client.Options.EnableMetrics).BeTrue;
+end;
+
+procedure TDextNatsDiTests.HealthCheck_ShouldReportUnhealthyWhenDisconnected;
+var
+  Services: TDextServices;
+  Provider: IServiceProvider;
+  Check: TNatsHealthCheck;
+  Res: TNatsHealthResult;
+begin
+  Services := TDextServices.New;
+  AddNatsClient(Services.Unwrap);
+  AddNatsHealthCheck(Services.Unwrap);
+  Provider := Services.BuildServiceProvider;
+  Check := TDextServices.GetRequiredServiceObject<TNatsHealthCheck>(Provider);
+  try
+    Res := Check.CheckHealth;
+    Should(Ord(Res.Status)).Be(Ord(nhsUnhealthy));
+    Should(Res.Description.Contains('disconnected')).BeTrue;
+  finally
+    Check.Free;
+  end;
+end;
+
+{ TDextNatsObservabilityTests }
+
+procedure TDextNatsObservabilityTests.Metrics_ShouldDefaultDisabled;
+var
+  Opts: TDextNatsOptions;
+begin
+  Opts := TDextNatsOptions.CreateDefault;
+  Should(Opts.EnableMetrics).BeFalse;
+end;
+
+procedure TDextNatsObservabilityTests.Metrics_Publish_ShouldIncrementLocalCounter;
+var
+  Opts: TDextNatsOptions;
+  Client: TDextNatsClient;
+  Snap: TNatsClientMetrics;
+  Flushed: string;
+begin
+  Opts := TDextNatsOptions.CreateDefault;
+  Opts.EnableMetrics := True;
+  TMetrics.Flush;
+  Client := TDextNatsClient.Create(Opts);
+  try
+    Client.NotifyError('probe-error');
+    Snap := Client.Metrics;
+    Should(Snap.Errors).Be(1);
+    Flushed := TMetrics.Flush;
+    Should(Flushed.Contains(NATS_METRIC_ERRORS)).BeTrue;
+  finally
+    Client.Free;
+  end;
+end;
+
+procedure TDextNatsObservabilityTests.Logger_FireError_ShouldRecordWhenAttached;
+var
+  Client: TDextNatsClient;
+  Rec: TRecordingNatsLogger;
+  Logger: ILogger;
+begin
+  Rec := TRecordingNatsLogger.Create;
+  Logger := Rec;
+  Client := TDextNatsClient.Create;
+  try
+    Client.Logger := Logger;
+    Client.NotifyError('NATS server error: probe');
+    Should(Rec.Contains('probe')).BeTrue;
+    Should(Client.Metrics.Errors).Be(1);
+  finally
+    Client.Free;
+    Logger := nil;
   end;
 end;
 
