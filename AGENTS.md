@@ -48,6 +48,9 @@ Demo/
   HeadersE2E/                   Core NATS message headers round-trip E2E console
                                 smoke test (HPUB/HMSG + RequestWithHeaders)
                                 against a plain local `nats-server` (no JetStream).
+  TlsE2E/                       TLS upgrade E2E console smoke test (Options.TLS
+                                + Tests/tls fixtures / Demo/TlsE2E/nats-tls.conf
+                                on port 4223).
   JetStreamSmokeTest/           Interactive console program that manually verifies
                                 stream/consumer paths and dedup'd publish
                                 against a local `nats-server -js`. Not a
@@ -168,7 +171,8 @@ parsing frames anywhere else.
 - [x] Console demo projects (`.dpr`/`.dproj`): `Demo/PubSubE2E/` (core one-way
   pub/sub), `Demo/RequestReplyE2E/` (request/reply + no-responders),
   `Demo/QueueGroupE2E/` (queue-group load balancing), `Demo/HeadersE2E/`
-  (message headers HPUB/HMSG + RequestWithHeaders), and
+  (message headers HPUB/HMSG + RequestWithHeaders), `Demo/TlsE2E/` (TLS
+  upgrade with `Tests/tls` fixtures on 4223), and
   `Demo/JetStreamSmokeTest/` (JetStream admin / pull / dedup)
 - [x] TLS on `TDextNatsClient` via `TDextTLSOptions` / `IDextTLSEngine`
       (upgrade after cleartext INFO when `tls_required` or `Options.TLS.Enabled`)
