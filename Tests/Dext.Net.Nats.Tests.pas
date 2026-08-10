@@ -43,6 +43,8 @@ uses
   Dext.Net.Nats.NKeys,
   Dext.Net.Nats,
   Dext.Net.Nats.JetStream,
+  Dext.Net.Nats.KeyValue,
+  Dext.Net.Nats.ObjectStore,
   Dext.Net.Nats.DependencyInjection,
   Dext.Net.Nats.HealthChecks;
 
@@ -151,6 +153,14 @@ type
     procedure PublishAck_ShouldParseSuccessDuplicateAndError;
     [Test, Category('Unit')]
     procedure AckWireContract_ShouldDocumentPayloads;
+    [Test, Category('Unit')]
+    procedure StreamConfig_ShouldSerializeKvFlags;
+    [Test, Category('Unit')]
+    procedure KeyValueConfig_ShouldMapToStreamConfig;
+    [Test, Category('Unit')]
+    procedure StoredMsg_ShouldParseDataAndKvHeaders;
+    [Test, Category('Unit')]
+    procedure KeyValue_ValidateNames_ShouldRejectInvalid;
   end;
 
   [TestFixture('NATS Client Integration (localhost:4222)')]
@@ -270,6 +280,35 @@ type
     procedure CreateStream_IncompatibleDuplicate_ShouldRaise;
   end;
 
+  [TestFixture('NATS JetStream Key-Value (requires nats-server -js)')]
+  TDextNatsKeyValueTests = class
+  private
+    FClient: TDextNatsClient;
+    FJs: TDextNatsJetStreamContext;
+    function EnsureJetStreamOrFail: Boolean;
+    function UniqueBucket(const APrefix: string): string;
+  public
+    [SetUp]
+    procedure SetUp;
+    [TearDown]
+    procedure TearDown;
+
+    [Test, Category('JetStream'), Category('KeyValue')]
+    procedure Bucket_CreatePutGetDelete_ShouldRoundTrip;
+    [Test, Category('JetStream'), Category('KeyValue')]
+    procedure Bucket_Purge_ShouldHideKey;
+    [Test, Category('JetStream'), Category('KeyValue')]
+    procedure BucketExists_Missing_ShouldBeFalse;
+    [Test, Category('JetStream'), Category('KeyValue'), Category('Negative')]
+    procedure Get_MissingKey_ShouldRaise;
+    [Test, Category('JetStream'), Category('KeyValue')]
+    procedure Keys_ShouldListLiveKeysOnly;
+    [Test, Category('JetStream'), Category('KeyValue')]
+    procedure History_ShouldReturnRevisions;
+    [Test, Category('JetStream'), Category('KeyValue')]
+    procedure WatchAll_ShouldDeliverCurrentAndUpdates;
+  end;
+
   [TestFixture('NATS TLS Integration')]
   TDextNatsTlsIntegrationTests = class
   private
@@ -372,6 +411,33 @@ type
     procedure Metrics_Publish_ShouldIncrementLocalCounter;
     [Test, Category('Unit')]
     procedure Logger_FireError_ShouldRecordWhenAttached;
+  end;
+
+  [TestFixture('NATS JetStream Object Store (requires nats-server -js)')]
+  TDextNatsObjectStoreTests = class
+  private
+    FClient: TDextNatsClient;
+    FOs: TDextNatsObjectStoreContext;
+    function EnsureJetStreamOrFail: Boolean;
+    function UniqueBucket(const APrefix: string): string;
+  public
+    [SetUp]
+    procedure SetUp;
+    [TearDown]
+    procedure TearDown;
+
+    [Test, Category('Unit'), Category('ObjectStore')]
+    procedure ObjectInfo_ParseToJson_ShouldRoundTrip;
+    [Test, Category('JetStream'), Category('ObjectStore')]
+    procedure Store_CreatePutGetDelete_ShouldRoundTrip;
+    [Test, Category('JetStream'), Category('ObjectStore')]
+    procedure Store_PutOverwrite_ShouldReturnLatest;
+    [Test, Category('JetStream'), Category('ObjectStore'), Category('Negative')]
+    procedure Get_MissingObject_ShouldRaise;
+    [Test, Category('JetStream'), Category('ObjectStore')]
+    procedure Store_ListAndKeys_ShouldReturnLiveObjects;
+    [Test, Category('JetStream'), Category('ObjectStore')]
+    procedure Store_List_EmptyBucket_ShouldReturnEmpty;
   end;
 
 implementation
@@ -1234,6 +1300,89 @@ begin
   Should(Format('+NAK {"delay":%d}', [Int64(250) * 1000000])).Be('+NAK {"delay":250000000}');
   Should('+TERM').Be('+TERM');
   Should('+WPI').Be('+WPI');
+end;
+
+procedure TDextNatsProtocolTests.StreamConfig_ShouldSerializeKvFlags;
+var
+  cfg: TNatsStreamConfig;
+  json: string;
+begin
+  cfg := TNatsStreamConfig.CreateDefault('KV_DEMO', ['$KV.DEMO.>']);
+  cfg.MaxMsgsPerSubject := 5;
+  cfg.AllowDirect := True;
+  cfg.DenyDelete := True;
+  cfg.AllowRollup := True;
+  cfg.Discard := sdNew;
+  cfg.Description := 'kv demo';
+  json := cfg.ToJson;
+  Should(json.Contains('"max_msgs_per_subject":5')).BeTrue;
+  Should(json.Contains('"allow_direct":true')).BeTrue;
+  Should(json.Contains('"deny_delete":true')).BeTrue;
+  Should(json.Contains('"allow_rollup_hdrs":true')).BeTrue;
+  Should(json.Contains('"discard":"new"')).BeTrue;
+  Should(json.Contains('"description":"kv demo"')).BeTrue;
+end;
+
+procedure TDextNatsProtocolTests.KeyValueConfig_ShouldMapToStreamConfig;
+var
+  kv: TNatsKeyValueConfig;
+  stream: TNatsStreamConfig;
+begin
+  kv := TNatsKeyValueConfig.CreateDefault('INVENTORY');
+  kv.History := 10;
+  kv.Storage := ssMemory;
+  stream := kv.ToStreamConfig;
+  Should(stream.Name).Be('KV_INVENTORY');
+  Should(Length(stream.Subjects)).Be(1);
+  Should(stream.Subjects[0]).Be('$KV.INVENTORY.>');
+  Should(stream.MaxMsgsPerSubject).Be(10);
+  Should(stream.AllowDirect).BeTrue;
+  Should(stream.DenyDelete).BeTrue;
+  Should(stream.AllowRollup).BeTrue;
+  Should(Ord(stream.Discard)).Be(Ord(sdNew));
+  Should(Ord(stream.Storage)).Be(Ord(ssMemory));
+end;
+
+procedure TDextNatsProtocolTests.StoredMsg_ShouldParseDataAndKvHeaders;
+var
+  msg: TNatsStoredMsg;
+  json: string;
+begin
+  { data = "hello" (aGVsbG8=); hdrs = NATS/1.0 + KV-Operation: DEL }
+  json := '{"message":{"subject":"$KV.DEMO.widget","seq":7,"data":"aGVsbG8=",' +
+    '"hdrs":"TkFUUy8xLjANCktWLU9wZXJhdGlvbjogREVMDQoNCg==",' +
+    '"time":"2024-01-01T00:00:00.000000000Z"}}';
+  msg := TNatsStoredMsg.Parse(json);
+  Should(msg.Subject).Be('$KV.DEMO.widget');
+  Should(Int64(msg.Sequence)).Be(7);
+  Should(TEncoding.UTF8.GetString(msg.Data)).Be('hello');
+  Should(msg.Headers.GetValue(NATS_KV_OP_HEADER)).Be(NATS_KV_OP_DEL);
+  Should(msg.TimeStamp.Contains('2024-01-01')).BeTrue;
+
+  Should(
+    procedure
+    begin
+      TNatsStoredMsg.Parse(
+        '{"error":{"code":404,"err_code":10037,"description":"message not found"}}');
+    end).Throw(EDextNatsJetStreamError);
+end;
+
+procedure TDextNatsProtocolTests.KeyValue_ValidateNames_ShouldRejectInvalid;
+begin
+  Should(
+    procedure
+    begin
+      TNatsKeyValueConfig.CreateDefault('bad.bucket').ToStreamConfig;
+    end).Throw(EDextNatsKeyValueError);
+
+  Should(
+    procedure
+    var
+      kv: TDextNatsKeyValue;
+    begin
+      kv := TDextNatsKeyValue.Create(nil, 'x');
+      kv.Free;
+    end).Throw(EDextNatsKeyValueError);
 end;
 
 { TDextNatsIntegrationTests }
@@ -2461,6 +2610,312 @@ begin
   end;
 end;
 
+{ TDextNatsKeyValueTests }
+
+function TDextNatsKeyValueTests.UniqueBucket(const APrefix: string): string;
+begin
+  { Bucket names allow only [A-Za-z0-9_-] }
+  Result := APrefix + '_' + IntToHex(Random(MaxInt), 8);
+end;
+
+function TDextNatsKeyValueTests.EnsureJetStreamOrFail: Boolean;
+begin
+  Result := False;
+  if LiveSkippedByEnv then
+    Exit;
+
+  try
+    FClient.Connect(NatsTestHost, NatsTestPort);
+  except
+    on E: Exception do
+    begin
+      Result := LiveSoftSkipOrFail(
+        Format('NATS server not reachable at %s:%d (%s). Start nats-server -js, ' +
+          'or omit DEXT_NATS_REQUIRE_LIVE for soft-skip.',
+          [NatsTestHost, NatsTestPort, E.Message]));
+      Exit;
+    end;
+  end;
+
+  if not FClient.ServerInfo.Jetstream then
+  begin
+    Result := LiveSoftSkipOrFail(
+      Format('NATS server at %s:%d has JetStream disabled (INFO jetstream!=true). ' +
+        'Start with: nats-server -js (or omit DEXT_NATS_REQUIRE_LIVE for soft-skip).',
+        [NatsTestHost, NatsTestPort]));
+    Exit;
+  end;
+
+  FJs := TDextNatsJetStreamContext.Create(FClient);
+  Result := True;
+end;
+
+procedure TDextNatsKeyValueTests.SetUp;
+begin
+  FClient := TDextNatsClient.Create;
+  FJs := nil;
+end;
+
+procedure TDextNatsKeyValueTests.TearDown;
+begin
+  FreeAndNil(FJs);
+  FreeAndNil(FClient);
+end;
+
+procedure TDextNatsKeyValueTests.Bucket_CreatePutGetDelete_ShouldRoundTrip;
+var
+  bucket: string;
+  cfg: TNatsKeyValueConfig;
+  kv: TDextNatsKeyValue;
+  entry: TNatsKeyValueEntry;
+  rev: UInt64;
+  status: TNatsKeyValueStatus;
+begin
+  if not EnsureJetStreamOrFail then
+    Exit;
+
+  bucket := UniqueBucket('DEXTKV');
+  cfg := TNatsKeyValueConfig.CreateDefault(bucket);
+  cfg.Storage := ssMemory;
+  cfg.History := 1;
+  kv := TDextNatsKeyValue.CreateBucket(FJs, cfg);
+  try
+    Should(TDextNatsKeyValue.BucketExists(FJs, bucket)).BeTrue;
+    rev := kv.Put('widget-blue', '42');
+    Should(Int64(rev) > 0).BeTrue;
+    entry := kv.Get('widget-blue');
+    Should(entry.AsString).Be('42');
+    Should(entry.IsPut).BeTrue;
+    Should(Int64(entry.Revision)).Be(Int64(rev));
+    status := kv.Status;
+    Should(status.Bucket).Be(bucket);
+    Should(status.StreamName).Be('KV_' + bucket);
+    Should(Int64(status.Values) >= 1).BeTrue;
+
+    kv.Delete('widget-blue');
+    Should(kv.TryGet('widget-blue', entry)).BeFalse;
+  finally
+    kv.Free;
+    TDextNatsKeyValue.DeleteBucket(FJs, bucket);
+  end;
+  Should(TDextNatsKeyValue.BucketExists(FJs, bucket)).BeFalse;
+end;
+
+procedure TDextNatsKeyValueTests.Bucket_Purge_ShouldHideKey;
+var
+  bucket: string;
+  cfg: TNatsKeyValueConfig;
+  kv: TDextNatsKeyValue;
+  entry: TNatsKeyValueEntry;
+begin
+  if not EnsureJetStreamOrFail then
+    Exit;
+
+  bucket := UniqueBucket('DEXTKVP');
+  cfg := TNatsKeyValueConfig.CreateDefault(bucket);
+  cfg.Storage := ssMemory;
+  cfg.History := 5;
+  kv := TDextNatsKeyValue.CreateBucket(FJs, cfg);
+  try
+    kv.Put('widget-red', 'secret');
+    kv.Purge('widget-red');
+    Should(kv.TryGet('widget-red', entry)).BeFalse;
+  finally
+    kv.Free;
+    TDextNatsKeyValue.DeleteBucket(FJs, bucket);
+  end;
+end;
+
+procedure TDextNatsKeyValueTests.BucketExists_Missing_ShouldBeFalse;
+begin
+  if not EnsureJetStreamOrFail then
+    Exit;
+  Should(TDextNatsKeyValue.BucketExists(FJs, UniqueBucket('DEXTKVMISS'))).BeFalse;
+end;
+
+procedure TDextNatsKeyValueTests.Get_MissingKey_ShouldRaise;
+var
+  bucket: string;
+  cfg: TNatsKeyValueConfig;
+  kv: TDextNatsKeyValue;
+begin
+  if not EnsureJetStreamOrFail then
+    Exit;
+
+  bucket := UniqueBucket('DEXTKVG');
+  cfg := TNatsKeyValueConfig.CreateDefault(bucket);
+  cfg.Storage := ssMemory;
+  kv := TDextNatsKeyValue.CreateBucket(FJs, cfg);
+  try
+    Should(
+      procedure
+      begin
+        kv.Get('no-such-key');
+      end).Throw(EDextNatsKeyNotFound);
+  finally
+    kv.Free;
+    TDextNatsKeyValue.DeleteBucket(FJs, bucket);
+  end;
+end;
+
+procedure TDextNatsKeyValueTests.Keys_ShouldListLiveKeysOnly;
+var
+  bucket: string;
+  cfg: TNatsKeyValueConfig;
+  kv: TDextNatsKeyValue;
+  keys: IList<string>;
+  i: Integer;
+  sawA, sawB: Boolean;
+begin
+  if not EnsureJetStreamOrFail then
+    Exit;
+
+  bucket := UniqueBucket('DEXTKVK');
+  cfg := TNatsKeyValueConfig.CreateDefault(bucket);
+  cfg.Storage := ssMemory;
+  cfg.History := 1;
+  kv := TDextNatsKeyValue.CreateBucket(FJs, cfg);
+  try
+    kv.Put('alpha', '1');
+    kv.Put('beta', '2');
+    kv.Delete('alpha');
+    keys := kv.Keys;
+    Should(keys.Count).Be(1);
+    Should(keys[0]).Be('beta');
+    keys := kv.ListKeys;
+    sawA := False;
+    sawB := False;
+    for i := 0 to keys.Count - 1 do
+    begin
+      if keys[i] = 'alpha' then
+        sawA := True;
+      if keys[i] = 'beta' then
+        sawB := True;
+    end;
+    Should(sawA).BeFalse;
+    Should(sawB).BeTrue;
+  finally
+    kv.Free;
+    TDextNatsKeyValue.DeleteBucket(FJs, bucket);
+  end;
+end;
+
+procedure TDextNatsKeyValueTests.History_ShouldReturnRevisions;
+var
+  bucket: string;
+  cfg: TNatsKeyValueConfig;
+  kv: TDextNatsKeyValue;
+  hist: IList<TNatsKeyValueEntry>;
+begin
+  if not EnsureJetStreamOrFail then
+    Exit;
+
+  bucket := UniqueBucket('DEXTKVH');
+  cfg := TNatsKeyValueConfig.CreateDefault(bucket);
+  cfg.Storage := ssMemory;
+  cfg.History := 5;
+  kv := TDextNatsKeyValue.CreateBucket(FJs, cfg);
+  try
+    kv.Put('counter', 'one');
+    kv.Put('counter', 'two');
+    kv.Put('counter', 'three');
+    hist := kv.History('counter');
+    Should(hist.Count).Be(3);
+    Should(hist[0].AsString).Be('one');
+    Should(hist[1].AsString).Be('two');
+    Should(hist[2].AsString).Be('three');
+    Should(hist[0].IsPut).BeTrue;
+    Should(Int64(hist[2].Revision) > Int64(hist[0].Revision)).BeTrue;
+  finally
+    kv.Free;
+    TDextNatsKeyValue.DeleteBucket(FJs, bucket);
+  end;
+end;
+
+procedure TDextNatsKeyValueTests.WatchAll_ShouldDeliverCurrentAndUpdates;
+var
+  bucket: string;
+  cfg: TNatsKeyValueConfig;
+  kv: TDextNatsKeyValue;
+  watcher: TDextNatsKeyValueWatcher;
+  lock: TCriticalSection;
+  got: IList<string>;
+  gotInitial, gotUpdate: TEvent;
+  i: Integer;
+  sawFoo, sawBar, sawFoo2: Boolean;
+begin
+  if not EnsureJetStreamOrFail then
+    Exit;
+
+  bucket := UniqueBucket('DEXTKVW');
+  cfg := TNatsKeyValueConfig.CreateDefault(bucket);
+  cfg.Storage := ssMemory;
+  cfg.History := 1;
+  kv := TDextNatsKeyValue.CreateBucket(FJs, cfg);
+  lock := TCriticalSection.Create;
+  got := TCollections.CreateList<string>;
+  gotInitial := TEvent.Create(nil, True, False, '');
+  gotUpdate := TEvent.Create(nil, True, False, '');
+  watcher := nil;
+  try
+    kv.Put('foo', '1');
+    kv.Put('bar', '2');
+
+    watcher := kv.WatchAll(
+      procedure(const AEntry: TNatsKeyValueEntry)
+      begin
+        if not AEntry.IsPut then
+          Exit;
+        lock.Enter;
+        try
+          got.Add(AEntry.Key + '=' + AEntry.AsString);
+          if got.Count >= 2 then
+            gotInitial.SetEvent;
+          if AEntry.Key = 'foo' then
+          begin
+            if AEntry.AsString = '9' then
+              gotUpdate.SetEvent;
+          end;
+        finally
+          lock.Leave;
+        end;
+      end);
+
+    Should(gotInitial.WaitFor(5000) = wrSignaled).BeTrue;
+    kv.Put('foo', '9');
+    Should(gotUpdate.WaitFor(5000) = wrSignaled).BeTrue;
+
+    sawFoo := False;
+    sawBar := False;
+    sawFoo2 := False;
+    lock.Enter;
+    try
+      for i := 0 to got.Count - 1 do
+      begin
+        if got[i] = 'foo=1' then
+          sawFoo := True;
+        if got[i] = 'bar=2' then
+          sawBar := True;
+        if got[i] = 'foo=9' then
+          sawFoo2 := True;
+      end;
+    finally
+      lock.Leave;
+    end;
+    Should(sawFoo).BeTrue;
+    Should(sawBar).BeTrue;
+    Should(sawFoo2).BeTrue;
+  finally
+    if watcher <> nil then
+      watcher.Free;
+    gotInitial.Free;
+    gotUpdate.Free;
+    lock.Free;
+    kv.Free;
+    TDextNatsKeyValue.DeleteBucket(FJs, bucket);
+  end;
+end;
+
 { TDextNatsTlsIntegrationTests }
 
 function TDextNatsTlsIntegrationTests.TryGetTlsEndpoint(out AHost: string; out APort: Word): Boolean;
@@ -3198,6 +3653,266 @@ begin
   finally
     Client.Free;
     Logger := nil;
+  end;
+end;
+
+{ TDextNatsObjectStoreTests }
+
+function TDextNatsObjectStoreTests.UniqueBucket(const APrefix: string): string;
+begin
+  { Bucket names allow only [A-Za-z0-9_-] }
+  Result := APrefix + '_' + IntToHex(Random(MaxInt), 8);
+end;
+
+function TDextNatsObjectStoreTests.EnsureJetStreamOrFail: Boolean;
+begin
+  Result := False;
+  if LiveSkippedByEnv then
+    Exit;
+
+  try
+    FClient.Connect(NatsTestHost, NatsTestPort);
+  except
+    on E: Exception do
+    begin
+      Result := LiveSoftSkipOrFail(
+        Format('NATS server not reachable at %s:%d (%s). Start nats-server -js, ' +
+          'or omit DEXT_NATS_REQUIRE_LIVE for soft-skip.',
+          [NatsTestHost, NatsTestPort, E.Message]));
+      Exit;
+    end;
+  end;
+
+  if not FClient.ServerInfo.Jetstream then
+  begin
+    Result := LiveSoftSkipOrFail(
+      Format('NATS server at %s:%d has JetStream disabled (INFO jetstream!=true). ' +
+        'Start with: nats-server -js (or omit DEXT_NATS_REQUIRE_LIVE for soft-skip).',
+        [NatsTestHost, NatsTestPort]));
+    Exit;
+  end;
+
+  FOs := TDextNatsObjectStoreContext.Create(FClient);
+  Result := True;
+end;
+
+procedure TDextNatsObjectStoreTests.SetUp;
+begin
+  FClient := TDextNatsClient.Create;
+  FOs := nil;
+end;
+
+procedure TDextNatsObjectStoreTests.TearDown;
+begin
+  FreeAndNil(FOs);
+  FreeAndNil(FClient);
+end;
+
+procedure TDextNatsObjectStoreTests.ObjectInfo_ParseToJson_ShouldRoundTrip;
+var
+  info, parsed: TNatsObjectInfo;
+  json: string;
+begin
+  info := Default(TNatsObjectInfo);
+  info.Name := 'invoice.pdf';
+  info.Description := 'demo';
+  info.Bucket := 'INVOICES';
+  info.Nuid := 'ABCDEFGHIJKLMNOPQRSTUV';
+  info.Size := 12;
+  info.Chunks := 1;
+  info.Digest := 'SHA-256=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=';
+  info.ChunkSize := 128 * 1024;
+  json := info.ToJson;
+  parsed := TNatsObjectInfo.Parse(json);
+  Should(parsed.Name).Be(info.Name);
+  Should(parsed.Description).Be(info.Description);
+  Should(parsed.Bucket).Be(info.Bucket);
+  Should(parsed.Nuid).Be(info.Nuid);
+  Should(parsed.Size).Be(info.Size);
+  Should(Integer(parsed.Chunks)).Be(Integer(info.Chunks));
+  Should(parsed.Digest).Be(info.Digest);
+  Should(parsed.ChunkSize).Be(info.ChunkSize);
+  Should(parsed.Deleted).BeFalse;
+end;
+
+procedure TDextNatsObjectStoreTests.Store_CreatePutGetDelete_ShouldRoundTrip;
+var
+  cfg: TNatsObjectStoreConfig;
+  store: TDextNatsObjectStore;
+  bucket: string;
+  putInfo, getInfo: TNatsObjectInfo;
+  payload, got: TBytes;
+  i: Integer;
+begin
+  if not EnsureJetStreamOrFail then
+    Exit;
+
+  bucket := UniqueBucket('DEXTOBJ');
+  cfg := TNatsObjectStoreConfig.CreateDefault(bucket);
+  cfg.ChunkSize := 8; // force multi-chunk for a small payload
+  store := FOs.CreateStore(cfg);
+  try
+    SetLength(payload, 20);
+    for i := 0 to High(payload) do
+      payload[i] := Byte(i + 1);
+
+    putInfo := store.Put('docs/a.bin', payload);
+    Should(putInfo.Name).Be('docs/a.bin');
+    Should(putInfo.Bucket).Be(bucket);
+    Should(putInfo.Size).Be(UInt64(Length(payload)));
+    Should(Integer(putInfo.Chunks)).Be(3); // 20 bytes / 8-byte chunks
+    Should(putInfo.Digest.StartsWith('SHA-256=')).BeTrue;
+
+    got := store.Get('docs/a.bin', getInfo);
+    Should(Length(got)).Be(Length(payload));
+    Should(CompareMem(@got[0], @payload[0], Length(payload))).BeTrue;
+    Should(getInfo.Digest).Be(putInfo.Digest);
+
+    store.Delete('docs/a.bin');
+    Should(
+      procedure
+      begin
+        store.Get('docs/a.bin');
+      end).Throw(EDextNatsObjectStoreError);
+  finally
+    store.Free;
+    FOs.DeleteStore(bucket);
+  end;
+end;
+
+procedure TDextNatsObjectStoreTests.Store_PutOverwrite_ShouldReturnLatest;
+var
+  cfg: TNatsObjectStoreConfig;
+  store: TDextNatsObjectStore;
+  bucket: string;
+  got: TBytes;
+begin
+  if not EnsureJetStreamOrFail then
+    Exit;
+
+  bucket := UniqueBucket('DEXTOBJ2');
+  cfg := TNatsObjectStoreConfig.CreateDefault(bucket);
+  store := FOs.CreateStore(cfg);
+  try
+    store.Put('x', TEncoding.UTF8.GetBytes('one'));
+    store.Put('x', TEncoding.UTF8.GetBytes('two'));
+    got := store.Get('x');
+    Should(TEncoding.UTF8.GetString(got)).Be('two');
+  finally
+    store.Free;
+    FOs.DeleteStore(bucket);
+  end;
+end;
+
+procedure TDextNatsObjectStoreTests.Get_MissingObject_ShouldRaise;
+var
+  cfg: TNatsObjectStoreConfig;
+  store: TDextNatsObjectStore;
+  bucket: string;
+begin
+  if not EnsureJetStreamOrFail then
+    Exit;
+
+  bucket := UniqueBucket('DEXTOBJ3');
+  cfg := TNatsObjectStoreConfig.CreateDefault(bucket);
+  store := FOs.CreateStore(cfg);
+  try
+    Should(
+      procedure
+      begin
+        store.Get('missing');
+      end).Throw(EDextNatsObjectStoreError);
+  finally
+    store.Free;
+    FOs.DeleteStore(bucket);
+  end;
+end;
+
+procedure TDextNatsObjectStoreTests.Store_ListAndKeys_ShouldReturnLiveObjects;
+var
+  cfg: TNatsObjectStoreConfig;
+  store: TDextNatsObjectStore;
+  bucket: string;
+  infos, withDeleted: IList<TNatsObjectInfo>;
+  names: IList<string>;
+  i: Integer;
+  sawA, sawB, sawDeleted: Boolean;
+begin
+  if not EnsureJetStreamOrFail then
+    Exit;
+
+  bucket := UniqueBucket('DEXTOBJL');
+  cfg := TNatsObjectStoreConfig.CreateDefault(bucket);
+  store := FOs.CreateStore(cfg);
+  try
+    store.Put('docs/a.txt', TEncoding.UTF8.GetBytes('aaa'));
+    store.Put('docs/b.txt', TEncoding.UTF8.GetBytes('bbb'));
+    store.Put('gone.bin', TEncoding.UTF8.GetBytes('zzz'));
+    store.Delete('gone.bin');
+
+    infos := store.List;
+    Should(infos.Count).Be(2);
+    sawA := False;
+    sawB := False;
+    for i := 0 to infos.Count - 1 do
+    begin
+      Should(infos[i].Deleted).BeFalse;
+      if infos[i].Name = 'docs/a.txt' then
+      begin
+        sawA := True;
+        Should(infos[i].Size).Be(UInt64(3));
+      end
+      else if infos[i].Name = 'docs/b.txt' then
+        sawB := True;
+    end;
+    Should(sawA).BeTrue;
+    Should(sawB).BeTrue;
+
+    names := store.Keys;
+    Should(names.Count).Be(2);
+    sawA := False;
+    sawB := False;
+    for i := 0 to names.Count - 1 do
+    begin
+      if names[i] = 'docs/a.txt' then
+        sawA := True
+      else if names[i] = 'docs/b.txt' then
+        sawB := True;
+    end;
+    Should(sawA).BeTrue;
+    Should(sawB).BeTrue;
+
+    withDeleted := store.ListObjects(True);
+    Should(withDeleted.Count).Be(3);
+    sawDeleted := False;
+    for i := 0 to withDeleted.Count - 1 do
+      if (withDeleted[i].Name = 'gone.bin') and withDeleted[i].Deleted then
+        sawDeleted := True;
+    Should(sawDeleted).BeTrue;
+  finally
+    store.Free;
+    FOs.DeleteStore(bucket);
+  end;
+end;
+
+procedure TDextNatsObjectStoreTests.Store_List_EmptyBucket_ShouldReturnEmpty;
+var
+  cfg: TNatsObjectStoreConfig;
+  store: TDextNatsObjectStore;
+  bucket: string;
+begin
+  if not EnsureJetStreamOrFail then
+    Exit;
+
+  bucket := UniqueBucket('DEXTOBJE');
+  cfg := TNatsObjectStoreConfig.CreateDefault(bucket);
+  store := FOs.CreateStore(cfg);
+  try
+    Should(store.List.Count).Be(0);
+    Should(store.Keys.Count).Be(0);
+  finally
+    store.Free;
+    FOs.DeleteStore(bucket);
   end;
 end;
 

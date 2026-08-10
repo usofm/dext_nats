@@ -67,6 +67,8 @@ type
   /// <summary>Configuration used to create or describe a JetStream stream.</summary>
   TNatsStreamConfig = record
     Name: string;
+    /// <summary>Optional human-readable description (STREAM.CREATE "description").</summary>
+    Description: string;
     Subjects: TArray<string>;
     Retention: TNatsStreamRetention;
     Storage: TNatsStreamStorage;
@@ -75,6 +77,14 @@ type
     MaxAge: Int64; // nanoseconds, 0 = unlimited
     Discard: TNatsStreamDiscard;
     DuplicateWindow: Int64; // nanoseconds, default 120e9 (2 minutes, NATS server default)
+    /// <summary>Max messages retained per subject (KV history). 0 = omit (server default).</summary>
+    MaxMsgsPerSubject: Int64;
+    /// <summary>When True, emits allow_direct (required for DIRECT.GET / fast KV reads).</summary>
+    AllowDirect: Boolean;
+    /// <summary>When True, emits deny_delete (KV buckets refuse raw stream message deletes).</summary>
+    DenyDelete: Boolean;
+    /// <summary>When True, emits allow_rollup_hdrs (KV purge rollup markers).</summary>
+    AllowRollup: Boolean;
     /// <summary>Sensible defaults: limits retention, file storage, unlimited limits, 2 minute dedup window.</summary>
     class function CreateDefault(const AName: string; const ASubjects: TArray<string>): TNatsStreamConfig; static;
     /// <summary>Serializes the record to the JSON body expected by STREAM.CREATE / STREAM.UPDATE.</summary>
@@ -150,12 +160,30 @@ type
     ExpectedStream: string;
     /// <summary>Sent as Nats-Expected-Last-Sequence if &gt; 0; optimistic-concurrency guard.</summary>
     ExpectedLastSequence: UInt64;
+    /// <summary>Sent as Nats-Expected-Last-Subject-Sequence if set (including 0 for "create if absent").
+    /// Use with <see cref="ExpectedLastSubjectSequenceSet"/>.</summary>
+    ExpectedLastSubjectSequence: UInt64;
+    /// <summary>When True, emits Nats-Expected-Last-Subject-Sequence (0 is a valid CAS value).</summary>
+    ExpectedLastSubjectSequenceSet: Boolean;
     /// <summary>Sent as Nats-Expected-Last-Msg-Id if non-empty; optimistic-concurrency guard.</summary>
     ExpectedLastMsgId: string;
+    /// <summary>Extra headers merged into the publish (e.g. KV-Operation / Nats-Rollup).</summary>
+    ExtraHeaders: TNatsHeaders;
     /// <summary>Request timeout in milliseconds; 0 = use the client's RequestTimeoutMs.</summary>
     TimeoutMs: Integer;
     /// <summary>Sensible defaults: no dedup key, no expectations, client default timeout.</summary>
     class function CreateDefault: TNatsJetStreamPublishOptions; static;
+  end;
+
+  /// <summary>A stored JetStream message returned by STREAM.MSG.GET (payload base64-decoded).</summary>
+  TNatsStoredMsg = record
+    Subject: string;
+    Sequence: UInt64;
+    Data: TBytes;
+    Headers: TNatsHeaders;
+    TimeStamp: string;
+    /// <summary>Parses a stream_msg_get_response JSON payload.</summary>
+    class function Parse(const AJson: string): TNatsStoredMsg; static;
   end;
 
   /// <summary>Acknowledgement returned by the server for a JetStream publish.</summary>
@@ -241,6 +269,11 @@ type
     /// <summary>Deletes AStreamName and all of its messages. Raises EDextNatsJetStreamError on failure.</summary>
     function DeleteStream(const AStreamName: string): Boolean;
 
+    /// <summary>Retrieves the last stored message for ASubject via STREAM.MSG.GET (last_by_subj).</summary>
+    function GetLastMessage(const AStreamName, ASubject: string; ATimeoutMs: Integer = 0): TNatsStoredMsg;
+    /// <summary>Retrieves a stored message by stream sequence via STREAM.MSG.GET.</summary>
+    function GetMessage(const AStreamName: string; ASequence: UInt64; ATimeoutMs: Integer = 0): TNatsStoredMsg;
+
     /// <summary>Creates a consumer on AStreamName from AConfig (pull when DeliverSubject empty; push otherwise).</summary>
     function CreateConsumer(const AStreamName: string; const AConfig: TNatsConsumerConfig): TNatsConsumerInfo;
     /// <summary>Fetches current metadata for a consumer. Raises EDextNatsJetStreamError if missing.</summary>
@@ -289,14 +322,20 @@ type
     function Publish(const ASubject: string; const APayload: TBytes; const AMsgId: string = ''): TNatsPublishAck; overload;
     /// <summary>Convenience overload: UTF-8 encodes AMessage with an optional Nats-Msg-Id dedup key.</summary>
     function Publish(const ASubject, AMessage: string; const AMsgId: string = ''): TNatsPublishAck; overload;
+    /// <summary>Publishes with an explicit header set (merged over default options).</summary>
+    function PublishWithHeaders(const ASubject: string; const APayload: TBytes;
+      const AHeaders: TNatsHeaders; ATimeoutMs: Integer = 0): TNatsPublishAck;
 
     /// <summary>The wrapped client. Its lifetime remains the caller's responsibility.</summary>
     property Client: TDextNatsClient read FClient;
+    /// <summary>JetStream API subject prefix (default "$JS.API.").</summary>
+    property ApiPrefix: string read FApiPrefix;
   end;
 
 implementation
 
 uses
+  System.NetEncoding,
   Dext.Core.Span,
   Dext.Json.Utf8;
 
@@ -549,6 +588,11 @@ begin
   jw.WriteStartObject;
   jw.WritePropertyName('name');
   jw.WriteString(Name);
+  if Description <> '' then
+  begin
+    jw.WritePropertyName('description');
+    jw.WriteString(Description);
+  end;
   jw.WritePropertyName('subjects');
   jw.WriteStartArray;
   for i := 0 to High(Subjects) do
@@ -574,6 +618,26 @@ begin
   jw.WriteNumber(NumReplicas);
   jw.WritePropertyName('duplicate_window');
   jw.WriteNumber(DuplicateWindow);
+  if MaxMsgsPerSubject > 0 then
+  begin
+    jw.WritePropertyName('max_msgs_per_subject');
+    jw.WriteNumber(MaxMsgsPerSubject);
+  end;
+  if AllowDirect then
+  begin
+    jw.WritePropertyName('allow_direct');
+    jw.WriteBoolean(True);
+  end;
+  if DenyDelete then
+  begin
+    jw.WritePropertyName('deny_delete');
+    jw.WriteBoolean(True);
+  end;
+  if AllowRollup then
+  begin
+    jw.WritePropertyName('allow_rollup_hdrs');
+    jw.WriteBoolean(True);
+  end;
   jw.WriteEndObject;
   Result := TEncoding.UTF8.GetString(w.ToBytes);
 end;
@@ -958,12 +1022,117 @@ end;
 
 class function TNatsJetStreamPublishOptions.CreateDefault: TNatsJetStreamPublishOptions;
 begin
-  FillChar(Result, SizeOf(Result), 0);
-  Result.MsgId := '';
-  Result.ExpectedStream := '';
-  Result.ExpectedLastSequence := 0;
-  Result.ExpectedLastMsgId := '';
-  Result.TimeoutMs := 0;
+  Result := Default(TNatsJetStreamPublishOptions);
+end;
+
+{ TNatsStoredMsg }
+
+class function TNatsStoredMsg.Parse(const AJson: string): TNatsStoredMsg;
+var
+  bytes: TBytes;
+  reader: TUtf8JsonReader;
+  dataB64, hdrsB64, hdrBlock: string;
+  statusCode: Integer;
+begin
+  Result := Default(TNatsStoredMsg);
+  dataB64 := '';
+  hdrsB64 := '';
+  try
+    reader := NatsJSOpenReader(AJson, 'Empty JetStream STREAM.MSG.GET response', bytes);
+    if (not reader.Read) or (reader.TokenType <> TJsonTokenType.StartObject) then
+      raise EDextNatsProtocolError.CreateFmt('Malformed STREAM.MSG.GET response: %s', [AJson]);
+
+    while reader.Read do
+    begin
+      if reader.TokenType = TJsonTokenType.EndObject then
+        Break;
+      if reader.TokenType <> TJsonTokenType.PropertyName then
+        Continue;
+
+      if reader.ValueSpanEquals('error') then
+      begin
+        if reader.Read then
+        begin
+          if reader.TokenType = TJsonTokenType.StartObject then
+            NatsJSRaiseFromErrorObject(reader)
+          else
+            NatsJSSkipValue(reader);
+        end;
+      end
+      else if reader.ValueSpanEquals('message') then
+      begin
+        if reader.Read then
+        begin
+          if reader.TokenType = TJsonTokenType.StartObject then
+          begin
+            while reader.Read do
+            begin
+              if reader.TokenType = TJsonTokenType.EndObject then
+                Break;
+              if reader.TokenType <> TJsonTokenType.PropertyName then
+                Continue;
+              if reader.ValueSpanEquals('subject') then
+              begin
+                if reader.Read and (reader.TokenType = TJsonTokenType.StringValue) then
+                  Result.Subject := reader.GetString
+                else
+                  NatsJSSkipValue(reader);
+              end
+              else if reader.ValueSpanEquals('seq') then
+              begin
+                if reader.Read and (reader.TokenType = TJsonTokenType.Number) then
+                  Result.Sequence := UInt64(reader.GetInt64)
+                else
+                  NatsJSSkipValue(reader);
+              end
+              else if reader.ValueSpanEquals('data') then
+              begin
+                if reader.Read and (reader.TokenType = TJsonTokenType.StringValue) then
+                  dataB64 := reader.GetString
+                else
+                  NatsJSSkipValue(reader);
+              end
+              else if reader.ValueSpanEquals('hdrs') then
+              begin
+                if reader.Read and (reader.TokenType = TJsonTokenType.StringValue) then
+                  hdrsB64 := reader.GetString
+                else
+                  NatsJSSkipValue(reader);
+              end
+              else if reader.ValueSpanEquals('time') then
+              begin
+                if reader.Read and (reader.TokenType = TJsonTokenType.StringValue) then
+                  Result.TimeStamp := reader.GetString
+                else
+                  NatsJSSkipValue(reader);
+              end
+              else
+                NatsJSHandlePropValue(reader);
+            end;
+          end
+          else
+            NatsJSSkipValue(reader);
+        end;
+      end
+      else
+        NatsJSHandlePropValue(reader);
+    end;
+
+    if dataB64 <> '' then
+      Result.Data := TNetEncoding.Base64.DecodeStringToBytes(dataB64);
+    if hdrsB64 <> '' then
+    begin
+      hdrBlock := TEncoding.UTF8.GetString(TNetEncoding.Base64.DecodeStringToBytes(hdrsB64));
+      NatsParseHeaderBlock(hdrBlock, Result.Headers, statusCode);
+    end;
+  except
+    on E: EDextNatsProtocolError do
+      raise;
+    on E: EDextNatsJetStreamError do
+      raise;
+    on E: EJsonException do
+      raise EDextNatsProtocolError.CreateFmt('Malformed STREAM.MSG.GET response: %s', [AJson]);
+  end;
 end;
 
 { TNatsPublishAck }
@@ -1156,6 +1325,46 @@ end;
 function TDextNatsJetStreamContext.DeleteStream(const AStreamName: string): Boolean;
 begin
   Result := NatsJSParseSuccessResponse(ApiRequest('STREAM.DELETE.' + AStreamName, '{}'));
+end;
+
+function TDextNatsJetStreamContext.GetLastMessage(const AStreamName, ASubject: string;
+  ATimeoutMs: Integer): TNatsStoredMsg;
+var
+  w: TJsByteWriter;
+  jw: TUtf8JsonWriter;
+  body: string;
+begin
+  if (AStreamName = '') or (ASubject = '') then
+    raise EDextNatsException.Create('GetLastMessage requires stream name and subject');
+  w.Reset;
+  jw := TUtf8JsonWriter.Create(@w, JsUtf8WriteToByteWriter, False);
+  jw.WriteStartObject;
+  jw.WritePropertyName('last_by_subj');
+  jw.WriteString(ASubject);
+  jw.WriteEndObject;
+  body := TEncoding.UTF8.GetString(w.ToBytes);
+  Result := TNatsStoredMsg.Parse(ApiRequest('STREAM.MSG.GET.' + AStreamName, body, ATimeoutMs));
+end;
+
+function TDextNatsJetStreamContext.GetMessage(const AStreamName: string; ASequence: UInt64;
+  ATimeoutMs: Integer): TNatsStoredMsg;
+var
+  w: TJsByteWriter;
+  jw: TUtf8JsonWriter;
+  body: string;
+begin
+  if AStreamName = '' then
+    raise EDextNatsException.Create('GetMessage requires a stream name');
+  if ASequence = 0 then
+    raise EDextNatsException.Create('GetMessage requires a non-zero sequence');
+  w.Reset;
+  jw := TUtf8JsonWriter.Create(@w, JsUtf8WriteToByteWriter, False);
+  jw.WriteStartObject;
+  jw.WritePropertyName('seq');
+  jw.WriteNumber(Int64(ASequence));
+  jw.WriteEndObject;
+  body := TEncoding.UTF8.GetString(w.ToBytes);
+  Result := TNatsStoredMsg.Parse(ApiRequest('STREAM.MSG.GET.' + AStreamName, body, ATimeoutMs));
 end;
 
 function TDextNatsJetStreamContext.CreateConsumer(const AStreamName: string;
@@ -1442,15 +1651,21 @@ function TDextNatsJetStreamContext.Publish(const ASubject: string; const APayloa
 var
   headers: TNatsHeaders;
   replyMsg: TNatsMsg;
+  i: Integer;
 begin
+  headers := nil;
   if AOptions.MsgId <> '' then
     headers.Add('Nats-Msg-Id', AOptions.MsgId);
   if AOptions.ExpectedStream <> '' then
     headers.Add('Nats-Expected-Stream', AOptions.ExpectedStream);
   if AOptions.ExpectedLastSequence > 0 then
     headers.Add('Nats-Expected-Last-Sequence', AOptions.ExpectedLastSequence.ToString);
+  if AOptions.ExpectedLastSubjectSequenceSet then
+    headers.Add('Nats-Expected-Last-Subject-Sequence', AOptions.ExpectedLastSubjectSequence.ToString);
   if AOptions.ExpectedLastMsgId <> '' then
     headers.Add('Nats-Expected-Last-Msg-Id', AOptions.ExpectedLastMsgId);
+  for i := 0 to High(AOptions.ExtraHeaders) do
+    headers.Add(AOptions.ExtraHeaders[i].Key, AOptions.ExtraHeaders[i].Value);
 
   replyMsg := FClient.RequestWithHeaders(ASubject, APayload, headers, AOptions.TimeoutMs);
   Result := TNatsPublishAck.Parse(replyMsg.AsString);
@@ -1470,6 +1685,17 @@ function TDextNatsJetStreamContext.Publish(const ASubject, AMessage: string;
   const AMsgId: string): TNatsPublishAck;
 begin
   Result := Publish(ASubject, TEncoding.UTF8.GetBytes(AMessage), AMsgId);
+end;
+
+function TDextNatsJetStreamContext.PublishWithHeaders(const ASubject: string; const APayload: TBytes;
+  const AHeaders: TNatsHeaders; ATimeoutMs: Integer): TNatsPublishAck;
+var
+  opts: TNatsJetStreamPublishOptions;
+begin
+  opts := TNatsJetStreamPublishOptions.CreateDefault;
+  opts.ExtraHeaders := AHeaders;
+  opts.TimeoutMs := ATimeoutMs;
+  Result := Publish(ASubject, APayload, opts);
 end;
 
 end.

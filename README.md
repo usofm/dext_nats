@@ -12,6 +12,8 @@ Native [NATS](https://nats.io) client for the [Dext Framework](https://github.co
 | `Source/Dext.Net.Nats.DependencyInjection.pas` | `AddNatsClient` / configure / config bind (`Nats` section) / `AddNatsJetStream` |
 | `Source/Dext.Net.Nats.HealthChecks.pas` | `TNatsHealthCheck` / `AddNatsHealthCheck` (Connected probe) |
 | `Source/Dext.Net.Nats.JetStream.pas` | `TDextNatsJetStreamContext` — streams, pull/push consumers, Fetch, SubscribePush, Ack/Nak/Term |
+| `Source/Dext.Net.Nats.KeyValue.pas` | `TDextNatsKeyValue` — JetStream KV (Put/Get/Delete/Purge, Keys, History, Watch/WatchAll; CAS deferred) |
+| `Source/Dext.Net.Nats.ObjectStore.pas` | Object Store MVP (`CreateStore` / `Put` / `Get` / `Delete` / `List` / `Keys`; Watch/Seal/UpdateMeta deferred) |
 
 ## Quick start
 
@@ -44,6 +46,56 @@ begin
     Js := TDextNatsJetStreamContext.Create(Client);
     try
       // Stream/consumer admin + Fetch/Ack — see Demo/JetStreamSmokeTest
+    finally
+      Js.Free;
+    end;
+
+    // Object Store (chunked blobs on OBJ_<bucket> / $O.<bucket>.*)
+    // uses Dext.Net.Nats.ObjectStore;
+    // Os := TDextNatsObjectStoreContext.Create(Client);
+    // Store := Os.CreateStore(TNatsObjectStoreConfig.CreateDefault('INVOICES'));
+    // Store.Put('invoice.pdf', Bytes); Got := Store.Get('invoice.pdf');
+  finally
+    Client.Free;
+  end;
+end;
+```
+
+### JetStream Key-Value
+
+Buckets are JetStream streams (`KV_<bucket>`, subjects `$KV.<bucket>.>`). API: create/put/get/delete/purge, `Keys`/`ListKeys`, `History`, and minimal `Watch`/`WatchAll` (push `last_per_subject` + updates). Deferred: CAS Create/Update, per-key TTL.
+
+```delphi
+uses Dext.Collections, Dext.Net.Nats, Dext.Net.Nats.JetStream, Dext.Net.Nats.KeyValue;
+
+var
+  Client: TDextNatsClient;
+  Js: TDextNatsJetStreamContext;
+  Kv: TDextNatsKeyValue;
+  Entry: TNatsKeyValueEntry;
+  Cfg: TNatsKeyValueConfig;
+  KeyNames: IList<string>;
+begin
+  Client := TDextNatsClient.Create;
+  try
+    Client.Connect('127.0.0.1', 4222); // nats-server -js
+    Js := TDextNatsJetStreamContext.Create(Client);
+    try
+      Cfg := TNatsKeyValueConfig.CreateDefault('INVENTORY');
+      Cfg.Storage := ssMemory;
+      Cfg.History := 5;
+      Kv := TDextNatsKeyValue.CreateBucket(Js, Cfg);
+      try
+        Kv.Put('widget-blue', '42');
+        Entry := Kv.Get('widget-blue'); // Entry.AsString = '42'
+        KeyNames := Kv.Keys;            // live keys via last_per_subject
+        // Hist := Kv.History('widget-blue');
+        // Watcher := Kv.WatchAll(procedure(const E: TNatsKeyValueEntry) begin ... end);
+        Kv.Delete('widget-blue');
+      finally
+        Kv.Free;
+        TDextNatsKeyValue.DeleteBucket(Js, 'INVENTORY');
+      end;
     finally
       Js.Free;
     end;

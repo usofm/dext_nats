@@ -37,6 +37,17 @@ Source/
                                 (create/update/info/delete), dedup'd publish,
                                 pull Fetch + push SubscribePush, Ack/Nak/Term/
                                 InProgress via $JS.API.*.
+  Dext.Net.Nats.KeyValue.pas    TDextNatsKeyValue: JetStream KV buckets
+                                (CreateBucket/Put/Get/Delete/Purge, Keys/ListKeys,
+                                History, Watch/WatchAll). Composition over
+                                JetStream; CAS Create/Update + per-key TTL deferred
+                                (SPEC-KV-01).
+  Dext.Net.Nats.ObjectStore.pas TDextNatsObjectStoreContext / TDextNatsObjectStore:
+                                JetStream Object Store MVP (CreateStore /
+                                DeleteStore / Put / Get / Delete / List / Keys
+                                on OBJ_ / $O.<bucket>.{C,M}.*). Watch / Seal /
+                                UpdateMeta / links deferred. Composition over
+                                JetStream; does not own the client.
 Demo/
   PubSubE2E/                    One-way core pub/sub E2E console smoke test
                                 against a plain local `nats-server` (no JetStream).
@@ -69,9 +80,12 @@ threading so it can be unit-tested in isolation; all I/O and concurrency lives
 in `Dext.Net.Nats.pas`.
 
 `Dext.Net.Nats.JetStream.pas` depends on `Dext.Net.Nats` — never the reverse.
-`TDextNatsJetStreamContext` wraps an already-connected `TDextNatsClient` by
-composition (it does not inherit from or modify the client, and does not own
-its lifetime). Admin JSON (`ToJson` / `Parse` / API error objects) uses
+`Dext.Net.Nats.KeyValue.pas` / `Dext.Net.Nats.ObjectStore.pas` depend on
+JetStream — never the reverse.
+`TDextNatsJetStreamContext` / `TDextNatsKeyValue` / Object Store types wrap an
+already-connected client (or JetStream context) by composition; they do not own
+those lifetimes (Object Store may own a JetStream wrapper it creates from a
+client). Admin JSON (`ToJson` / `Parse` / API error objects) uses
 `Dext.Json.Utf8` (`TUtf8JsonReader` / `TUtf8JsonWriter`), same pattern as
 Protocol INFO/CONNECT.
 
@@ -172,6 +186,9 @@ parsing frames anywhere else.
  (create/update/info/delete), dedup'd publish with a `Nats-Msg-Id`
  header, pull-consumer admin, Fetch, Ack/Nak/Term/InProgress, and push
  `SubscribePush` on `deliver_subject`
+- [x] Object Store (`Dext.Net.Nats.ObjectStore.pas`): CreateStore / OpenStore /
+      DeleteStore, Put / Get / Delete, List / ListObjects / Keys (meta filter
+      `$O.<bucket>.M.>`, `last_per_subject`); deferred: Watch, Seal, UpdateMeta, links
 - [x] Unit/integration tests in `Tests/Dext.Net.Nats.Tests.pas` (use `Dext.Testing`)
 - [x] Console demo projects (`.dpr`/`.dproj`): `Demo/PubSubE2E/` (core one-way
   pub/sub), `Demo/RequestReplyE2E/` (request/reply + no-responders),
@@ -196,6 +213,10 @@ parsing frames anywhere else.
   migrated the same way (PERF-03b); `System.JSON` removed from Protocol + JetStream
 - [x] Async `RequestAsync`/`FlushAsync` via `TAsyncBuilder` (roadmap SPEC-ASYNC-01);
       callback `RequestAsync` overload retained
+- [x] JetStream Key-Value (`Dext.Net.Nats.KeyValue.pas` / SPEC-KV-01):
+      CreateBucket / DeleteBucket / BucketExists / Put / Get / Delete / Purge,
+      Keys / ListKeys, History, Watch / WatchAll (push last_per_subject MVP);
+      deferred: Create/Update CAS, per-key TTL, Watch end-of-initial marker
 
 ## Working style expected of an agent here
 

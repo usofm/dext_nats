@@ -200,6 +200,8 @@ function NatsEncodePub(const ASubject, AReplyTo: string; const APayload: TBytes)
 /// <summary>Encodes an HPUB frame (control line + header block + payload + trailing CRLF).</summary>
 function NatsEncodeHPub(const ASubject, AReplyTo: string; const AHeaders: TNatsHeaders;
   const APayload: TBytes): TBytes;
+/// <summary>Parses a decoded NATS header block (NATS/1.0 status line + name: value lines).</summary>
+procedure NatsParseHeaderBlock(const ABlock: string; out AHeaders: TNatsHeaders; out AStatusCode: Integer);
 /// <summary>Encodes a SUB control line.</summary>
 function NatsEncodeSub(const ASubject, AQueue: string; ASid: Integer): TBytes;
 /// <summary>Encodes an UNSUB control line. AMaxMsgs &lt;= 0 unsubscribes immediately.</summary>

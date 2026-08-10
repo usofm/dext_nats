@@ -360,13 +360,37 @@ function RequestAsync(const ASubject: string; const APayload: TBytes;
 
 ---
 
+### فاز KV — JetStream Key-Value
+
+#### SPEC-KV-01 — KV bucket MVP (Put/Get/Delete)
+
+**الزامات:**
+
+1. یونیت `Dext.Net.Nats.KeyValue.pas`: `TDextNatsKeyValue` روی `TDextNatsJetStreamContext` (composition؛ مالک کلاینت/JS نیست).
+2. Bucket = stream `KV_<bucket>` با subjects `$KV.<bucket>.>`؛ کلید = `$KV.<bucket>.<key>`.
+3. API MVP: `CreateBucket` / `DeleteBucket` / `BucketExists` / `GetStatus` / `Open`، و روی store: `Put` / `Get` / `TryGet` / `Delete` / `Purge` / `Status`.
+4. Delete = header `KV-Operation: DEL`؛ Purge = `KV-Operation: PURGE` + `Nats-Rollup: sub`.
+5. Get از `STREAM.MSG.GET` (`last_by_subj`)؛ tombstone → not found.
+6. `Keys` / `ListKeys` (pull `last_per_subject`)، `History(key)` (pull `all`)، `Watch` / `WatchAll` (push `last_per_subject` + updates؛ بدون marker پایان snapshot اولیه).
+7. `Dext.Json.Utf8` / `Dext.Collections`؛ بدون `System.JSON` / `System.Generics.Collections`.
+
+**Acceptance:**
+
+- [x] Unit: `ToStreamConfig` / `TNatsStoredMsg.Parse` / نام نامعتبر.
+- [x] Integration soft-skip: Put/Get/Delete (+ Purge) روی `nats-server -js`.
+- [x] Integration soft-skip: `Keys` / `History` / `WatchAll` روی `nats-server -js`.
+- [ ] **Deferred:** `Create`/`Update` CAS، per-key TTL، Watch end-of-initial marker / MetaOnly.
+
+---
+
 ## ۵. تغییرات فایل (پیش‌بینی)
 
 | فایل | فاز | اقدام |
 |------|-----|--------|
 | `Source/Dext.Net.Nats.Protocol.pas` | PERF, AUTH | Utf8 JSON، writer، parse span، CONNECT auth fields |
 | `Source/Dext.Net.Nats.pas` | LOG, MET, ASYNC, AUTH | Logger، metrics flag، async overloads، sig handshake |
-| `Source/Dext.Net.Nats.JetStream.pas` | PERF-03b, PUSH | Utf8 parse admin؛ push API |
+| `Source/Dext.Net.Nats.JetStream.pas` | PERF-03b, PUSH, KV | Utf8 parse admin؛ push API؛ MSG.GET / KV stream flags |
+| `Source/Dext.Net.Nats.KeyValue.pas` | KV | **جدید** — Put/Get/Delete/Purge + Keys/History/Watch |
 | `Source/Dext.Net.Nats.DependencyInjection.pas` | DI | **جدید** |
 | `Source/Dext.Net.Nats.HealthChecks.pas` | HLTH | **جدید** (یا ادغام در DI unit اگر کوچک ماند) |
 | `Tests/Dext.Net.Nats.Tests.pas` | همه | fixtureهای جدید per SPEC |
@@ -420,6 +444,7 @@ Protocol باید تا حد ممکن **سبک** بماند: ترجیحاً فق�
 | ASYNC-01 | Integration Await | I-ASYNC-01 |
 | AUTH-01 | Unit vector + opt Integration | U-AUTH-01 / I-AUTH-01 |
 | PUSH-01 | JetStream integration | J-PUSH-01 |
+| KV-01 | Unit + JetStream KV integration | U-KV-01 / J-KV-01 |
 
 جزئیات fixtureها هنگام اجرا به [`TEST_PLAN.md`](TEST_PLAN.md) اضافه شوند.
 
