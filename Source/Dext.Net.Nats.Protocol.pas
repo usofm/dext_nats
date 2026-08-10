@@ -33,7 +33,7 @@ uses
   System.SysUtils,
   System.Classes,
   System.JSON,
-  System.Generics.Collections,
+  Dext.Collections,
   Dext.Core.Span;
 
 const
