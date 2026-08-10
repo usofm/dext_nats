@@ -24,8 +24,10 @@
 {  nats-server with JetStream enabled.                                      }
 {                                                                           }
 {  Covers: CreateBucket / Put / Get / Keys / History / Delete / Purge,      }
-{  CAS Create/Update (including conflict errors), and optional per-key TTL  }
-{  (LimitMarkerTTL + Create with Nats-TTL; soft-skips on older servers).    }
+{  CAS Create/Update (including conflict errors), WatchAll with             }
+{  EndOfInitial then Stop, IncludeHistory Watch on one key, and optional   }
+{  per-key TTL (LimitMarkerTTL + Create with Nats-TTL; soft-skips on       }
+{  older servers).                                                         }
 {                                                                           }
 {  REQUIRES the target nats-server to be started with JetStream enabled,   }
 {  e.g.:                                                                    }
@@ -51,6 +53,7 @@ program KeyValueE2E;
 
 uses
   System.SysUtils,
+  System.SyncObjs,
   Dext.Collections,
   Dext.Utils,
   Dext.Net.Nats.Protocol in '..\..\Source\Dext.Net.Nats.Protocol.pas',
@@ -74,6 +77,8 @@ const
   TTL_NANOS = Int64(2) * NATS_KV_MIN_TTL_NANOS;
   TTL_WAIT_MS = 4500;
   TTL_POLL_MS = 200;
+
+  WATCH_TIMEOUT_MS = 5000;
 
 var
   GFailureCount: Integer = 0;
@@ -235,6 +240,147 @@ begin
   end;
 end;
 
+procedure RunWatchSteps(kv: TDextNatsKeyValue);
+var
+  watcher: TDextNatsKeyValueWatcher;
+  watchLock: TCriticalSection;
+  watchKeys: IList<string>;
+  watchReady: TEvent;
+  watchOpts: TNatsKeyValueWatchOptions;
+  putCount: Integer;
+  keyCount: Integer;
+begin
+  { Step 9a: WatchAll — last-per-subject snapshot, wait for EndOfInitial, Stop. }
+  watcher := nil;
+  watchLock := TCriticalSection.Create;
+  watchKeys := TCollections.CreateList<string>;
+  watchReady := TEvent.Create(nil, True, False, '');
+  try
+    try
+      watcher := kv.WatchAll(
+        procedure(const AEntry: TNatsKeyValueEntry)
+        begin
+          if AEntry.IsEndOfInitial then
+          begin
+            watchReady.SetEvent;
+            Exit;
+          end;
+          if not AEntry.IsPut then
+            Exit;
+          watchLock.Enter;
+          try
+            if not KeysContain(watchKeys, AEntry.Key) then
+              watchKeys.Add(AEntry.Key);
+          finally
+            watchLock.Leave;
+          end;
+        end);
+
+      if watchReady.WaitFor(WATCH_TIMEOUT_MS) = wrSignaled then
+      begin
+        watchLock.Enter;
+        try
+          keyCount := watchKeys.Count;
+          if watcher.InitialDone and (keyCount >= 3) and
+             KeysContain(watchKeys, KEY_COUNTER) and
+             KeysContain(watchKeys, KEY_CAS) and
+             KeysContain(watchKeys, KEY_CAS_REV) then
+            PrintPass(Format(
+              'WatchAll EndOfInitial after %d live PUT key(s); InitialDone=True.',
+              [keyCount]))
+          else
+            PrintFail(Format(
+              'WatchAll after marker: InitialDone=%s Count=%d (expected counter/cas-lock/cas-rev).',
+              [BoolToStr(watcher.InitialDone, True), keyCount]));
+        finally
+          watchLock.Leave;
+        end;
+      end
+      else
+        PrintFail(Format('WatchAll timed out waiting for EndOfInitial (%d ms).',
+          [WATCH_TIMEOUT_MS]));
+
+      watcher.Stop;
+      if not watcher.Active then
+        PrintPass('WatchAll Stop: Active=False.')
+      else
+        PrintFail('WatchAll Stop: Active still True.');
+    except
+      on E: Exception do
+        PrintFail('WatchAll failed: ' + E.Message);
+    end;
+  finally
+    FreeAndNil(watcher);
+    watchReady.Free;
+    watchLock.Free;
+  end;
+
+  { Step 9b: IncludeHistory Watch on KEY_COUNTER — full history then EndOfInitial. }
+  watcher := nil;
+  watchLock := TCriticalSection.Create;
+  putCount := 0;
+  watchReady := TEvent.Create(nil, True, False, '');
+  try
+    try
+      watchOpts := TNatsKeyValueWatchOptions.CreateDefault;
+      watchOpts.IncludeHistory := True;
+      watcher := kv.Watch(KEY_COUNTER,
+        procedure(const AEntry: TNatsKeyValueEntry)
+        begin
+          if AEntry.IsEndOfInitial then
+          begin
+            watchReady.SetEvent;
+            Exit;
+          end;
+          if AEntry.IsPut then
+          begin
+            watchLock.Enter;
+            try
+              Inc(putCount);
+            finally
+              watchLock.Leave;
+            end;
+          end;
+        end,
+        watchOpts);
+
+      if watchReady.WaitFor(WATCH_TIMEOUT_MS) = wrSignaled then
+      begin
+        watchLock.Enter;
+        try
+          if watcher.InitialDone and (putCount >= 3) then
+            PrintPass(Format(
+              'IncludeHistory Watch("%s"): %d PUT(s) then EndOfInitial.',
+              [KEY_COUNTER, putCount]))
+          else
+            PrintFail(Format(
+              'IncludeHistory Watch("%s"): InitialDone=%s putCount=%d (expected >=3).',
+              [KEY_COUNTER, BoolToStr(watcher.InitialDone, True), putCount]));
+        finally
+          watchLock.Leave;
+        end;
+      end
+      else
+        PrintFail(Format(
+          'IncludeHistory Watch timed out waiting for EndOfInitial (%d ms).',
+          [WATCH_TIMEOUT_MS]));
+
+      watcher.Stop;
+      if not watcher.Active then
+        PrintPass('IncludeHistory Watch Stop: Active=False.')
+      else
+        PrintFail('IncludeHistory Watch Stop: Active still True.');
+    except
+      on E: Exception do
+        PrintFail('IncludeHistory Watch failed: ' + E.Message);
+    end;
+  finally
+    FreeAndNil(watcher);
+    watchReady.Free;
+    watchLock.Free;
+  end;
+end;
+
 procedure RunOptionalPerKeyTtl(js: TDextNatsJetStreamContext);
 var
   bucket: string;
@@ -245,7 +391,7 @@ var
   elapsed: Integer;
   stillPresent: Boolean;
 begin
-  { Step 9: optional per-key TTL (NATS 2.11+ / ADR-48). Soft-skip if unsupported. }
+  { Step 10: optional per-key TTL (NATS 2.11+ / ADR-48). Soft-skip if unsupported. }
   bucket := UniqueBucketName('KVE2ETTL_');
   cfg := TNatsKeyValueConfig.CreateDefault(bucket);
   cfg.Description := 'Dext.Nats KeyValueE2E per-key TTL';
@@ -507,6 +653,9 @@ begin
       { Step 8: CAS Create / Update. }
       RunCasSteps(kv);
 
+      { Step 9: WatchAll (EndOfInitial) + IncludeHistory Watch. }
+      RunWatchSteps(kv);
+
       try
         status := kv.Status;
         PrintInfo(Format('Status Bucket=%s Stream=%s Values=%d Bytes=%d',
@@ -516,10 +665,10 @@ begin
           PrintFail('Status failed: ' + E.Message);
       end;
 
-      { Step 9: optional per-key TTL (separate bucket; soft-skip if unsupported). }
+      { Step 10: optional per-key TTL (separate bucket; soft-skip if unsupported). }
       RunOptionalPerKeyTtl(js);
 
-      { Step 10: DeleteBucket. }
+      { Step 11: DeleteBucket. }
       try
         FreeAndNil(kv);
         deleted := TDextNatsKeyValue.DeleteBucket(js, bucket);
@@ -541,7 +690,7 @@ begin
       FreeAndNil(js);
     end;
 
-    { Step 11: disconnect. }
+    { Step 12: disconnect. }
     try
       client.Disconnect;
       PrintPass('Disconnected cleanly.');
