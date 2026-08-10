@@ -28,8 +28,8 @@
 {                                                                           }
 {      nats-server -c Demo\TlsE2E\nats-tls.conf                             }
 {                                                                           }
-{  That config reuses Tests/tls/server-cert.pem and server-key.pem.         }
-{  Equivalent (cwd must be Tests\tls so relative cert paths resolve):       }
+{  Start nats-server from the repo root so Demo\TlsE2E\nats-tls.conf cert  }
+{  paths (Tests/tls/*.pem) resolve. Equivalent fixture-only form:           }
 {                                                                           }
 {      cd Tests\tls                                                         }
 {      nats-server -c nats-tls.conf                                         }

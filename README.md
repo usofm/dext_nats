@@ -197,10 +197,11 @@ Interactive console programs under `Demo/` (not a `Dext.Testing` suite). Require
 | `Demo/RequestReplyE2E/` | Request/reply + no-responders | `nats-server` | `msbuild Demo\RequestReplyE2E\RequestReplyE2E.dproj /p:Config=Debug /p:Platform=Win32` | `Output\Win32\Debug\RequestReplyE2E.exe` |
 | `Demo/QueueGroupE2E/` | Queue-group load balancing | `nats-server` | `msbuild Demo\QueueGroupE2E\QueueGroupE2E.dproj /p:Config=Debug /p:Platform=Win32` | `Output\Win32\Debug\QueueGroupE2E.exe` |
 | `Demo/HeadersE2E/` | Headers round-trip (HPUB/HMSG + `RequestWithHeaders`) | `nats-server` (needs `headers` in INFO) | `msbuild Demo\HeadersE2E\HeadersE2E.dproj /p:Config=Debug /p:Platform=Win32` | `Output\Win32\Debug\HeadersE2E.exe` |
+| `Demo/TlsE2E/` | TLS upgrade after cleartext INFO | `nats-server -c Demo\TlsE2E\nats-tls.conf` from repo root (port **4223**; certs from `Tests/tls/`) | `msbuild Demo\TlsE2E\TlsE2E.dproj /p:Config=Debug /p:Platform=Win32` | `Output\Win32\Debug\TlsE2E.exe` (default `127.0.0.1:4223`) |
+| `Demo/NKeyE2E/` | NKey (bare seed) auth handshake | `nats-server -c Demo\NKeyE2E\nats-nkey.conf` (port **4224**; same user as `Tests/nkey/`) | `msbuild Demo\NKeyE2E\NKeyE2E.dproj /p:Config=Debug /p:Platform=Win32` | `Output\Win32\Debug\NKeyE2E.exe` (default `127.0.0.1:4224`) |
 | `Demo/JetStreamSmokeTest/` | Stream admin, dedup publish, pull Fetch/Ack | `nats-server -js` | `msbuild Demo\JetStreamSmokeTest\JetStreamSmokeTest.dproj /p:Config=Debug /p:Platform=Win32` | `Output\Win32\Debug\JetStreamSmokeTest.exe` |
-| `Demo/TlsE2E/` | TLS upgrade after cleartext INFO | `nats-server -c Demo\TlsE2E\nats-tls.conf` (port **4223**; certs from `Tests/tls/`) | `msbuild Demo\TlsE2E\TlsE2E.dproj /p:Config=Debug /p:Platform=Win32` | `Output\Win32\Debug\TlsE2E.exe` (default `127.0.0.1:4223`) |
 
-Plain-core demos default to `127.0.0.1:4222`. TlsE2E needs OpenSSL `libssl-3.dll` / `libcrypto-3.dll` beside the exe (same as other TLS paths). Equivalent TLS config: `cd Tests\tls` then `nats-server -c nats-tls.conf`.
+Plain-core demos default to `127.0.0.1:4222`. TlsE2E / NKeyE2E need OpenSSL `libssl-3.dll` / `libcrypto-3.dll` beside the exe (same as other TLS/NKey paths). Equivalent TLS config: `cd Tests\tls` then `nats-server -c nats-tls.conf`. Equivalent NKey config: `nats-server -c Tests\nkey\nats-nkey.conf`.
 
 ## License
 
