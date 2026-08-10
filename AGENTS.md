@@ -147,7 +147,7 @@ parsing frames anywhere else.
       first one, covering the new JetStream layer; more demos may follow
 - [x] TLS on `TDextNatsClient` via `TDextTLSOptions` / `IDextTLSEngine`
       (upgrade after cleartext INFO when `tls_required` or `Options.TLS.Enabled`)
-- [ ] `README.md` with usage examples
+- [x] `README.md` with usage examples
 - [ ] NKey/JWT auth, a DI extension, observability (health checks/metrics/
       structured logging), and push consumers are deferred to a later pass
 

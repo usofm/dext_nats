@@ -1,7 +1,7 @@
 ﻿# برنامهٔ جامع تست — Dext.Nats (`TEST_PLAN`)
 
 > **هدف:** پوشش کامل لایهٔ پروتکل، کلاینت cleartext، JetStream (pull)، TLS، همزمانی، و مسیرهای خطا — بدون پیاده‌سازی در این سند.  
-> **وضعیت فعلی (پس از I-13/14، S-04/05، TLS live، N-02/N-04):** **۷۵ تست سبز** در اجرای پیش‌فرض (Unit+Integration+JetStream+TLS soft-skip بدون env)؛ با `DEXT_NATS_TLS_PORT` + `DEXT_NATS_RUN_STRESS=1` → **۸۰/۸۰**. Fixture TLS محلی: `Tests/tls/` (self-signed، پورت ۴۲۲۳).  
+> **وضعیت فعلی:** **۷۵ تست سبز** در اجرای پیش‌فرض با سرور `-js` (Unit+Integration+JetStream+TLS soft-skip بدون env)؛ بدون سرور Unit+negatives سبز و live soft-skip؛ `DEXT_NATS_REQUIRE_LIVE=1` برای fail سخت. با `DEXT_NATS_TLS_PORT` + `DEXT_NATS_RUN_STRESS=1` → **۸۰/۸۰**. Fixture TLS: `Tests/tls/`.  
 > **کامپایلر:** فقط Delphi 12 / Studio **23.0** (`dcc32`).  
 > **چارچوب:** `Dext.Testing` + `Should()`؛ فقط `Dext.Collections`.  
 > **مرجع تاریخی فازها:** `nats_complete_phased_d5d5e289.plan.md` (فاز ۱–۳ feature کامل شده؛ این سند فازهای *تست* بعدی است).
@@ -61,7 +61,7 @@
 | I-03 | `RequestReply_ShouldRoundTrip` | Request/Reply |
 | I-04 | `Request_NoResponders_ShouldRaise` | `EDextNatsNoResponders` |
 
-**سیاست skip فعلی:** `EnsureServerOrFail` در صورت نبود سرور **fail سخت** می‌دهد (نه skip).
+**سیاست skip:** `EnsureServerOrFail` بدون سرور **soft-skip** می‌کند (`Exit` بدون assert)؛ با `DEXT_NATS_REQUIRE_LIVE=1` fail سخت. `DEXT_NATS_SKIP_LIVE=1` همیشه soft-skip.
 
 #### `TDextNatsJetStreamTests` — نیاز به `nats-server -js` — **۱**
 
@@ -69,7 +69,7 @@
 |----|-----|------|
 | J-01 | `Consumer_FetchAndAck_ShouldRoundTrip` | CreateStream (memory) → CreateConsumer → Publish(+MsgId) → Fetch(1) → Ack → empty Fetch → DeleteConsumer → DeleteStream |
 
-**سیاست:** fail اگر سرور نباشد یا `ServerInfo.Jetstream=false`.
+**سیاست:** soft-skip اگر سرور نباشد یا `ServerInfo.Jetstream=false`؛ با `DEXT_NATS_REQUIRE_LIVE=1` fail سخت.
 
 #### `TDextNatsTlsIntegrationTests` — **۳ (env-gated soft-skip)**
 
@@ -356,16 +356,17 @@ Output: `..\Output\$(Platform)\$(Config)` مثل Demo.
 | `Stress` | race/stale ping | خیر (opt-in) |
 | `Negative` | خطاها | همراه لایهٔ والد |
 
-### ۶.۲ سیاست skip (هدف؛ امروز متفاوت است)
+### ۶.۲ سیاست skip (پیاده‌سازی‌شده)
 
-| شرایط | رفتار هدف |
-|-------|-----------|
+| شرایط | رفتار |
+|-------|--------|
 | تست Unit | همیشه اجرا |
-| `DEXT_NATS_SKIP_LIVE=1` | همه Integration/JS/TLS → skip با دلیل |
-| Connect به 4222 شکست | Integration/JS → **skip** (نه fail CI)، مگر `DEXT_NATS_REQUIRE_LIVE=1` که fail کند |
-| `ServerInfo.Jetstream=false` | JetStream → skip با پیام `nats-server -js` |
-| `DEXT_NATS_TLS_PORT` خالی | TLS → skip (حذف `[Ignore]` دائمی از T-01) |
-| Stress | فقط با `DEXT_NATS_RUN_STRESS=1` یا `[Category('Stress')]` + فیلتر runner |
+| `DEXT_NATS_SKIP_LIVE=1` | Integration/JS/TLS/Stress → soft-skip (`Exit` بدون assert) |
+| Connect به cleartext شکست | Integration/JS/Stress → **soft-skip**؛ با `DEXT_NATS_REQUIRE_LIVE=1` → **fail** |
+| `ServerInfo.Jetstream=false` | JetStream → soft-skip مگر `REQUIRE_LIVE` |
+| `DEXT_NATS_TLS_PORT` خالی | TLS → soft-skip (حتی با `REQUIRE_LIVE`؛ TLS جدا env-gated است) |
+| TLS port set ولی handshake fail | soft-skip مگر `REQUIRE_LIVE` |
+| Stress | فقط با `DEXT_NATS_RUN_STRESS=1`؛ نبود سرور همان سیاست soft-skip/`REQUIRE_LIVE` |
 
 **کمک‌متدهای پیشنهادی در Support:**
 
@@ -385,8 +386,8 @@ procedure SkipUnless(ACond: Boolean; const AReason: string);
 | متغیر | معنی |
 |-------|------|
 | `DEXT_NATS_HOST` / `DEXT_NATS_PORT` | endpoint cleartext (اختیاری) |
-| `DEXT_NATS_SKIP_LIVE` | رد کردن همهٔ live |
-| `DEXT_NATS_REQUIRE_LIVE` | fail اگر سرور نباشد (CI سخت‌گیر) |
+| `DEXT_NATS_SKIP_LIVE` | soft-skip همهٔ live (Integration/JS/TLS/Stress) |
+| `DEXT_NATS_REQUIRE_LIVE` | **پیش‌فرض خاموش**؛ `=1` → fail سخت وقتی cleartext/JS (یا TLS با port) در دسترس نیست — برای CI زنده |
 | `DEXT_NATS_TLS_HOST` / `DEXT_NATS_TLS_PORT` | endpoint TLS |
 | `DEXT_NATS_RUN_STRESS` | فعال‌سازی stress |
 
@@ -481,11 +482,11 @@ flowchart TD
 ### فاز T0 — Harness (۱–۲ ساعت)
 
 - [x] ساخت `Tests/Dext.Net.Nats.Tests.dproj` (Studio 23.0، search path Dext)
-- [x] Helperهای skip/env در همان یونیت (`EnvFlagTrue`, TLS endpoint, `DEXT_NATS_SKIP_LIVE`)
+- [x] Helperهای skip/env در همان یونیت (`EnvFlagTrue`, `LiveSoftSkipOrFail`, TLS endpoint, `DEXT_NATS_SKIP_LIVE` / `DEXT_NATS_REQUIRE_LIVE`)
 - [x] افزودن `[Category('Unit'|'Integration'|'JetStream'|'TLS'|'Stress'|'Negative')]`
 - [x] تبدیل TLS از `[Ignore]` دائمی به soft-skip مبتنی بر `DEXT_NATS_TLS_PORT` (بدون API Skip در Dext.Testing)
-- [ ] تبدیل `EnsureServerOrFail` به skip مگر `REQUIRE_LIVE` — عمداً نگه داشته شد hard-fail برای live (طبق درخواست اجرا)
-- [x] تأیید: Unit+Integration+JetStream سبز با سرور محلی `-js`؛ TLS بدون env soft-skip
+- [x] `EnsureServerOrFail` / `EnsureJetStreamOrFail` → soft-skip مگر `DEXT_NATS_REQUIRE_LIVE=1`
+- [x] تأیید: Unit+Integration+JetStream سبز با سرور محلی `-js`؛ بدون سرور soft-skip؛ TLS بدون env soft-skip
 
 ### فاز T1 — Unit پروتکل/encode/JSON/JS parse (اولویت بالا)
 
@@ -580,8 +581,8 @@ flowchart TD
 
 - [x] `.dproj` تست با Studio 23.0 بیلد می‌شود
 - [x] Category Unit بدون سرور ۱۰۰٪ سبز
-- [x] با `nats-server -js`: Integration + JetStream سبز (hard-require live؛ `REQUIRE_LIVE` skip-policy هنوز کامل نشده)
-- [ ] بدون سرور: liveها skip تمیز (exit code موفقیت‌آمیز مگر REQUIRE_LIVE)
+- [x] با `nats-server -js`: Integration + JetStream سبز (پیش‌فرض soft-skip؛ CI سخت‌گیر با `DEXT_NATS_REQUIRE_LIVE=1`)
+- [x] بدون سرور: liveها soft-skip تمیز (exit code موفقیت‌آمیز مگر `DEXT_NATS_REQUIRE_LIVE=1`)
 - [x] TLS بدون env → soft-skip؛ با env+سرور (`Tests/tls`، پورت ۴۲۲۳) → T-01..T-03 سبز
 - [x] Stress اختیاری و جدا از CI پیش‌فرض (`DEXT_NATS_RUN_STRESS=1`)
 - [x] شکاف‌های بخش ۲.۳ عملی بسته شده‌اند؛ NKey/JWT / DI / push / observability عمداً خارج از scope

@@ -117,11 +117,13 @@ type
   TDextNatsIntegrationTests = class
   private
     FClient: TDextNatsClient;
-    procedure EnsureServerOrFail;
+    /// <summary>Connect to cleartext NATS. True = ready; False = soft-skip (Exit caller).</summary>
+    function EnsureServerOrFail: Boolean;
     function UniqueSubject(const APrefix: string): string;
     procedure RecreateClientForStalePingReconnect(AReconnectWaitMs: Integer;
       AMaxPendingBufferBytes: Int64);
     procedure StabilizePingAfterForcedDisconnect;
+    function TryConnectLiveOrSoftSkip: Boolean;
   public
     [SetUp]
     procedure SetUp;
@@ -179,7 +181,8 @@ type
   private
     FClient: TDextNatsClient;
     FJs: TDextNatsJetStreamContext;
-    procedure EnsureJetStreamOrFail;
+    /// <summary>Connect + require JetStream. True = ready; False = soft-skip.</summary>
+    function EnsureJetStreamOrFail: Boolean;
     function UniqueName(const APrefix: string): string;
   public
     [SetUp]
@@ -224,6 +227,8 @@ type
   private
     FClient: TDextNatsClient;
     function TryGetTlsEndpoint(out AHost: string; out APort: Word): Boolean;
+    /// <summary>Resolve TLS endpoint and connect. True = ready; False = soft-skip.</summary>
+    function EnsureTlsOrSoftSkip(out AHost: string; out APort: Word): Boolean;
   public
     [SetUp]
     procedure SetUp;
@@ -242,10 +247,11 @@ type
   TDextNatsStressTests = class
   private
     FClient: TDextNatsClient;
-    procedure EnsureServerOrFail;
+    function EnsureServerOrFail: Boolean;
     procedure RecreateClientForStalePingReconnect(AReconnectWaitMs: Integer;
       AMaxPendingBufferBytes: Int64);
     procedure StabilizePingAfterForcedDisconnect;
+    function TryConnectLiveOrSoftSkip: Boolean;
   public
     [SetUp]
     procedure SetUp;
@@ -303,6 +309,35 @@ var
 begin
   v := Trim(GetEnvironmentVariable(AName));
   Result := SameText(v, '1') or SameText(v, 'true') or SameText(v, 'yes');
+end;
+
+function NatsTestHost: string;
+begin
+  Result := Trim(GetEnvironmentVariable('DEXT_NATS_HOST'));
+  if Result = '' then
+    Result := '127.0.0.1';
+end;
+
+function NatsTestPort: Word;
+begin
+  Result := Word(StrToIntDef(Trim(GetEnvironmentVariable('DEXT_NATS_PORT')),
+    NATS_DEFAULT_PORT));
+end;
+
+/// <summary>
+/// Default: soft-skip live tests when the server is absent (return False → Exit).
+/// Set DEXT_NATS_REQUIRE_LIVE=1 to hard-fail instead. DEXT_NATS_SKIP_LIVE=1 always soft-skips.
+/// </summary>
+function LiveSoftSkipOrFail(const AReason: string): Boolean;
+begin
+  if EnvFlagTrue('DEXT_NATS_REQUIRE_LIVE') then
+    raise EDextNatsException.Create(AReason);
+  Result := False;
+end;
+
+function LiveSkippedByEnv: Boolean;
+begin
+  Result := EnvFlagTrue('DEXT_NATS_SKIP_LIVE');
 end;
 
 function JsUniqueSubject(const AStream: string): string;
@@ -939,19 +974,27 @@ begin
   FClient := TDextNatsClient.Create(opts);
 end;
 
-procedure TDextNatsIntegrationTests.EnsureServerOrFail;
+function TDextNatsIntegrationTests.TryConnectLiveOrSoftSkip: Boolean;
 begin
-  if EnvFlagTrue('DEXT_NATS_SKIP_LIVE') then
-    raise EDextNatsException.Create('DEXT_NATS_SKIP_LIVE=1 — live integration tests disabled');
+  Result := False;
+  if LiveSkippedByEnv then
+    Exit;
 
   try
-    FClient.Connect('127.0.0.1', NATS_DEFAULT_PORT);
+    FClient.Connect(NatsTestHost, NatsTestPort);
+    Result := True;
   except
     on E: Exception do
-      raise EDextNatsException.Create(
-        'NATS server not reachable at 127.0.0.1:4222 (' + E.Message +
-        '). Start nats-server before running integration tests.');
+      Result := LiveSoftSkipOrFail(
+        Format('NATS server not reachable at %s:%d (%s). Start nats-server, ' +
+          'or omit DEXT_NATS_REQUIRE_LIVE for soft-skip.',
+          [NatsTestHost, NatsTestPort, E.Message]));
   end;
+end;
+
+function TDextNatsIntegrationTests.EnsureServerOrFail: Boolean;
+begin
+  Result := TryConnectLiveOrSoftSkip;
 end;
 
 procedure TDextNatsIntegrationTests.SetUp;
@@ -973,7 +1016,8 @@ end;
 
 procedure TDextNatsIntegrationTests.Connect_ShouldHandshake;
 begin
-  EnsureServerOrFail;
+  if not EnsureServerOrFail then
+    Exit;
   Should(FClient.Connected).BeTrue;
   Should(FClient.ServerInfo.ServerId).NotBeEmpty;
 end;
@@ -984,7 +1028,8 @@ var
   payload: string;
   subject: string;
 begin
-  EnsureServerOrFail;
+  if not EnsureServerOrFail then
+    Exit;
   subject := UniqueSubject('dext.nats.test.pubsub');
   received := TEvent.Create(nil, True, False, '');
   try
@@ -1009,7 +1054,8 @@ var
   serviceSubject: string;
   reply: TNatsMsg;
 begin
-  EnsureServerOrFail;
+  if not EnsureServerOrFail then
+    Exit;
   serviceSubject := UniqueSubject('dext.nats.test.req');
 
   FClient.Subscribe(serviceSubject,
@@ -1028,7 +1074,8 @@ procedure TDextNatsIntegrationTests.Request_NoResponders_ShouldRaise;
 var
   subject: string;
 begin
-  EnsureServerOrFail;
+  if not EnsureServerOrFail then
+    Exit;
   subject := UniqueSubject('dext.nats.test.no.responders');
   Should(
     procedure
@@ -1043,7 +1090,8 @@ var
   done: TEvent;
   hits: Integer;
 begin
-  EnsureServerOrFail;
+  if not EnsureServerOrFail then
+    Exit;
   subject := UniqueSubject('dext.nats.test.queue');
   queue := 'workers';
   hits := 0;
@@ -1079,7 +1127,8 @@ var
   gotHeader, gotPayload: string;
   gotStatus: Integer;
 begin
-  EnsureServerOrFail;
+  if not EnsureServerOrFail then
+    Exit;
   subject := UniqueSubject('dext.nats.test.hdr');
   headers.Add('X-Order', '42');
   received := TEvent.Create(nil, True, False, '');
@@ -1110,7 +1159,8 @@ var
   reply: TNatsMsg;
   seen: string;
 begin
-  EnsureServerOrFail;
+  if not EnsureServerOrFail then
+    Exit;
   subject := UniqueSubject('dext.nats.test.reqhdr');
   headers.Add('X-Trace', 't-1');
   seen := '';
@@ -1135,7 +1185,8 @@ var
   hits: Integer;
   received: TEvent;
 begin
-  EnsureServerOrFail;
+  if not EnsureServerOrFail then
+    Exit;
   subject := UniqueSubject('dext.nats.test.unsub');
   hits := 0;
   received := TEvent.Create(nil, True, False, '');
@@ -1167,7 +1218,8 @@ var
   hits: Integer;
   received: TEvent;
 begin
-  EnsureServerOrFail;
+  if not EnsureServerOrFail then
+    Exit;
   subject := UniqueSubject('dext.nats.test.maxmsgs');
   hits := 0;
   received := TEvent.Create(nil, False, False, '');
@@ -1191,7 +1243,8 @@ end;
 
 procedure TDextNatsIntegrationTests.Flush_ShouldRoundTrip;
 begin
-  EnsureServerOrFail;
+  if not EnsureServerOrFail then
+    Exit;
   FClient.Publish(UniqueSubject('dext.nats.test.flush'), 'x');
   FClient.Flush(3000);
   Should(FClient.Connected).BeTrue;
@@ -1199,7 +1252,8 @@ end;
 
 procedure TDextNatsIntegrationTests.Ping_ShouldBeAnsweredByFlush;
 begin
-  EnsureServerOrFail;
+  if not EnsureServerOrFail then
+    Exit;
   FClient.Ping;
   FClient.Flush(3000);
   Should(FClient.Connected).BeTrue;
@@ -1210,7 +1264,8 @@ var
   oversized: TBytes;
   maxPayload: Int64;
 begin
-  EnsureServerOrFail;
+  if not EnsureServerOrFail then
+    Exit;
   maxPayload := FClient.ServerInfo.MaxPayload;
   Should(maxPayload > 0).BeTrue;
   SetLength(oversized, maxPayload + 1);
@@ -1227,7 +1282,8 @@ var
   replied, timedOut: TEvent;
   replyText: string;
 begin
-  EnsureServerOrFail;
+  if not EnsureServerOrFail then
+    Exit;
   subject := UniqueSubject('dext.nats.test.reqasync');
   silentSubject := UniqueSubject('dext.nats.test.reqasync.silent');
   replied := TEvent.Create(nil, True, False, '');
@@ -1281,7 +1337,8 @@ begin
       connected := True;
       serverId := AInfo.ServerId;
     end;
-  EnsureServerOrFail;
+  if not EnsureServerOrFail then
+    Exit;
   Should(connected).BeTrue;
   Should(serverId).NotBeEmpty;
 end;
@@ -1292,7 +1349,8 @@ var
   received: TEvent;
   got: string;
 begin
-  EnsureServerOrFail;
+  if not EnsureServerOrFail then
+    Exit;
   root := UniqueSubject('dext.nats.test.wild');
   leaf := root + '.child';
   received := TEvent.Create(nil, True, False, '');
@@ -1317,7 +1375,8 @@ var
   payload, got: TBytes;
   received: TEvent;
 begin
-  EnsureServerOrFail;
+  if not EnsureServerOrFail then
+    Exit;
   subject := UniqueSubject('dext.nats.test.bin');
   payload := TBytes.Create(0, 1, 2, 255, 127, 10);
   received := TEvent.Create(nil, True, False, '');
@@ -1345,8 +1404,8 @@ var
   received, reconnected: TEvent;
   payload: string;
 begin
-  if EnvFlagTrue('DEXT_NATS_SKIP_LIVE') then
-    raise EDextNatsException.Create('DEXT_NATS_SKIP_LIVE=1 — live integration tests disabled');
+  if LiveSkippedByEnv then
+    Exit;
 
   RecreateClientForStalePingReconnect(400, 8 * 1024 * 1024);
   subject := UniqueSubject('dext.nats.test.outbox');
@@ -1367,7 +1426,19 @@ begin
           reconnected.SetEvent;
       end;
 
-    FClient.Connect('127.0.0.1', NATS_DEFAULT_PORT);
+    try
+      FClient.Connect(NatsTestHost, NatsTestPort);
+    except
+      on E: Exception do
+      begin
+        LiveSoftSkipOrFail(
+          Format('NATS server not reachable at %s:%d (%s). Start nats-server, ' +
+            'or omit DEXT_NATS_REQUIRE_LIVE for soft-skip.',
+            [NatsTestHost, NatsTestPort, E.Message]));
+        Exit;
+      end;
+    end;
+
     FClient.Subscribe(subject,
       procedure(const AMsg: TNatsMsg)
       begin
@@ -1391,8 +1462,8 @@ var
   received, reconnected: TEvent;
   payload: string;
 begin
-  if EnvFlagTrue('DEXT_NATS_SKIP_LIVE') then
-    raise EDextNatsException.Create('DEXT_NATS_SKIP_LIVE=1 — live integration tests disabled');
+  if LiveSkippedByEnv then
+    Exit;
 
   RecreateClientForStalePingReconnect(400, 8 * 1024 * 1024);
   subject := UniqueSubject('dext.nats.test.resub');
@@ -1411,7 +1482,19 @@ begin
           reconnected.SetEvent;
       end;
 
-    FClient.Connect('127.0.0.1', NATS_DEFAULT_PORT);
+    try
+      FClient.Connect(NatsTestHost, NatsTestPort);
+    except
+      on E: Exception do
+      begin
+        LiveSoftSkipOrFail(
+          Format('NATS server not reachable at %s:%d (%s). Start nats-server, ' +
+            'or omit DEXT_NATS_REQUIRE_LIVE for soft-skip.',
+            [NatsTestHost, NatsTestPort, E.Message]));
+        Exit;
+      end;
+    end;
+
     FClient.Subscribe(subject,
       procedure(const AMsg: TNatsMsg)
       begin
@@ -1456,7 +1539,8 @@ var
   errEvent: TEvent;
   errText: string;
 begin
-  EnsureServerOrFail;
+  if not EnsureServerOrFail then
+    Exit;
   subject := UniqueSubject('dext.nats.test.handler.err');
   errEvent := TEvent.Create(nil, True, False, '');
   try
@@ -1484,7 +1568,8 @@ procedure TDextNatsIntegrationTests.Request_Timeout_ShouldRaise;
 var
   subject: string;
 begin
-  EnsureServerOrFail;
+  if not EnsureServerOrFail then
+    Exit;
   subject := UniqueSubject('dext.nats.test.req.timeout');
   // Silent subscriber avoids 503 no-responders; Request must time out instead.
   FClient.Subscribe(subject,
@@ -1507,26 +1592,36 @@ begin
     IntToHex(Random(MaxInt), 6);
 end;
 
-procedure TDextNatsJetStreamTests.EnsureJetStreamOrFail;
+function TDextNatsJetStreamTests.EnsureJetStreamOrFail: Boolean;
 begin
-  if EnvFlagTrue('DEXT_NATS_SKIP_LIVE') then
-    raise EDextNatsException.Create('DEXT_NATS_SKIP_LIVE=1 — JetStream tests disabled');
+  Result := False;
+  if LiveSkippedByEnv then
+    Exit;
 
   try
-    FClient.Connect('127.0.0.1', NATS_DEFAULT_PORT);
+    FClient.Connect(NatsTestHost, NatsTestPort);
   except
     on E: Exception do
-      raise EDextNatsException.Create(
-        'NATS server not reachable at 127.0.0.1:4222 (' + E.Message +
-        '). Start nats-server before running JetStream tests.');
+    begin
+      Result := LiveSoftSkipOrFail(
+        Format('NATS server not reachable at %s:%d (%s). Start nats-server -js, ' +
+          'or omit DEXT_NATS_REQUIRE_LIVE for soft-skip.',
+          [NatsTestHost, NatsTestPort, E.Message]));
+      Exit;
+    end;
   end;
 
   if not FClient.ServerInfo.Jetstream then
-    raise EDextNatsException.Create(
-      'NATS server at 127.0.0.1:4222 has JetStream disabled (INFO jetstream!=true). ' +
-      'Start with: nats-server -js');
+  begin
+    Result := LiveSoftSkipOrFail(
+      Format('NATS server at %s:%d has JetStream disabled (INFO jetstream!=true). ' +
+        'Start with: nats-server -js (or omit DEXT_NATS_REQUIRE_LIVE for soft-skip).',
+        [NatsTestHost, NatsTestPort]));
+    Exit;
+  end;
 
   FJs := TDextNatsJetStreamContext.Create(FClient);
+  Result := True;
 end;
 
 procedure TDextNatsJetStreamTests.SetUp;
@@ -1557,7 +1652,8 @@ var
   msgs: IList<TNatsJsMsg>;
   ack: TNatsPublishAck;
 begin
-  EnsureJetStreamOrFail;
+  if not EnsureJetStreamOrFail then
+    Exit;
   stream := UniqueName('DEXT_JS_STREAM');
   consumer := UniqueName('DEXT_JS_PULL');
   subject := JsUniqueSubject(stream);
@@ -1602,7 +1698,8 @@ var
   cfg: TNatsStreamConfig;
   info: TNatsStreamInfo;
 begin
-  EnsureJetStreamOrFail;
+  if not EnsureJetStreamOrFail then
+    Exit;
   stream := UniqueName('DEXT_JS_CRUD');
   subject := JsUniqueSubject(stream);
   cfg := TNatsStreamConfig.CreateDefault(stream, [subject]);
@@ -1628,7 +1725,8 @@ var
   cfg: TNatsStreamConfig;
   info: TNatsStreamInfo;
 begin
-  EnsureJetStreamOrFail;
+  if not EnsureJetStreamOrFail then
+    Exit;
   stream := UniqueName('DEXT_JS_UPD');
   subject := JsUniqueSubject(stream);
   cfg := TNatsStreamConfig.CreateDefault(stream, [subject]);
@@ -1653,7 +1751,8 @@ var
   ack1, ack2: TNatsPublishAck;
   info: TNatsStreamInfo;
 begin
-  EnsureJetStreamOrFail;
+  if not EnsureJetStreamOrFail then
+    Exit;
   stream := UniqueName('DEXT_JS_DEDUP');
   subject := JsUniqueSubject(stream);
   cfg := TNatsStreamConfig.CreateDefault(stream, [subject]);
@@ -1678,7 +1777,8 @@ var
   consumerCfg: TNatsConsumerConfig;
   info: TNatsConsumerInfo;
 begin
-  EnsureJetStreamOrFail;
+  if not EnsureJetStreamOrFail then
+    Exit;
   stream := UniqueName('DEXT_JS_CC');
   consumer := UniqueName('DEXT_JS_CCONS');
   subject := JsUniqueSubject(stream);
@@ -1705,7 +1805,8 @@ var
   msgs: IList<TNatsJsMsg>;
   i: Integer;
 begin
-  EnsureJetStreamOrFail;
+  if not EnsureJetStreamOrFail then
+    Exit;
   stream := UniqueName('DEXT_JS_BATCH');
   consumer := UniqueName('DEXT_JS_BATCHC');
   subject := JsUniqueSubject(stream);
@@ -1735,7 +1836,8 @@ var
   consumerCfg: TNatsConsumerConfig;
   msgs: IList<TNatsJsMsg>;
 begin
-  EnsureJetStreamOrFail;
+  if not EnsureJetStreamOrFail then
+    Exit;
   stream := UniqueName('DEXT_JS_NAK');
   consumer := UniqueName('DEXT_JS_NAKC');
   subject := JsUniqueSubject(stream);
@@ -1768,7 +1870,8 @@ var
   consumerCfg: TNatsConsumerConfig;
   msgs: IList<TNatsJsMsg>;
 begin
-  EnsureJetStreamOrFail;
+  if not EnsureJetStreamOrFail then
+    Exit;
   stream := UniqueName('DEXT_JS_TERM');
   consumer := UniqueName('DEXT_JS_TERMC');
   subject := JsUniqueSubject(stream);
@@ -1799,7 +1902,8 @@ var
   consumerCfg: TNatsConsumerConfig;
   msgs: IList<TNatsJsMsg>;
 begin
-  EnsureJetStreamOrFail;
+  if not EnsureJetStreamOrFail then
+    Exit;
   stream := UniqueName('DEXT_JS_WPI');
   consumer := UniqueName('DEXT_JS_WPIC');
   subject := JsUniqueSubject(stream);
@@ -1837,7 +1941,8 @@ var
   cfg: TNatsStreamConfig;
   opts: TNatsJetStreamPublishOptions;
 begin
-  EnsureJetStreamOrFail;
+  if not EnsureJetStreamOrFail then
+    Exit;
   stream := UniqueName('DEXT_JS_EXP');
   subject := JsUniqueSubject(stream);
   cfg := TNatsStreamConfig.CreateDefault(stream, [subject]);
@@ -1863,7 +1968,8 @@ var
   consumerCfg: TNatsConsumerConfig;
   msgs: IList<TNatsJsMsg>;
 begin
-  EnsureJetStreamOrFail;
+  if not EnsureJetStreamOrFail then
+    Exit;
   stream := UniqueName('DEXT_JS_EMPTY');
   consumer := UniqueName('DEXT_JS_EMPTYC');
   subject := JsUniqueSubject(stream);
@@ -1882,13 +1988,15 @@ end;
 
 procedure TDextNatsJetStreamTests.StreamExists_Missing_ShouldBeFalse;
 begin
-  EnsureJetStreamOrFail;
+  if not EnsureJetStreamOrFail then
+    Exit;
   Should(FJs.StreamExists('DEXT_JS_DOES_NOT_EXIST_' + IntToHex(Random(MaxInt), 8))).BeFalse;
 end;
 
 procedure TDextNatsJetStreamTests.GetStreamInfo_Missing_ShouldRaise;
 begin
-  EnsureJetStreamOrFail;
+  if not EnsureJetStreamOrFail then
+    Exit;
   Should(
     procedure
     begin
@@ -1901,7 +2009,8 @@ var
   stream, subject: string;
   cfg: TNatsStreamConfig;
 begin
-  EnsureJetStreamOrFail;
+  if not EnsureJetStreamOrFail then
+    Exit;
   stream := UniqueName('DEXT_JS_DELC');
   subject := JsUniqueSubject(stream);
   cfg := TNatsStreamConfig.CreateDefault(stream, [subject]);
@@ -1923,7 +2032,8 @@ var
   stream, subjectA, subjectB: string;
   cfg: TNatsStreamConfig;
 begin
-  EnsureJetStreamOrFail;
+  if not EnsureJetStreamOrFail then
+    Exit;
   stream := UniqueName('DEXT_JS_DUPCFG');
   subjectA := JsUniqueSubject(stream) + '.a';
   subjectB := JsUniqueSubject(stream) + '.b';
@@ -1957,6 +2067,29 @@ begin
   Result := APort > 0;
 end;
 
+function TDextNatsTlsIntegrationTests.EnsureTlsOrSoftSkip(out AHost: string;
+  out APort: Word): Boolean;
+begin
+  Result := False;
+  if LiveSkippedByEnv then
+    Exit;
+
+  // TLS remains env-gated: missing DEXT_NATS_TLS_PORT soft-skips even with REQUIRE_LIVE.
+  if not TryGetTlsEndpoint(AHost, APort) then
+    Exit;
+
+  try
+    FClient.Connect(AHost, APort);
+    Result := True;
+  except
+    on E: Exception do
+      Result := LiveSoftSkipOrFail(
+        Format('NATS TLS server not reachable at %s:%d (%s). Start nats-server -c Tests/tls/nats-tls.conf, ' +
+          'or omit DEXT_NATS_REQUIRE_LIVE for soft-skip.',
+          [AHost, APort, E.Message]));
+  end;
+end;
+
 procedure TDextNatsTlsIntegrationTests.SetUp;
 var
   opts: TDextNatsOptions;
@@ -1985,14 +2118,10 @@ var
   host: string;
   port: Word;
 begin
-  if not TryGetTlsEndpoint(host, port) then
-  begin
-    // Dext.Testing has no programmatic Skip; Ignore removed in favor of env gate.
-    // Soft-skip: exit without assertions when TLS endpoint is not configured.
+  // Dext.Testing has no programmatic Skip; soft-skip = Exit without assertions.
+  if not EnsureTlsOrSoftSkip(host, port) then
     Exit;
-  end;
 
-  FClient.Connect(host, port);
   Should(FClient.Connected).BeTrue;
   Should(FClient.ServerInfo.ServerId).NotBeEmpty;
 end;
@@ -2005,10 +2134,9 @@ var
   received: TEvent;
   payload: string;
 begin
-  if not TryGetTlsEndpoint(host, port) then
+  if not EnsureTlsOrSoftSkip(host, port) then
     Exit;
 
-  FClient.Connect(host, port);
   subject := 'dext.nats.tls.' + FormatDateTime('hhnnsszzz', Now);
   received := TEvent.Create(nil, True, False, '');
   try
@@ -2033,10 +2161,9 @@ var
   subject: string;
   reply: TNatsMsg;
 begin
-  if not TryGetTlsEndpoint(host, port) then
+  if not EnsureTlsOrSoftSkip(host, port) then
     Exit;
 
-  FClient.Connect(host, port);
   subject := 'dext.nats.tls.req.' + FormatDateTime('hhnnsszzz', Now);
   FClient.Subscribe(subject,
     procedure(const AMsg: TNatsMsg)
@@ -2087,15 +2214,27 @@ begin
   FClient := TDextNatsClient.Create(opts);
 end;
 
-procedure TDextNatsStressTests.EnsureServerOrFail;
+function TDextNatsStressTests.TryConnectLiveOrSoftSkip: Boolean;
 begin
+  Result := False;
+  if LiveSkippedByEnv then
+    Exit;
+
   try
-    FClient.Connect('127.0.0.1', NATS_DEFAULT_PORT);
+    FClient.Connect(NatsTestHost, NatsTestPort);
+    Result := True;
   except
     on E: Exception do
-      raise EDextNatsException.Create(
-        'NATS server not reachable at 127.0.0.1:4222 (' + E.Message + ').');
+      Result := LiveSoftSkipOrFail(
+        Format('NATS server not reachable at %s:%d (%s). Start nats-server, ' +
+          'or omit DEXT_NATS_REQUIRE_LIVE for soft-skip.',
+          [NatsTestHost, NatsTestPort, E.Message]));
   end;
+end;
+
+function TDextNatsStressTests.EnsureServerOrFail: Boolean;
+begin
+  Result := TryConnectLiveOrSoftSkip;
 end;
 
 procedure TDextNatsStressTests.SetUp;
@@ -2121,7 +2260,8 @@ var
   e1, e2: TEvent;
   p1, p2: string;
 begin
-  EnsureServerOrFail;
+  if not EnsureServerOrFail then
+    Exit;
   s1 := 'dext.nats.stress.a.' + IntToHex(Random(MaxInt), 8);
   s2 := 'dext.nats.stress.b.' + IntToHex(Random(MaxInt), 8);
   e1 := TEvent.Create(nil, True, False, '');
@@ -2159,7 +2299,8 @@ var
   remaining: Integer;
   done: TEvent;
 begin
-  EnsureServerOrFail;
+  if not EnsureServerOrFail then
+    Exit;
   subject := 'dext.nats.stress.req.' + IntToHex(Random(MaxInt), 8);
   okCount := 0;
   remaining := 4;
@@ -2202,7 +2343,8 @@ procedure TDextNatsStressTests.RequestTimeout_LateReply_ShouldNotCrash;
 var
   subject: string;
 begin
-  EnsureServerOrFail;
+  if not EnsureServerOrFail then
+    Exit;
   subject := 'dext.nats.stress.late.' + IntToHex(Random(MaxInt), 8);
   FClient.Subscribe(subject,
     procedure(const AMsg: TNatsMsg)
@@ -2228,6 +2370,9 @@ var
   disconnected, reconnected: TEvent;
   sawDisconnect: Boolean;
 begin
+  if LiveSkippedByEnv then
+    Exit;
+
   RecreateClientForStalePingReconnect(400, 8 * 1024 * 1024);
   sawDisconnect := False;
   disconnected := TEvent.Create(nil, True, False, '');
@@ -2247,7 +2392,19 @@ begin
           reconnected.SetEvent;
       end;
 
-    FClient.Connect('127.0.0.1', NATS_DEFAULT_PORT);
+    try
+      FClient.Connect(NatsTestHost, NatsTestPort);
+    except
+      on E: Exception do
+      begin
+        LiveSoftSkipOrFail(
+          Format('NATS server not reachable at %s:%d (%s). Start nats-server, ' +
+            'or omit DEXT_NATS_REQUIRE_LIVE for soft-skip.',
+            [NatsTestHost, NatsTestPort, E.Message]));
+        Exit;
+      end;
+    end;
+
     Should(disconnected.WaitFor(5000) = wrSignaled).BeTrue;
     Should(sawDisconnect).BeTrue;
     Should(reconnected.WaitFor(10000) = wrSignaled).BeTrue;
@@ -2264,6 +2421,9 @@ var
   disconnected, done: TEvent;
   errText: string;
 begin
+  if LiveSkippedByEnv then
+    Exit;
+
   // Tiny outbox + long reconnect wait so Publish during disconnect hits the ceiling.
   RecreateClientForStalePingReconnect(2500, 32);
   rejected := False;
@@ -2288,7 +2448,19 @@ begin
         done.SetEvent;
       end;
 
-    FClient.Connect('127.0.0.1', NATS_DEFAULT_PORT);
+    try
+      FClient.Connect(NatsTestHost, NatsTestPort);
+    except
+      on E: Exception do
+      begin
+        LiveSoftSkipOrFail(
+          Format('NATS server not reachable at %s:%d (%s). Start nats-server, ' +
+            'or omit DEXT_NATS_REQUIRE_LIVE for soft-skip.',
+            [NatsTestHost, NatsTestPort, E.Message]));
+        Exit;
+      end;
+    end;
+
     Should(disconnected.WaitFor(5000) = wrSignaled).BeTrue;
     Should(done.WaitFor(2000) = wrSignaled).BeTrue;
     Should(rejected).BeTrue;
