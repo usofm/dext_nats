@@ -47,7 +47,8 @@ Source/
   Dext.Net.Nats.ObjectStore.pas TDextNatsObjectStoreContext / TDextNatsObjectStore:
                                 JetStream Object Store (CreateStore /
                                 DeleteStore / Put / Get / Delete / List / Keys,
-                                Watch/WatchAll, UpdateMeta, Seal, AddLink /
+                                Watch/WatchAll (EndOfInitial marker, MetaOnly /
+                                UpdatesOnly), UpdateMeta, Seal, AddLink /
                                 AddBucketLink on OBJ_ / $O.<bucket>.{C,M}.*).
                                 Streaming Put/Get (TStream, PutFile/GetFile,
                                 Put with TNatsObjectMeta); Get follows object
@@ -82,9 +83,9 @@ Demo/
                                 per-key TTL, DeleteBucket) against a local
                                 `nats-server -js`.
   ObjectStoreE2E/               JetStream Object Store E2E console smoke test
-                                (CreateStore / Put / Get / List / Keys /
-                                Delete / UpdateMeta / WatchAll / AddLink /
-                                Seal / DeleteStore) against a local
+                                (CreateStore / Put / Get / PutFile / GetFile /
+                                List / Keys / Delete / UpdateMeta / WatchAll /
+                                AddLink / Seal / DeleteStore) against a local
                                 `nats-server -js`.
   VCLDemo/                      VCL desktop demo (multi-connection tabs,
                                 pub/sub, request/reply, log view, JetStream /
@@ -210,14 +211,15 @@ parsing frames anywhere else.
 - [x] Object Store (`Dext.Net.Nats.ObjectStore.pas`): CreateStore / OpenStore /
       DeleteStore, Put / Get / Delete, List / ListObjects / Keys (meta filter
       `$O.<bucket>.M.>`, `last_per_subject`), Watch / WatchAll (push
-      `last_per_subject` MVP on meta subjects), UpdateMeta (name / description /
-      headers / metadata; no chunk rewrite), Seal (`config.sealed` on OBJ_ stream),
-      AddLink / AddBucketLink (`options.link`; Get follows object links like
-      nats.go, bucket links raise; GetInfo surfaces link meta without following),
-      streaming Put/Get (`TStream`, `PutFile` / `GetFile`, `Put(TNatsObjectMeta, TStream)`
-      chunked SHA-256 without loading whole payload into one `TBytes`);
-      deferred vs nats.go: lazy ObjectResult reader, Get/Put show-deleted opts,
-      Watch end-of-initial marker
+      `last_per_subject` on meta subjects + EndOfInitial marker via NumPending;
+      `TNatsObjectStoreWatchOptions.MetaOnly` / `UpdatesOnly`; `Watcher.InitialDone`),
+      UpdateMeta (name / description / headers / metadata; no chunk rewrite),
+      Seal (`config.sealed` on OBJ_ stream), AddLink / AddBucketLink (`options.link`;
+      Get follows object links like nats.go, bucket links raise; GetInfo surfaces
+      link meta without following), streaming Put/Get (`TStream`, `PutFile` /
+      `GetFile`, `Put(TNatsObjectMeta, TStream)` chunked SHA-256 without loading
+      whole payload into one `TBytes`);
+      deferred vs nats.go: lazy ObjectResult reader, Get/Put show-deleted opts
 - [x] Unit/integration tests in `Tests/Dext.Net.Nats.Tests.pas` (use `Dext.Testing`)
 - [x] Console demo projects (`.dpr`/`.dproj`): `Demo/PubSubE2E/` (core one-way
   pub/sub), `Demo/RequestReplyE2E/` (request/reply + no-responders),
@@ -230,8 +232,8 @@ parsing frames anywhere else.
   History / Delete / Purge, CAS Create/Update, optional per-key TTL,
   DeleteBucket), and
   `Demo/ObjectStoreE2E/` (JetStream Object Store CreateStore / Put / Get /
-  List / Keys / Delete / UpdateMeta / WatchAll / AddLink / Seal /
-  DeleteStore)
+  PutFile / GetFile / List / Keys / Delete / UpdateMeta / WatchAll /
+  AddLink / Seal / DeleteStore)
 - [x] VCL demo (`Demo/VCLDemo/`): multi-connection tabs, connect toggle,
   Publish/Subscribe/Request/Unsubscribe, shared log, JetStream helper form
   (stream/consumer admin, publish, Fetch/Ack), Key-Value and Object Store forms

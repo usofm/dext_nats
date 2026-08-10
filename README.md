@@ -13,7 +13,7 @@ Native [NATS](https://nats.io) client for the [Dext Framework](https://github.co
 | `Source/Dext.Net.Nats.HealthChecks.pas` | `TNatsHealthCheck` / `AddNatsHealthCheck` (Connected probe) |
 | `Source/Dext.Net.Nats.JetStream.pas` | `TDextNatsJetStreamContext` — streams, pull/push consumers, Fetch, SubscribePush, Ack/Nak/Term |
 | `Source/Dext.Net.Nats.KeyValue.pas` | `TDextNatsKeyValue` — JetStream KV (Put/Get/Delete/Purge, Keys, History, Watch/WatchAll, CAS Create/Update) |
-| `Source/Dext.Net.Nats.ObjectStore.pas` | Object Store (`CreateStore` / `Put` / `Get` / `Delete` / `List` / `Keys`, `Watch`/`WatchAll`, `UpdateMeta`, `Seal`, `AddLink` / `AddBucketLink`, streaming `Put`/`Get` via `TStream` + `PutFile`/`GetFile`) |
+| `Source/Dext.Net.Nats.ObjectStore.pas` | Object Store (`CreateStore` / `Put` / `Get` / `Delete` / `List` / `Keys`, `Watch`/`WatchAll` with EndOfInitial + MetaOnly/UpdatesOnly, `UpdateMeta`, `Seal`, `AddLink` / `AddBucketLink`, streaming `Put`/`Get` via `TStream` + `PutFile`/`GetFile`) |
 
 ## Quick start
 
@@ -60,12 +60,16 @@ begin
     // Store.Put(Meta, SomeStream); Store.Get('invoice.pdf', OutStream);
     // Store.AddLink('label.png', Store.GetInfo('invoice.pdf')); // Get follows
     // Store.AddBucketLink('other', OtherStore);                 // Get raises
-    // Watcher := Store.WatchAll(procedure(const Info: TNatsObjectInfo) begin ... end);
+    // Watcher := Store.WatchAll(procedure(const Info: TNatsObjectInfo)
+    //   begin if Info.IsEndOfInitial then Exit; ... end);
+    // // optional: TNatsObjectStoreWatchOptions.MetaOnly / UpdatesOnly
   finally
     Client.Free;
   end;
 end;
 ```
+
+Object Store buckets are JetStream streams (`OBJ_<bucket>`, subjects `$O.<bucket>.{C,M}.*`). `Watch` / `WatchAll` push on meta subjects (`last_per_subject` + updates) and deliver an `EndOfInitial` marker when the snapshot is done — check `AInfo.IsEndOfInitial` or `Watcher.InitialDone`. Optional `TNatsObjectStoreWatchOptions.MetaOnly` (`headers_only`; name from subject, no ObjectInfo JSON) / `UpdatesOnly` (`deliver_policy=new`; no marker).
 
 ### JetStream Key-Value
 
@@ -265,7 +269,7 @@ Interactive programs under `Demo/` (not a `Dext.Testing` suite). Requires **Delp
 | `Demo/NKeyE2E/` | NKey (bare seed) auth handshake | `nats-server -c Demo\NKeyE2E\nats-nkey.conf` (port **4224**; same user as `Tests/nkey/`) | `msbuild Demo\NKeyE2E\NKeyE2E.dproj /p:Config=Debug /p:Platform=Win32` | `Output\Win32\Debug\NKeyE2E.exe` (default `127.0.0.1:4224`) |
 | `Demo/JetStreamSmokeTest/` | Stream admin, dedup publish, pull Fetch/Ack | `nats-server -js` | `msbuild Demo\JetStreamSmokeTest\JetStreamSmokeTest.dproj /p:Config=Debug /p:Platform=Win32` | `Output\Win32\Debug\JetStreamSmokeTest.exe` |
 | `Demo/KeyValueE2E/` | JetStream KV (CreateBucket / Put / Get / Keys / History / Delete / Purge, CAS Create/Update, optional per-key TTL, DeleteBucket) | `nats-server -js` | `msbuild Demo\KeyValueE2E\KeyValueE2E.dproj /p:Config=Debug /p:Platform=Win32` | `Output\Win32\Debug\KeyValueE2E.exe` |
-| `Demo/ObjectStoreE2E/` | JetStream Object Store (CreateStore / Put / Get / List / Keys / Delete / UpdateMeta / WatchAll / AddLink / Seal / DeleteStore) | `nats-server -js` | `msbuild Demo\ObjectStoreE2E\ObjectStoreE2E.dproj /p:Config=Debug /p:Platform=Win32` | `Output\Win32\Debug\ObjectStoreE2E.exe` |
+| `Demo/ObjectStoreE2E/` | JetStream Object Store (CreateStore / Put / Get / PutFile / GetFile / List / Keys / Delete / UpdateMeta / WatchAll / AddLink / Seal / DeleteStore) | `nats-server -js` | `msbuild Demo\ObjectStoreE2E\ObjectStoreE2E.dproj /p:Config=Debug /p:Platform=Win32` | `Output\Win32\Debug\ObjectStoreE2E.exe` |
 | `Demo/VCLDemo/` | VCL UI: multi-connection tabs, pub/sub, request/reply, log, JetStream / Key-Value / Object Store helpers (Object Store form includes AddLink / AddBucketLink + IsLink in List/GetInfo) | `nats-server` (use `-js` for JS/KV/OS forms) | `msbuild Demo\VCLDemo\VCLDemo.dproj /p:Config=Debug /p:Platform=Win32` | `Output\Win32\Debug\VCLDemo.exe` |
 
 Plain-core demos default to `127.0.0.1:4222`. TlsE2E / NKeyE2E need OpenSSL `libssl-3.dll` / `libcrypto-3.dll` beside the exe (same as other TLS/NKey paths). Equivalent TLS config: `cd Tests\tls` then `nats-server -c nats-tls.conf`. Equivalent NKey config: `nats-server -c Tests\nkey\nats-nkey.conf`.
