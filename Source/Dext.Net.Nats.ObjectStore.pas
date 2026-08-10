@@ -21,8 +21,9 @@
 {                                                                           }
 {  JetStream Object Store (ADR-20). Buckets are OBJ_<bucket> streams with   }
 {  chunk subjects $O.<bucket>.C.> and metadata $O.<bucket>.M.>.             }
-{  MVP: CreateStore / DeleteStore / Put / Get / Delete / List / Keys.       }
-{  Deferred: Watch, links, Seal, UpdateMeta.                                }
+{  CreateStore / DeleteStore / Put / Get / Delete / List / Keys,            }
+{  Watch / WatchAll (push last_per_subject on meta subjects).               }
+{  Deferred: links, Seal, UpdateMeta.                                       }
 {  TDextNatsObjectStoreContext wraps a TDextNatsJetStreamContext (or        }
 {  creates one from TDextNatsClient); it does not own the client.           }
 {                                                                           }
@@ -83,11 +84,37 @@ type
     function ToJson: string;
   end;
 
+  /// <summary>Callback for <see cref="TDextNatsObjectStore.Watch"/> / WatchAll deliveries.</summary>
+  TNatsObjectStoreWatchHandler = reference to procedure(const AInfo: TNatsObjectInfo);
+
+  /// <summary>
+  ///   Active Object Store watch (ephemeral push consumer + deliver-subject SUB).
+  ///   Does not own the JetStream context. Call <see cref="Stop"/> or Free before
+  ///   freeing the Object Store. Handlers run on the client's receive thread —
+  ///   do not block with Request/Fetch.
+  /// </summary>
+  TDextNatsObjectStoreWatcher = class
+  private
+    FJs: TDextNatsJetStreamContext;
+    FStreamName: string;
+    FConsumerName: string;
+    FPushSub: TDextNatsJetStreamPushSubscription;
+    FActive: Boolean;
+  public
+    constructor Create(AJs: TDextNatsJetStreamContext; const AStreamName, AConsumerName: string;
+      APushSub: TDextNatsJetStreamPushSubscription);
+    destructor Destroy; override;
+    /// <summary>Unsubscribes the push SUB and deletes the ephemeral consumer. Idempotent.</summary>
+    procedure Stop;
+    property Active: Boolean read FActive;
+    property ConsumerName: string read FConsumerName;
+  end;
+
   TDextNatsObjectStoreContext = class;
 
   /// <summary>
   ///   Bound Object Store bucket. Does not own the JetStream context or client.
-  ///   Put / Get / Delete / List follow NATS Object Store conventions (ADR-20).
+  ///   Put / Get / Delete / List / Watch follow NATS Object Store conventions (ADR-20).
   /// </summary>
   TDextNatsObjectStore = class
   private
@@ -102,6 +129,9 @@ type
     procedure PublishMeta(const AInfo: TNatsObjectInfo);
     procedure PurgeSubject(const ASubject: string);
     function FetchChunks(const ANuid: string; AChunkCount: Cardinal): TBytes;
+    function InfoFromJsMsg(const AMsg: TNatsJsMsg): TNatsObjectInfo;
+    function StartWatch(const AFilterSubject: string;
+      AHandler: TNatsObjectStoreWatchHandler): TDextNatsObjectStoreWatcher;
   public
     constructor Create(AContext: TDextNatsObjectStoreContext; const ABucket: string;
       AChunkSize: Integer = 0);
@@ -128,6 +158,17 @@ type
     function ListObjects(AIncludeDeleted: Boolean = False): IList<TNatsObjectInfo>;
     /// <summary>Live (non-deleted) object names from <see cref="List"/>.</summary>
     function Keys: IList<string>;
+    /// <summary>
+    ///   Watches one object: delivers the current last-per-subject meta (if any), then updates.
+    ///   Caller must Free the watcher (or Stop) before freeing this store.
+    /// </summary>
+    function Watch(const AName: string; AHandler: TNatsObjectStoreWatchHandler): TDextNatsObjectStoreWatcher;
+    /// <summary>
+    ///   Watches the whole bucket meta subjects (<c>$O.&lt;bucket&gt;.M.&gt;</c>):
+    ///   last-per-subject snapshot + subsequent updates. Minimal MVP: no end-of-initial
+    ///   marker; handlers run on the receive thread.
+    /// </summary>
+    function WatchAll(AHandler: TNatsObjectStoreWatchHandler): TDextNatsObjectStoreWatcher;
 
     property Bucket: string read FBucket;
     property StreamName: string read FStreamName;
@@ -978,6 +1019,119 @@ begin
   for i := 0 to infos.Count - 1 do
     if infos[i].Name <> '' then
       Result.Add(infos[i].Name);
+end;
+
+function TDextNatsObjectStore.InfoFromJsMsg(const AMsg: TNatsJsMsg): TNatsObjectInfo;
+begin
+  Result := Default(TNatsObjectInfo);
+  if Length(AMsg.Payload) = 0 then
+    Exit;
+  Result := TNatsObjectInfo.Parse(TEncoding.UTF8.GetString(AMsg.Payload));
+  if Result.Bucket = '' then
+    Result.Bucket := FBucket;
+end;
+
+{ TDextNatsObjectStoreWatcher }
+
+constructor TDextNatsObjectStoreWatcher.Create(AJs: TDextNatsJetStreamContext;
+  const AStreamName, AConsumerName: string; APushSub: TDextNatsJetStreamPushSubscription);
+begin
+  inherited Create;
+  if AJs = nil then
+    raise EDextNatsObjectStoreError.Create('TDextNatsObjectStoreWatcher requires a JetStream context');
+  if APushSub = nil then
+    raise EDextNatsObjectStoreError.Create('TDextNatsObjectStoreWatcher requires a push subscription');
+  FJs := AJs;
+  FStreamName := AStreamName;
+  FConsumerName := AConsumerName;
+  FPushSub := APushSub;
+  FActive := True;
+end;
+
+destructor TDextNatsObjectStoreWatcher.Destroy;
+begin
+  Stop;
+  inherited;
+end;
+
+procedure TDextNatsObjectStoreWatcher.Stop;
+begin
+  if not FActive then
+    Exit;
+  FActive := False;
+  if FPushSub <> nil then
+  begin
+    try
+      FPushSub.Unsubscribe;
+    except
+    end;
+    FreeAndNil(FPushSub);
+  end;
+  if (FJs <> nil) and (FStreamName <> '') and (FConsumerName <> '') then
+  try
+    FJs.DeleteConsumer(FStreamName, FConsumerName);
+  except
+  end;
+end;
+
+function TDextNatsObjectStore.StartWatch(const AFilterSubject: string;
+  AHandler: TNatsObjectStoreWatchHandler): TDextNatsObjectStoreWatcher;
+var
+  deliver, consumerName: string;
+  cons: TNatsConsumerConfig;
+  consInfo: TNatsConsumerInfo;
+  push: TDextNatsJetStreamPushSubscription;
+  js: TDextNatsJetStreamContext;
+begin
+  if not Assigned(AHandler) then
+    raise EDextNatsObjectStoreError.Create('Watch requires a handler');
+  if AFilterSubject = '' then
+    raise EDextNatsObjectStoreError.Create('Watch requires a filter subject');
+
+  js := FContext.FJs;
+  deliver := js.Client.NewInbox;
+  consumerName := 'oswatch_' + ObjNewNuid;
+
+  { Subscribe before CONSUMER.CREATE so the deliver subject has interest. }
+  push := js.SubscribePush(deliver,
+    procedure(const AMsg: TNatsJsMsg)
+    var
+      info: TNatsObjectInfo;
+    begin
+      info := InfoFromJsMsg(AMsg);
+      if info.Name = '' then
+        Exit;
+      AHandler(info);
+    end);
+  try
+    cons := TNatsConsumerConfig.CreateDefault;
+    cons.Name := consumerName;
+    cons.FilterSubject := AFilterSubject;
+    cons.DeliverSubject := deliver;
+    cons.DeliverPolicy := dpLastPerSubject;
+    cons.AckPolicy := apNone;
+    { ack_policy=none rejects a positive max_ack_pending (JS API 10082). }
+    cons.MaxAckPending := 0;
+    consInfo := js.CreateConsumer(FStreamName, cons);
+  except
+    push.Free;
+    raise;
+  end;
+
+  Result := TDextNatsObjectStoreWatcher.Create(js, FStreamName, consInfo.Name, push);
+end;
+
+function TDextNatsObjectStore.Watch(const AName: string;
+  AHandler: TNatsObjectStoreWatchHandler): TDextNatsObjectStoreWatcher;
+begin
+  if AName = '' then
+    raise EDextNatsObjectStoreError.Create('Object name is required');
+  Result := StartWatch(MetaSubject(AName), AHandler);
+end;
+
+function TDextNatsObjectStore.WatchAll(AHandler: TNatsObjectStoreWatchHandler): TDextNatsObjectStoreWatcher;
+begin
+  Result := StartWatch(MetaWildcardSubject, AHandler);
 end;
 
 end.

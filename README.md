@@ -13,7 +13,7 @@ Native [NATS](https://nats.io) client for the [Dext Framework](https://github.co
 | `Source/Dext.Net.Nats.HealthChecks.pas` | `TNatsHealthCheck` / `AddNatsHealthCheck` (Connected probe) |
 | `Source/Dext.Net.Nats.JetStream.pas` | `TDextNatsJetStreamContext` — streams, pull/push consumers, Fetch, SubscribePush, Ack/Nak/Term |
 | `Source/Dext.Net.Nats.KeyValue.pas` | `TDextNatsKeyValue` — JetStream KV (Put/Get/Delete/Purge, Keys, History, Watch/WatchAll, CAS Create/Update) |
-| `Source/Dext.Net.Nats.ObjectStore.pas` | Object Store MVP (`CreateStore` / `Put` / `Get` / `Delete` / `List` / `Keys`; Watch/Seal/UpdateMeta deferred) |
+| `Source/Dext.Net.Nats.ObjectStore.pas` | Object Store (`CreateStore` / `Put` / `Get` / `Delete` / `List` / `Keys`, `Watch`/`WatchAll`; Seal/UpdateMeta/links deferred) |
 
 ## Quick start
 
@@ -55,6 +55,7 @@ begin
     // Os := TDextNatsObjectStoreContext.Create(Client);
     // Store := Os.CreateStore(TNatsObjectStoreConfig.CreateDefault('INVOICES'));
     // Store.Put('invoice.pdf', Bytes); Got := Store.Get('invoice.pdf');
+    // Watcher := Store.WatchAll(procedure(const Info: TNatsObjectInfo) begin ... end);
   finally
     Client.Free;
   end;

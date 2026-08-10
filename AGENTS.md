@@ -43,11 +43,11 @@ Source/
                                 Composition over JetStream; per-key TTL deferred
                                 (SPEC-KV-01).
   Dext.Net.Nats.ObjectStore.pas TDextNatsObjectStoreContext / TDextNatsObjectStore:
-                                JetStream Object Store MVP (CreateStore /
-                                DeleteStore / Put / Get / Delete / List / Keys
-                                on OBJ_ / $O.<bucket>.{C,M}.*). Watch / Seal /
-                                UpdateMeta / links deferred. Composition over
-                                JetStream; does not own the client.
+                                JetStream Object Store (CreateStore /
+                                DeleteStore / Put / Get / Delete / List / Keys,
+                                Watch/WatchAll on OBJ_ / $O.<bucket>.{C,M}.*).
+                                Deferred: Seal, UpdateMeta, links. Composition
+                                over JetStream; does not own the client.
 Demo/
   PubSubE2E/                    One-way core pub/sub E2E console smoke test
                                 against a plain local `nats-server` (no JetStream).
@@ -202,7 +202,8 @@ parsing frames anywhere else.
  `SubscribePush` on `deliver_subject`
 - [x] Object Store (`Dext.Net.Nats.ObjectStore.pas`): CreateStore / OpenStore /
       DeleteStore, Put / Get / Delete, List / ListObjects / Keys (meta filter
-      `$O.<bucket>.M.>`, `last_per_subject`); deferred: Watch, Seal, UpdateMeta, links
+      `$O.<bucket>.M.>`, `last_per_subject`), Watch / WatchAll (push
+      `last_per_subject` MVP on meta subjects); deferred: Seal, UpdateMeta, links
 - [x] Unit/integration tests in `Tests/Dext.Net.Nats.Tests.pas` (use `Dext.Testing`)
 - [x] Console demo projects (`.dpr`/`.dproj`): `Demo/PubSubE2E/` (core one-way
   pub/sub), `Demo/RequestReplyE2E/` (request/reply + no-responders),

@@ -448,6 +448,8 @@ type
     procedure Store_ListAndKeys_ShouldReturnLiveObjects;
     [Test, Category('JetStream'), Category('ObjectStore')]
     procedure Store_List_EmptyBucket_ShouldReturnEmpty;
+    [Test, Category('JetStream'), Category('ObjectStore')]
+    procedure WatchAll_ShouldDeliverCurrentAndUpdates;
   end;
 
 implementation
@@ -4062,6 +4064,86 @@ begin
     Should(store.List.Count).Be(0);
     Should(store.Keys.Count).Be(0);
   finally
+    store.Free;
+    FOs.DeleteStore(bucket);
+  end;
+end;
+
+procedure TDextNatsObjectStoreTests.WatchAll_ShouldDeliverCurrentAndUpdates;
+var
+  cfg: TNatsObjectStoreConfig;
+  store: TDextNatsObjectStore;
+  watcher: TDextNatsObjectStoreWatcher;
+  bucket: string;
+  lock: TCriticalSection;
+  got: IList<string>;
+  gotInitial, gotUpdate: TEvent;
+  i: Integer;
+  sawA, sawB, sawA2: Boolean;
+begin
+  if not EnsureJetStreamOrFail then
+    Exit;
+
+  bucket := UniqueBucket('DEXTOBJW');
+  cfg := TNatsObjectStoreConfig.CreateDefault(bucket);
+  cfg.Storage := ssMemory;
+  store := FOs.CreateStore(cfg);
+  lock := TCriticalSection.Create;
+  got := TCollections.CreateList<string>;
+  gotInitial := TEvent.Create(nil, True, False, '');
+  gotUpdate := TEvent.Create(nil, True, False, '');
+  watcher := nil;
+  try
+    store.Put('a.txt', TEncoding.UTF8.GetBytes('one'));
+    store.Put('b.txt', TEncoding.UTF8.GetBytes('two'));
+
+    watcher := store.WatchAll(
+      procedure(const AInfo: TNatsObjectInfo)
+      begin
+        if AInfo.Deleted then
+          Exit;
+        lock.Enter;
+        try
+          got.Add(AInfo.Name + '=' + IntToStr(Integer(AInfo.Size)));
+          if got.Count >= 2 then
+            gotInitial.SetEvent;
+          if (AInfo.Name = 'a.txt') and (AInfo.Size = 5) then
+            gotUpdate.SetEvent;
+        finally
+          lock.Leave;
+        end;
+      end);
+
+    Should(gotInitial.WaitFor(5000) = wrSignaled).BeTrue;
+    store.Put('a.txt', TEncoding.UTF8.GetBytes('three'));
+    Should(gotUpdate.WaitFor(5000) = wrSignaled).BeTrue;
+
+    sawA := False;
+    sawB := False;
+    sawA2 := False;
+    lock.Enter;
+    try
+      for i := 0 to got.Count - 1 do
+      begin
+        if got[i] = 'a.txt=3' then
+          sawA := True;
+        if got[i] = 'b.txt=3' then
+          sawB := True;
+        if got[i] = 'a.txt=5' then
+          sawA2 := True;
+      end;
+    finally
+      lock.Leave;
+    end;
+    Should(sawA).BeTrue;
+    Should(sawB).BeTrue;
+    Should(sawA2).BeTrue;
+  finally
+    if watcher <> nil then
+      watcher.Free;
+    gotInitial.Free;
+    gotUpdate.Free;
+    lock.Free;
     store.Free;
     FOs.DeleteStore(bucket);
   end;
