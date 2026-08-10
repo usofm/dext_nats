@@ -35,7 +35,8 @@ uses
   Dext.Net.Nats.JetStream in '..\Source\Dext.Net.Nats.JetStream.pas',
   Dext.Net.Nats.DependencyInjection in '..\Source\Dext.Net.Nats.DependencyInjection.pas',
   Dext.Net.Nats.HealthChecks in '..\Source\Dext.Net.Nats.HealthChecks.pas',
-  Dext.Net.Nats.Tests in 'Dext.Net.Nats.Tests.pas';
+  Dext.Net.Nats.Tests in 'Dext.Net.Nats.Tests.pas',
+  Dext.Net.Nats.Drain.Tests in 'Dext.Net.Nats.Drain.Tests.pas';
 
 var
   Config: TTestConfigurator;
@@ -63,6 +64,7 @@ begin
     RunTests(Config.RegisterFixtures([
       TDextNatsProtocolTests,
       TDextNatsIntegrationTests,
+      TDextNatsDrainTests,
       TDextNatsJetStreamTests,
       TDextNatsTlsIntegrationTests,
       TDextNatsNKeyIntegrationTests,

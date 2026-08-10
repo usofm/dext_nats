@@ -24,7 +24,8 @@ Source/
                                 CONNECT jwt|nkey+sig. NO socket I/O.
   Dext.Net.Nats.pas             TDextNatsClient: the public API. Socket I/O,
                                 threading, reconnection, pub/sub, request/reply,
-                                NKey/JWT auth, optional ILogger + opt-in TMetrics.
+                                Drain/DrainAsync/IsDraining, NKey/JWT auth,
+                                optional ILogger + opt-in TMetrics.
   Dext.Net.Nats.DependencyInjection.pas
                                 Dext.DI helpers: AddNatsClient (singleton),
                                 AddNatsClientAndConnect, AddNatsJetStream
@@ -166,7 +167,7 @@ parsing frames anywhere else.
 
 - [x] Protocol layer (`Dext.Net.Nats.Protocol.pas`)
 - [x] Client (`Dext.Net.Nats.pas`): connect, pub/sub, request/reply, reconnect,
-      keepalive — now using `Dext.Collections` throughout
+      keepalive, Drain/DrainAsync/IsDraining — now using `Dext.Collections` throughout
 - [x] JetStream (`Dext.Net.Nats.JetStream.pas`): stream admin
  (create/update/info/delete), dedup'd publish with a `Nats-Msg-Id`
  header, pull-consumer admin, Fetch, Ack/Nak/Term/InProgress, and push

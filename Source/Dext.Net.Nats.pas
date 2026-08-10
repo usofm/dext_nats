@@ -23,8 +23,9 @@
 {  Supports publish/subscribe (with optional queue groups and message       }
 {  headers), synchronous and asynchronous request/reply, automatic          }
 {  reconnection with subscription replay (rotating INFO connect_urls),      }
-{  keepalive PING/PONG, and optional TLS (upgrade after INFO when the       }
-{  server sets tls_required or Options.TLS.Enabled is True).                }
+{  keepalive PING/PONG, graceful Drain (UNSUB → flush → disconnect), and    }
+{  optional TLS (upgrade after INFO when the server sets tls_required or    }
+{  Options.TLS.Enabled is True).                                            }
 {                                                                           }
 {  JetStream API lives in Dext.Net.Nats.JetStream. NKey/JWT auth is in      }
 {  Dext.Net.Nats.NKeys (seed / .creds → CONNECT jwt|nkey + sig).            }
@@ -199,6 +200,10 @@ type
     FConnected: Boolean;
     /// <summary>True once Disconnect() has been requested; suppresses automatic reconnection.</summary>
     FClosing: Boolean;
+    /// <summary>True while <see cref="Drain"/> is winding the connection down (UNSUB → flush → close).</summary>
+    FDraining: Boolean;
+    /// <summary>Handlers currently executing on the receive thread; Drain waits for this to reach 0.</summary>
+    FInFlightHandlers: Integer;
 
     FRecvThread: TThread;
     FPingThread: TThread;
@@ -214,6 +219,7 @@ type
     FMetricErrors: Int64;
 
     function GetConnected: Boolean;
+    function GetIsDraining: Boolean;
     function GetSubscriptionCount: Integer;
     function GetMetrics: TNatsClientMetrics;
     function NextSid: Integer;
@@ -263,6 +269,16 @@ type
     procedure Connect(const AHost: string; APort: Word = NATS_DEFAULT_PORT); overload;
     /// <summary>Gracefully closes the connection. Automatic reconnection is disabled until Connect is called again.</summary>
     procedure Disconnect;
+    /// <summary>
+    ///   Graceful NATS drain then close: stop new interest/publishes, UNSUB all subscriptions
+    ///   (keeping local handlers for in-flight MSG), wait for in-flight handlers, Flush outbound
+    ///   work, then <see cref="Disconnect"/>. <c>ATimeoutMs &lt;= 0</c> uses
+    ///   <c>Options.RequestTimeoutMs</c>. Raises <see cref="EDextNatsTimeoutError"/> if the
+    ///   wait/flush budget is exhausted (the connection is still closed).
+    /// </summary>
+    procedure Drain(ATimeoutMs: Integer = 0);
+    /// <summary>Fluent async <see cref="Drain"/> via <see cref="TAsyncBuilder{T}"/> (result is always True on success).</summary>
+    function DrainAsync(ATimeoutMs: Integer = 0): TAsyncBuilder<Boolean>;
 
     /// <summary>Publishes a raw payload to ASubject, optionally requesting replies on AReplyTo.</summary>
     procedure Publish(const ASubject: string; const APayload: TBytes; const AReplyTo: string = ''); overload;
@@ -319,6 +335,8 @@ type
 
     /// <summary>True while the socket is open and the CONNECT handshake has completed.</summary>
     property Connected: Boolean read GetConnected;
+    /// <summary>True while <see cref="Drain"/> is in progress (before the final Disconnect).</summary>
+    property IsDraining: Boolean read GetIsDraining;
     /// <summary>Snapshot of the last INFO message received from the server.</summary>
     property ServerInfo: TNatsServerInfo read FServerInfo;
     property Options: TDextNatsOptions read FOptions write FOptions;
@@ -490,6 +508,16 @@ begin
   FLock.Enter;
   try
     Result := FConnected;
+  finally
+    FLock.Leave;
+  end;
+end;
+
+function TDextNatsClient.GetIsDraining: Boolean;
+begin
+  FLock.Enter;
+  try
+    Result := FDraining;
   finally
     FLock.Leave;
   end;
@@ -917,6 +945,8 @@ begin
   FHost := AHost;
   FPort := APort;
   FClosing := False;
+  FDraining := False;
+  TInterlocked.Exchange(FInFlightHandlers, 0);
 
   ResetTls;
   FTcpClient.Connect(AHost, APort);
@@ -955,6 +985,7 @@ begin
   FLock.Enter;
   try
     FClosing := True;
+    FDraining := False;
   finally
     FLock.Leave;
   end;
@@ -1216,7 +1247,7 @@ begin
 
   FireDisconnected;
 
-  if FClosing or not FOptions.AllowReconnect then
+  if FClosing or FDraining or not FOptions.AllowReconnect then
   begin
     FRunning := False;
     Exit;
@@ -1389,11 +1420,18 @@ begin
   NoteMetric(NATS_METRIC_MSGS_RECEIVED, FMetricMessagesReceived);
 
   if Assigned(handler) then
-  try
-    handler(msg);
-  except
-    on E: Exception do
-      FireError('Unhandled exception in NATS message handler for subject "' + msg.Subject + '": ' + E.Message);
+  begin
+    TInterlocked.Increment(FInFlightHandlers);
+    try
+      try
+        handler(msg);
+      except
+        on E: Exception do
+          FireError('Unhandled exception in NATS message handler for subject "' + msg.Subject + '": ' + E.Message);
+      end;
+    finally
+      TInterlocked.Decrement(FInFlightHandlers);
+    end;
   end;
 
   if removeAfter then
@@ -1410,17 +1448,28 @@ end;
 procedure TDextNatsClient.DispatchOutgoing(const AData: TBytes);
 type
   TDispatchAction = (daSendNow, daBuffered, daReject);
+  TRejectReason = (rrNone, rrDraining, rrNotConnected);
 var
   action: TDispatchAction;
+  reject: TRejectReason;
 begin
+  reject := rrNone;
   FLock.Enter;
   try
-    if FConnected then
+    if FDraining then
+    begin
+      action := daReject;
+      reject := rrDraining;
+    end
+    else if FConnected then
       action := daSendNow
     else if FRunning and FOptions.AllowReconnect and not FClosing then
     begin
       if FPendingOutboxBytes + Length(AData) > FOptions.MaxPendingBufferBytes then
-        action := daReject
+      begin
+        action := daReject;
+        reject := rrNotConnected;
+      end
       else
       begin
         FPendingOutbox.Enqueue(AData);
@@ -1429,15 +1478,22 @@ begin
       end;
     end
     else
+    begin
       action := daReject;
+      reject := rrNotConnected;
+    end;
   finally
     FLock.Leave;
   end;
 
   case action of
     daSendNow: SendRaw(AData);
-    daReject: raise EDextNatsException.Create(
-      'Not connected to a NATS server (and no room left in the reconnect buffer)');
+    daReject:
+      if reject = rrDraining then
+        raise EDextNatsException.Create('Publish rejected: NATS client is draining')
+      else
+        raise EDextNatsException.Create(
+          'Not connected to a NATS server (and no room left in the reconnect buffer)');
   end;
 end;
 
@@ -1492,6 +1548,11 @@ begin
 
   FLock.Enter;
   try
+    if FDraining or FClosing then
+    begin
+      sub.Free;
+      raise EDextNatsException.Create('Subscribe rejected: NATS client is draining or closing');
+    end;
     FSubscriptions.Add(sub.Sid, sub);
     sendNow := FConnected;
   finally
@@ -1737,6 +1798,139 @@ begin
     function: Boolean
     begin
       Self.Flush(timeoutMs);
+      Result := True;
+    end);
+end;
+
+procedure TDextNatsClient.Drain(ATimeoutMs: Integer);
+var
+  sids: IList<Integer>;
+  pair: TPair<Integer, TDextNatsSubscription>;
+  sid: Integer;
+  timeoutMs, remaining, slice: Integer;
+  sw: TStopwatch;
+  timedOut, already: Boolean;
+  flushBudget: Integer;
+begin
+  if ATimeoutMs <= 0 then
+    ATimeoutMs := FOptions.RequestTimeoutMs;
+  timeoutMs := ATimeoutMs;
+  timedOut := False;
+  sw := TStopwatch.StartNew;
+
+  FLock.Enter;
+  try
+    already := FDraining or FClosing;
+    if not already then
+      FDraining := True;
+  finally
+    FLock.Leave;
+  end;
+
+  if already then
+  begin
+    // Another Drain/Disconnect owns shutdown; wait briefly for Connected to clear.
+    while Connected and (Integer(sw.ElapsedMilliseconds) < timeoutMs) do
+      Sleep(20);
+    Exit;
+  end;
+
+  try
+    if not Connected then
+      Exit;
+
+    // 1) UNSUB all interest; keep local map so RecvLoop can still deliver in-flight MSG.
+    sids := TCollections.CreateList<Integer>;
+    FLock.Enter;
+    try
+      for pair in FSubscriptions do
+        sids.Add(pair.Key);
+    finally
+      FLock.Leave;
+    end;
+
+    for sid in sids do
+    try
+      SendRaw(NatsEncodeUnsub(sid, 0));
+    except
+      on E: Exception do
+        FireError('Drain UNSUB failed for sid ' + IntToStr(sid) + ': ' + E.Message);
+    end;
+
+    // 2) Flush outbound PUB/UNSUB (PING/PONG barrier — server has processed UNSUBs).
+    if Connected then
+    begin
+      flushBudget := timeoutMs - Integer(sw.ElapsedMilliseconds);
+      if flushBudget <= 0 then
+        timedOut := True
+      else
+      try
+        Flush(flushBudget);
+      except
+        on E: EDextNatsTimeoutError do
+          timedOut := True;
+        on E: EDextNatsException do
+          // Connection may already be gone; still finish with Disconnect.
+          FireError('Drain Flush failed: ' + E.Message);
+      end;
+    end;
+
+    // 3) Wait for in-flight handlers + a short quiet window for frames already on the wire.
+    while True do
+    begin
+      remaining := timeoutMs - Integer(sw.ElapsedMilliseconds);
+      if remaining <= 0 then
+      begin
+        timedOut := True;
+        Break;
+      end;
+      if TInterlocked.CompareExchange(FInFlightHandlers, 0, 0) = 0 then
+      begin
+        slice := remaining;
+        if slice > 50 then
+          slice := 50;
+        Sleep(slice);
+        if TInterlocked.CompareExchange(FInFlightHandlers, 0, 0) = 0 then
+          Break;
+      end
+      else
+      begin
+        slice := remaining;
+        if slice > 20 then
+          slice := 20;
+        Sleep(slice);
+      end;
+    end;
+
+    // Drop local interest before close (server already has UNSUB).
+    FLock.Enter;
+    try
+      FSubscriptions.Clear;
+    finally
+      FLock.Leave;
+    end;
+  finally
+    // 4) Close — common NATS client semantics: Drain ends disconnected.
+    try
+      Disconnect;
+    except
+    end;
+  end;
+
+  if timedOut then
+    raise EDextNatsTimeoutError.CreateFmt(
+      'Drain timed out after %d ms (connection closed)', [timeoutMs]);
+end;
+
+function TDextNatsClient.DrainAsync(ATimeoutMs: Integer): TAsyncBuilder<Boolean>;
+var
+  timeoutMs: Integer;
+begin
+  timeoutMs := ATimeoutMs;
+  Result := TAsyncTask.Run<Boolean>(
+    function: Boolean
+    begin
+      Self.Drain(timeoutMs);
       Result := True;
     end);
 end;

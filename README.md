@@ -8,7 +8,7 @@ Native [NATS](https://nats.io) client for the [Dext Framework](https://github.co
 |------|------|
 | `Source/Dext.Net.Nats.Protocol.pas` | Wire protocol (parser, INFO/CONNECT, PUB/SUB, headers) — no sockets |
 | `Source/Dext.Net.Nats.NKeys.pas` | NKey seed / `.creds` parse, Ed25519 nonce signing, CONNECT `jwt`/`nkey`/`sig` |
-| `Source/Dext.Net.Nats.pas` | `TDextNatsClient` — connect, pub/sub, request/reply, reconnect, TLS, NKey/JWT, optional `ILogger` / metrics |
+| `Source/Dext.Net.Nats.pas` | `TDextNatsClient` — connect, pub/sub, request/reply, reconnect, `Drain`/`DrainAsync`/`IsDraining`, TLS, NKey/JWT, optional `ILogger` / metrics |
 | `Source/Dext.Net.Nats.DependencyInjection.pas` | `AddNatsClient` / configure / config bind (`Nats` section) / `AddNatsJetStream` |
 | `Source/Dext.Net.Nats.HealthChecks.pas` | `TNatsHealthCheck` / `AddNatsHealthCheck` (Connected probe) |
 | `Source/Dext.Net.Nats.JetStream.pas` | `TDextNatsJetStreamContext` — streams, pull/push consumers, Fetch, SubscribePush, Ack/Nak/Term |
@@ -37,6 +37,9 @@ begin
 
     // Request/reply (inbox + timeout)
     Reply := Client.Request('svc.echo', 'ping', 2000);
+
+    // Graceful shutdown (UNSUB all → flush → disconnect); or Client.DrainAsync(5000).Await
+    // Client.Drain(5000);
 
     Js := TDextNatsJetStreamContext.Create(Client);
     try

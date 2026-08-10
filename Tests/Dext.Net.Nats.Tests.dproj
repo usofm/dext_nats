@@ -87,6 +87,7 @@
         <DCCReference Include="..\Source\Dext.Net.Nats.DependencyInjection.pas"/>
         <DCCReference Include="..\Source\Dext.Net.Nats.HealthChecks.pas"/>
         <DCCReference Include="Dext.Net.Nats.Tests.pas"/>
+        <DCCReference Include="Dext.Net.Nats.Drain.Tests.pas"/>
         <BuildConfiguration Include="Base">
             <Key>Base</Key>
         </BuildConfiguration>
