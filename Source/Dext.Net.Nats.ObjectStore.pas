@@ -22,8 +22,7 @@
 {  JetStream Object Store (ADR-20). Buckets are OBJ_<bucket> streams with   }
 {  chunk subjects $O.<bucket>.C.> and metadata $O.<bucket>.M.>.             }
 {  CreateStore / DeleteStore / Put / Get / Delete / List / Keys,            }
-{  Watch / WatchAll (push last_per_subject on meta subjects).               }
-{  Deferred: links, Seal, UpdateMeta.                                       }
+{  Watch / WatchAll, UpdateMeta, Seal. Deferred: links.                     }
 {  TDextNatsObjectStoreContext wraps a TDextNatsJetStreamContext (or        }
 {  creates one from TDextNatsClient); it does not own the client.           }
 {                                                                           }
@@ -36,6 +35,7 @@ uses
   System.SysUtils,
   System.Classes,
   Dext.Collections,
+  Dext.Collections.Dict,
   Dext.Net.Nats.Protocol,
   Dext.Net.Nats,
   Dext.Net.Nats.JetStream;
@@ -67,10 +67,25 @@ type
     class function CreateDefault(const ABucket: string): TNatsObjectStoreConfig; static;
   end;
 
+  /// <summary>
+  ///   Mutable Object Store metadata fields for <see cref="TDextNatsObjectStore.UpdateMeta"/>.
+  ///   Chunk size and link options are not updated (ADR-20 / nats.go).
+  /// </summary>
+  TNatsObjectMeta = record
+    Name: string;
+    Description: string;
+    Headers: TNatsHeaders;
+    Metadata: IDictionary<string, string>;
+    /// <summary>Name-only meta; description/headers/metadata empty.</summary>
+    class function Create(const AName: string): TNatsObjectMeta; static;
+  end;
+
   /// <summary>Object metadata + instance fields stored on $O.&lt;bucket&gt;.M.&lt;b64url(name)&gt;.</summary>
   TNatsObjectInfo = record
     Name: string;
     Description: string;
+    Headers: TNatsHeaders;
+    Metadata: IDictionary<string, string>;
     Bucket: string;
     Nuid: string;
     Size: UInt64;
@@ -146,6 +161,21 @@ type
     function GetInfo(const AName: string): TNatsObjectInfo;
     /// <summary>Soft-deletes AName (rollup tombstone) and purges its chunk subject.</summary>
     procedure Delete(const AName: string);
+    /// <summary>
+    ///   Updates name, description, headers, and metadata for a live object without
+    ///   rewriting chunk payload. Chunk size / links are left unchanged.
+    ///   Renaming publishes under the new meta subject and purges the old one.
+    ///   Raises if the object is missing/deleted, AMeta.Name is empty, or the new
+    ///   name is already held by a non-deleted object.
+    /// </summary>
+    function UpdateMeta(const AName: string; const AMeta: TNatsObjectMeta): TNatsObjectInfo;
+    /// <summary>
+    ///   Seals the underlying OBJ_ stream so further Put / Delete / UpdateMeta fail
+    ///   (NATS <c>sealed</c> stream config). Idempotent when already sealed.
+    /// </summary>
+    procedure Seal;
+    /// <summary>True when the underlying OBJ_ stream reports <c>config.sealed</c>.</summary>
+    function IsSealed: Boolean;
 
     /// <summary>
     ///   Snapshot of object metadata from <c>$O.&lt;bucket&gt;.M.&gt;</c>
@@ -429,6 +459,115 @@ begin
   Result.ChunkSize := NATS_OBJ_DEFAULT_CHUNK_SIZE;
 end;
 
+{ TNatsObjectMeta }
+
+class function TNatsObjectMeta.Create(const AName: string): TNatsObjectMeta;
+begin
+  Result := Default(TNatsObjectMeta);
+  Result.Name := AName;
+  Result.Headers := nil;
+  Result.Metadata := nil;
+end;
+
+procedure ObjParseHeadersObject(var AReader: TUtf8JsonReader; out AHeaders: TNatsHeaders);
+var
+  key: string;
+begin
+  AHeaders := nil;
+  while AReader.Read do
+  begin
+    if AReader.TokenType = TJsonTokenType.EndObject then
+      Break;
+    if AReader.TokenType <> TJsonTokenType.PropertyName then
+      Continue;
+    key := AReader.GetString;
+    if not AReader.Read then
+      Break;
+    if AReader.TokenType = TJsonTokenType.StartArray then
+    begin
+      while AReader.Read do
+      begin
+        if AReader.TokenType = TJsonTokenType.EndArray then
+          Break;
+        if AReader.TokenType = TJsonTokenType.StringValue then
+          AHeaders.Add(key, AReader.GetString)
+        else
+          ObjSkipValue(AReader);
+      end;
+    end
+    else if AReader.TokenType = TJsonTokenType.StringValue then
+      AHeaders.Add(key, AReader.GetString)
+    else
+      ObjSkipValue(AReader);
+  end;
+end;
+
+procedure ObjParseMetadataObject(var AReader: TUtf8JsonReader; out AMetadata: IDictionary<string, string>);
+var
+  key: string;
+begin
+  AMetadata := TCollections.CreateDictionary<string, string>;
+  while AReader.Read do
+  begin
+    if AReader.TokenType = TJsonTokenType.EndObject then
+      Break;
+    if AReader.TokenType <> TJsonTokenType.PropertyName then
+      Continue;
+    key := AReader.GetString;
+    if AReader.Read and (AReader.TokenType = TJsonTokenType.StringValue) then
+      AMetadata.AddOrSetValue(key, AReader.GetString)
+    else
+      ObjSkipValue(AReader);
+  end;
+end;
+
+procedure ObjWriteHeaders(var AWriter: TUtf8JsonWriter; const AHeaders: TNatsHeaders);
+var
+  i, j: Integer;
+  written: TArray<Boolean>;
+  key: string;
+begin
+  if Length(AHeaders) = 0 then
+    Exit;
+  AWriter.WritePropertyName('headers');
+  AWriter.WriteStartObject;
+  SetLength(written, Length(AHeaders));
+  for i := 0 to High(AHeaders) do
+  begin
+    if written[i] then
+      Continue;
+    key := AHeaders[i].Key;
+    AWriter.WritePropertyName(key);
+    AWriter.WriteStartArray;
+    for j := i to High(AHeaders) do
+      if (not written[j]) and (AHeaders[j].Key = key) then
+      begin
+        AWriter.WriteString(AHeaders[j].Value);
+        written[j] := True;
+      end;
+    AWriter.WriteEndArray;
+  end;
+  AWriter.WriteEndObject;
+end;
+
+procedure ObjWriteMetadata(var AWriter: TUtf8JsonWriter; const AMetadata: IDictionary<string, string>);
+var
+  keys: TArray<string>;
+  i: Integer;
+begin
+  if (AMetadata = nil) or (AMetadata.Count = 0) then
+    Exit;
+  AWriter.WritePropertyName('metadata');
+  AWriter.WriteStartObject;
+  keys := AMetadata.Keys;
+  for i := 0 to High(keys) do
+  begin
+    AWriter.WritePropertyName(keys[i]);
+    AWriter.WriteString(AMetadata[keys[i]]);
+  end;
+  AWriter.WriteEndObject;
+end;
+
 { TNatsObjectInfo }
 
 class function TNatsObjectInfo.Parse(const AJson: string): TNatsObjectInfo;
@@ -437,6 +576,8 @@ var
   reader: TUtf8JsonReader;
 begin
   Result := Default(TNatsObjectInfo);
+  Result.Headers := nil;
+  Result.Metadata := nil;
   try
     reader := ObjOpenReader(AJson, 'Empty ObjectInfo JSON', bytes);
     if (not reader.Read) or (reader.TokenType <> TJsonTokenType.StartObject) then
@@ -462,6 +603,26 @@ begin
           Result.Description := reader.GetString
         else
           ObjSkipValue(reader);
+      end
+      else if reader.ValueSpanEquals('headers') then
+      begin
+        if reader.Read then
+        begin
+          if reader.TokenType = TJsonTokenType.StartObject then
+            ObjParseHeadersObject(reader, Result.Headers)
+          else
+            ObjSkipValue(reader);
+        end;
+      end
+      else if reader.ValueSpanEquals('metadata') then
+      begin
+        if reader.Read then
+        begin
+          if reader.TokenType = TJsonTokenType.StartObject then
+            ObjParseMetadataObject(reader, Result.Metadata)
+          else
+            ObjSkipValue(reader);
+        end;
       end
       else if reader.ValueSpanEquals('bucket') then
       begin
@@ -563,6 +724,8 @@ begin
     jw.WritePropertyName('description');
     jw.WriteString(Description);
   end;
+  ObjWriteHeaders(jw, Headers);
+  ObjWriteMetadata(jw, Metadata);
   if ChunkSize > 0 then
   begin
     jw.WritePropertyName('options');
@@ -942,6 +1105,70 @@ begin
   PublishMeta(info);
   if nuid <> '' then
     PurgeSubject(ChunkSubject(nuid));
+end;
+
+function TDextNatsObjectStore.UpdateMeta(const AName: string;
+  const AMeta: TNatsObjectMeta): TNatsObjectInfo;
+var
+  info, existing: TNatsObjectInfo;
+  oldName: string;
+begin
+  if AName = '' then
+    raise EDextNatsObjectStoreError.Create('Object name is required');
+  if AMeta.Name = '' then
+    raise EDextNatsObjectStoreError.Create('Object Store UpdateMeta requires a non-empty Name');
+
+  if not TryGetInfo(AName, info) or info.Deleted then
+    raise EDextNatsObjectStoreError.CreateFmt(
+      'Object Store UpdateMeta failed: object missing or deleted: %s', [AName]);
+
+  if AName <> AMeta.Name then
+  begin
+    if TryGetInfo(AMeta.Name, existing) and (not existing.Deleted) then
+      raise EDextNatsObjectStoreError.CreateFmt(
+        'Object Store object already exists: %s', [AMeta.Name]);
+  end;
+
+  { Preserve nuid/size/chunks/digest/options; only replace mutable meta fields. }
+  oldName := info.Name;
+  info.Name := AMeta.Name;
+  info.Description := AMeta.Description;
+  info.Headers := AMeta.Headers;
+  info.Metadata := AMeta.Metadata;
+  PublishMeta(info);
+
+  if oldName <> info.Name then
+  begin
+    try
+      PurgeSubject(MetaSubject(oldName));
+    except
+      { Meta is already under the new name; best-effort old-subject cleanup. }
+    end;
+  end;
+
+  Result := info;
+end;
+
+procedure TDextNatsObjectStore.Seal;
+var
+  si: TNatsStreamInfo;
+  cfg: TNatsStreamConfig;
+begin
+  si := FContext.FJs.GetStreamInfo(FStreamName);
+  cfg := si.Config;
+  if cfg.Name = '' then
+    cfg.Name := FStreamName;
+  if Length(cfg.Subjects) = 0 then
+    cfg.Subjects := [Format('$O.%s.C.>', [FBucket]), Format('$O.%s.M.>', [FBucket])];
+  if cfg.Sealed then
+    Exit;
+  cfg.Sealed := True;
+  FContext.FJs.UpdateStream(cfg);
+end;
+
+function TDextNatsObjectStore.IsSealed: Boolean;
+begin
+  Result := FContext.FJs.GetStreamInfo(FStreamName).Config.Sealed;
 end;
 
 function TDextNatsObjectStore.List(AIncludeDeleted: Boolean): IList<TNatsObjectInfo>;

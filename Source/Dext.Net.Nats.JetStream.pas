@@ -85,6 +85,12 @@ type
     DenyDelete: Boolean;
     /// <summary>When True, emits allow_rollup_hdrs (KV purge rollup markers).</summary>
     AllowRollup: Boolean;
+    /// <summary>When True, emits allow_msg_ttl (NATS 2.11+; required for Nats-TTL publishes).</summary>
+    AllowMsgTTL: Boolean;
+    /// <summary>subject_delete_marker_ttl in nanoseconds (min 1s). 0 = omit. Enables limit markers.</summary>
+    SubjectDeleteMarkerTTL: Int64;
+    /// <summary>When True, emits sealed (stream rejects further publishes / subject changes).</summary>
+    Sealed: Boolean;
     /// <summary>Sensible defaults: limits retention, file storage, unlimited limits, 2 minute dedup window.</summary>
     class function CreateDefault(const AName: string; const ASubjects: TArray<string>): TNatsStreamConfig; static;
     /// <summary>Serializes the record to the JSON body expected by STREAM.CREATE / STREAM.UPDATE.</summary>
@@ -96,6 +102,8 @@ type
     Name: string;
     Messages, Bytes, FirstSeq, LastSeq: UInt64;
     ConsumerCount: Integer;
+    /// <summary>Parsed stream config from the API "config" object (subjects, sealed, limits, …).</summary>
+    Config: TNatsStreamConfig;
     /// <summary>Parses a stream_create_response/stream_info_response JSON payload.
     /// Raises EDextNatsJetStreamError if the payload carries an "error" object.</summary>
     class function Parse(const AJson: string): TNatsStreamInfo; static;
@@ -169,6 +177,11 @@ type
     ExpectedLastMsgId: string;
     /// <summary>Extra headers merged into the publish (e.g. KV-Operation / Nats-Rollup).</summary>
     ExtraHeaders: TNatsHeaders;
+    /// <summary>
+    ///   Per-message TTL as the Nats-TTL header (nanoseconds). 0 = omit.
+    ///   Requires stream allow_msg_ttl; minimum 1 second when set (ADR-43).
+    /// </summary>
+    MsgTTL: Int64;
     /// <summary>Request timeout in milliseconds; 0 = use the client's RequestTimeoutMs.</summary>
     TimeoutMs: Integer;
     /// <summary>Sensible defaults: no dedup key, no expectations, client default timeout.</summary>
@@ -638,8 +651,239 @@ begin
     jw.WritePropertyName('allow_rollup_hdrs');
     jw.WriteBoolean(True);
   end;
+  if AllowMsgTTL then
+  begin
+    jw.WritePropertyName('allow_msg_ttl');
+    jw.WriteBoolean(True);
+  end;
+  if SubjectDeleteMarkerTTL > 0 then
+  begin
+    jw.WritePropertyName('subject_delete_marker_ttl');
+    jw.WriteNumber(SubjectDeleteMarkerTTL);
+  end;
+  if Sealed then
+  begin
+    jw.WritePropertyName('sealed');
+    jw.WriteBoolean(True);
+  end;
   jw.WriteEndObject;
   Result := TEncoding.UTF8.GetString(w.ToBytes);
+end;
+
+procedure NatsJSParseStreamConfigObject(var AReader: TUtf8JsonReader; out AConfig: TNatsStreamConfig);
+var
+  subjects: TArray<string>;
+  s: string;
+begin
+  AConfig := Default(TNatsStreamConfig);
+  AConfig.MaxConsumers := -1;
+  AConfig.MaxMsgs := -1;
+  AConfig.MaxBytes := -1;
+  AConfig.MaxMsgSize := -1;
+  AConfig.NumReplicas := 1;
+  AConfig.Retention := srLimits;
+  AConfig.Storage := ssFile;
+  AConfig.Discard := sdOld;
+  SetLength(subjects, 0);
+
+  while AReader.Read do
+  begin
+    if AReader.TokenType = TJsonTokenType.EndObject then
+      Break;
+    if AReader.TokenType <> TJsonTokenType.PropertyName then
+      Continue;
+
+    if AReader.ValueSpanEquals('name') then
+    begin
+      if AReader.Read and (AReader.TokenType = TJsonTokenType.StringValue) then
+        AConfig.Name := AReader.GetString
+      else
+        NatsJSSkipValue(AReader);
+    end
+    else if AReader.ValueSpanEquals('description') then
+    begin
+      if AReader.Read and (AReader.TokenType = TJsonTokenType.StringValue) then
+        AConfig.Description := AReader.GetString
+      else
+        NatsJSSkipValue(AReader);
+    end
+    else if AReader.ValueSpanEquals('subjects') then
+    begin
+      if AReader.Read and (AReader.TokenType = TJsonTokenType.StartArray) then
+      begin
+        SetLength(subjects, 0);
+        while AReader.Read do
+        begin
+          if AReader.TokenType = TJsonTokenType.EndArray then
+            Break;
+          if AReader.TokenType = TJsonTokenType.StringValue then
+          begin
+            SetLength(subjects, Length(subjects) + 1);
+            subjects[High(subjects)] := AReader.GetString;
+          end
+          else
+            NatsJSSkipValue(AReader);
+        end;
+        AConfig.Subjects := subjects;
+      end
+      else
+        NatsJSSkipValue(AReader);
+    end
+    else if AReader.ValueSpanEquals('retention') then
+    begin
+      if AReader.Read and (AReader.TokenType = TJsonTokenType.StringValue) then
+      begin
+        s := AReader.GetString;
+        if SameText(s, 'interest') then
+          AConfig.Retention := srInterest
+        else if SameText(s, 'workqueue') then
+          AConfig.Retention := srWorkQueue
+        else
+          AConfig.Retention := srLimits;
+      end
+      else
+        NatsJSSkipValue(AReader);
+    end
+    else if AReader.ValueSpanEquals('storage') then
+    begin
+      if AReader.Read and (AReader.TokenType = TJsonTokenType.StringValue) then
+      begin
+        if SameText(AReader.GetString, 'memory') then
+          AConfig.Storage := ssMemory
+        else
+          AConfig.Storage := ssFile;
+      end
+      else
+        NatsJSSkipValue(AReader);
+    end
+    else if AReader.ValueSpanEquals('discard') then
+    begin
+      if AReader.Read and (AReader.TokenType = TJsonTokenType.StringValue) then
+      begin
+        if SameText(AReader.GetString, 'new') then
+          AConfig.Discard := sdNew
+        else
+          AConfig.Discard := sdOld;
+      end
+      else
+        NatsJSSkipValue(AReader);
+    end
+    else if AReader.ValueSpanEquals('max_consumers') then
+    begin
+      if AReader.Read and (AReader.TokenType = TJsonTokenType.Number) then
+        AConfig.MaxConsumers := AReader.GetInt32
+      else
+        NatsJSSkipValue(AReader);
+    end
+    else if AReader.ValueSpanEquals('max_msgs') then
+    begin
+      if AReader.Read and (AReader.TokenType = TJsonTokenType.Number) then
+        AConfig.MaxMsgs := AReader.GetInt64
+      else
+        NatsJSSkipValue(AReader);
+    end
+    else if AReader.ValueSpanEquals('max_bytes') then
+    begin
+      if AReader.Read and (AReader.TokenType = TJsonTokenType.Number) then
+        AConfig.MaxBytes := AReader.GetInt64
+      else
+        NatsJSSkipValue(AReader);
+    end
+    else if AReader.ValueSpanEquals('max_age') then
+    begin
+      if AReader.Read and (AReader.TokenType = TJsonTokenType.Number) then
+        AConfig.MaxAge := AReader.GetInt64
+      else
+        NatsJSSkipValue(AReader);
+    end
+    else if AReader.ValueSpanEquals('max_msg_size') then
+    begin
+      if AReader.Read and (AReader.TokenType = TJsonTokenType.Number) then
+        AConfig.MaxMsgSize := AReader.GetInt32
+      else
+        NatsJSSkipValue(AReader);
+    end
+    else if AReader.ValueSpanEquals('num_replicas') then
+    begin
+      if AReader.Read and (AReader.TokenType = TJsonTokenType.Number) then
+        AConfig.NumReplicas := AReader.GetInt32
+      else
+        NatsJSSkipValue(AReader);
+    end
+    else if AReader.ValueSpanEquals('duplicate_window') then
+    begin
+      if AReader.Read and (AReader.TokenType = TJsonTokenType.Number) then
+        AConfig.DuplicateWindow := AReader.GetInt64
+      else
+        NatsJSSkipValue(AReader);
+    end
+    else if AReader.ValueSpanEquals('max_msgs_per_subject') then
+    begin
+      if AReader.Read and (AReader.TokenType = TJsonTokenType.Number) then
+        AConfig.MaxMsgsPerSubject := AReader.GetInt64
+      else
+        NatsJSSkipValue(AReader);
+    end
+    else if AReader.ValueSpanEquals('allow_direct') then
+    begin
+      if AReader.Read then
+      begin
+        if AReader.TokenType in [TJsonTokenType.TrueValue, TJsonTokenType.FalseValue] then
+          AConfig.AllowDirect := AReader.GetBoolean
+        else
+          NatsJSSkipValue(AReader);
+      end;
+    end
+    else if AReader.ValueSpanEquals('deny_delete') then
+    begin
+      if AReader.Read then
+      begin
+        if AReader.TokenType in [TJsonTokenType.TrueValue, TJsonTokenType.FalseValue] then
+          AConfig.DenyDelete := AReader.GetBoolean
+        else
+          NatsJSSkipValue(AReader);
+      end;
+    end
+    else if AReader.ValueSpanEquals('allow_rollup_hdrs') then
+    begin
+      if AReader.Read then
+      begin
+        if AReader.TokenType in [TJsonTokenType.TrueValue, TJsonTokenType.FalseValue] then
+          AConfig.AllowRollup := AReader.GetBoolean
+        else
+          NatsJSSkipValue(AReader);
+      end;
+    end
+    else if AReader.ValueSpanEquals('allow_msg_ttl') then
+    begin
+      if AReader.Read then
+      begin
+        if AReader.TokenType in [TJsonTokenType.TrueValue, TJsonTokenType.FalseValue] then
+          AConfig.AllowMsgTTL := AReader.GetBoolean
+        else
+          NatsJSSkipValue(AReader);
+      end;
+    end
+    else if AReader.ValueSpanEquals('subject_delete_marker_ttl') then
+    begin
+      if AReader.Read and (AReader.TokenType = TJsonTokenType.Number) then
+        AConfig.SubjectDeleteMarkerTTL := AReader.GetInt64
+      else
+        NatsJSSkipValue(AReader);
+    end
+    else if AReader.ValueSpanEquals('sealed') then
+    begin
+      if AReader.Read then
+      begin
+        if AReader.TokenType in [TJsonTokenType.TrueValue, TJsonTokenType.FalseValue] then
+          AConfig.Sealed := AReader.GetBoolean
+        else
+          NatsJSSkipValue(AReader);
+      end;
+    end
+    else
+      NatsJSHandlePropValue(AReader);
+  end;
 end;
 
 { TNatsStreamInfo }
@@ -649,7 +893,7 @@ var
   bytes: TBytes;
   reader: TUtf8JsonReader;
 begin
-  FillChar(Result, SizeOf(Result), 0);
+  Result := Default(TNatsStreamInfo);
   try
     reader := NatsJSOpenReader(AJson, 'Empty JetStream API response', bytes);
     if (not reader.Read) or (reader.TokenType <> TJsonTokenType.StartObject) then
@@ -678,22 +922,9 @@ begin
         begin
           if reader.TokenType = TJsonTokenType.StartObject then
           begin
-            while reader.Read do
-            begin
-              if reader.TokenType = TJsonTokenType.EndObject then
-                Break;
-              if reader.TokenType <> TJsonTokenType.PropertyName then
-                Continue;
-              if reader.ValueSpanEquals('name') then
-              begin
-                if reader.Read and (reader.TokenType = TJsonTokenType.StringValue) then
-                  Result.Name := reader.GetString
-                else
-                  NatsJSSkipValue(reader);
-              end
-              else
-                NatsJSHandlePropValue(reader);
-            end;
+            NatsJSParseStreamConfigObject(reader, Result.Config);
+            if Result.Name = '' then
+              Result.Name := Result.Config.Name;
           end
           else
             NatsJSSkipValue(reader);
@@ -1664,6 +1895,14 @@ begin
     headers.Add('Nats-Expected-Last-Subject-Sequence', AOptions.ExpectedLastSubjectSequence.ToString);
   if AOptions.ExpectedLastMsgId <> '' then
     headers.Add('Nats-Expected-Last-Msg-Id', AOptions.ExpectedLastMsgId);
+  if AOptions.MsgTTL > 0 then
+  begin
+    { ADR-43: Go duration string or integer seconds; whole seconds as "Ns". }
+    if AOptions.MsgTTL < 1000000000 then
+      raise EDextNatsException.Create(
+        'Nats-TTL (MsgTTL) must be at least 1 second (1000000000 ns)');
+    headers.Add('Nats-TTL', IntToStr(AOptions.MsgTTL div 1000000000) + 's');
+  end;
   for i := 0 to High(AOptions.ExtraHeaders) do
     headers.Add(AOptions.ExtraHeaders[i].Key, AOptions.ExtraHeaders[i].Value);
 

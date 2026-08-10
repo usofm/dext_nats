@@ -13,7 +13,7 @@ Native [NATS](https://nats.io) client for the [Dext Framework](https://github.co
 | `Source/Dext.Net.Nats.HealthChecks.pas` | `TNatsHealthCheck` / `AddNatsHealthCheck` (Connected probe) |
 | `Source/Dext.Net.Nats.JetStream.pas` | `TDextNatsJetStreamContext` — streams, pull/push consumers, Fetch, SubscribePush, Ack/Nak/Term |
 | `Source/Dext.Net.Nats.KeyValue.pas` | `TDextNatsKeyValue` — JetStream KV (Put/Get/Delete/Purge, Keys, History, Watch/WatchAll, CAS Create/Update) |
-| `Source/Dext.Net.Nats.ObjectStore.pas` | Object Store (`CreateStore` / `Put` / `Get` / `Delete` / `List` / `Keys`, `Watch`/`WatchAll`; Seal/UpdateMeta/links deferred) |
+| `Source/Dext.Net.Nats.ObjectStore.pas` | Object Store (`CreateStore` / `Put` / `Get` / `Delete` / `List` / `Keys`, `Watch`/`WatchAll`, `UpdateMeta`, `Seal`; links deferred) |
 
 ## Quick start
 
@@ -64,7 +64,7 @@ end;
 
 ### JetStream Key-Value
 
-Buckets are JetStream streams (`KV_<bucket>`, subjects `$KV.<bucket>.>`). API: put/get/delete/purge, CAS `Create`/`Update`, `Keys`/`ListKeys`, `History`, and minimal `Watch`/`WatchAll` (push `last_per_subject` + updates). Deferred: per-key TTL.
+Buckets are JetStream streams (`KV_<bucket>`, subjects `$KV.<bucket>.>`). API: put/get/delete/purge, CAS `Create`/`Update`, `Keys`/`ListKeys`, `History`, minimal `Watch`/`WatchAll` (push `last_per_subject` + updates), and per-key TTL (NATS 2.11+: set `LimitMarkerTTL` on the bucket, then `Create(key, value, ttlNanos)` / `Purge(key, ttlNanos)` via `Nats-TTL`; bucket-level `TTL` remains stream `MaxAge`. Put/Update do not take a TTL — ADR-48).
 
 ```delphi
 uses Dext.Collections, Dext.Net.Nats, Dext.Net.Nats.JetStream, Dext.Net.Nats.KeyValue;

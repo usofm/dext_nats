@@ -158,6 +158,10 @@ type
     [Test, Category('Unit')]
     procedure KeyValueConfig_ShouldMapToStreamConfig;
     [Test, Category('Unit')]
+    procedure KeyValueConfig_LimitMarkerTTL_ShouldEnableMsgTTL;
+    [Test, Category('Unit')]
+    procedure KeyValue_ValidateTTL_ShouldRejectSubSecond;
+    [Test, Category('Unit')]
     procedure StoredMsg_ShouldParseDataAndKvHeaders;
     [Test, Category('Unit')]
     procedure KeyValue_ValidateNames_ShouldRejectInvalid;
@@ -317,6 +321,8 @@ type
     procedure Update_ShouldSucceedWhenRevisionMatches;
     [Test, Category('JetStream'), Category('KeyValue'), Category('Negative')]
     procedure Update_WrongRevision_ShouldRaiseMismatch;
+    [Test, Category('JetStream'), Category('KeyValue')]
+    procedure Create_WithPerKeyTTL_ShouldExpire;
   end;
 
   [TestFixture('NATS TLS Integration')]
@@ -450,6 +456,12 @@ type
     procedure Store_List_EmptyBucket_ShouldReturnEmpty;
     [Test, Category('JetStream'), Category('ObjectStore')]
     procedure WatchAll_ShouldDeliverCurrentAndUpdates;
+    [Test, Category('JetStream'), Category('ObjectStore')]
+    procedure UpdateMeta_ShouldChangeDescriptionHeadersAndRename;
+    [Test, Category('JetStream'), Category('ObjectStore'), Category('Negative')]
+    procedure UpdateMeta_DeletedOrConflict_ShouldRaise;
+    [Test, Category('JetStream'), Category('ObjectStore')]
+    procedure Seal_ShouldRejectFurtherMutations;
   end;
 
 implementation
@@ -1253,9 +1265,17 @@ var
   info: TNatsStreamInfo;
 begin
   info := TNatsStreamInfo.Parse(
-    '{"config":{"name":"S1"},"state":{"messages":3,"bytes":30,"first_seq":1,' +
-    '"last_seq":3,"consumer_count":2}}');
+    '{"config":{"name":"S1","subjects":["s.>"],"storage":"memory","discard":"new",' +
+    '"allow_rollup_hdrs":true,"sealed":true},"state":{"messages":3,"bytes":30,' +
+    '"first_seq":1,"last_seq":3,"consumer_count":2}}');
   Should(info.Name).Be('S1');
+  Should(info.Config.Name).Be('S1');
+  Should(Length(info.Config.Subjects)).Be(1);
+  Should(info.Config.Subjects[0]).Be('s.>');
+  Should(info.Config.Storage = ssMemory).BeTrue;
+  Should(info.Config.Discard = sdNew).BeTrue;
+  Should(info.Config.AllowRollup).BeTrue;
+  Should(info.Config.Sealed).BeTrue;
   Should(Int64(info.Messages)).Be(3);
   Should(Int64(info.Bytes)).Be(30);
   Should(Int64(info.FirstSeq)).Be(1);
@@ -1324,6 +1344,9 @@ begin
   cfg.AllowDirect := True;
   cfg.DenyDelete := True;
   cfg.AllowRollup := True;
+  cfg.AllowMsgTTL := True;
+  cfg.SubjectDeleteMarkerTTL := 2000000000;
+  cfg.Sealed := True;
   cfg.Discard := sdNew;
   cfg.Description := 'kv demo';
   json := cfg.ToJson;
@@ -1331,6 +1354,9 @@ begin
   Should(json.Contains('"allow_direct":true')).BeTrue;
   Should(json.Contains('"deny_delete":true')).BeTrue;
   Should(json.Contains('"allow_rollup_hdrs":true')).BeTrue;
+  Should(json.Contains('"sealed":true')).BeTrue;
+  Should(json.Contains('"allow_msg_ttl":true')).BeTrue;
+  Should(json.Contains('"subject_delete_marker_ttl":2000000000')).BeTrue;
   Should(json.Contains('"discard":"new"')).BeTrue;
   Should(json.Contains('"description":"kv demo"')).BeTrue;
 end;
@@ -1351,8 +1377,40 @@ begin
   Should(stream.AllowDirect).BeTrue;
   Should(stream.DenyDelete).BeTrue;
   Should(stream.AllowRollup).BeTrue;
+  Should(stream.AllowMsgTTL).BeFalse;
+  Should(stream.SubjectDeleteMarkerTTL).Be(0);
   Should(Ord(stream.Discard)).Be(Ord(sdNew));
   Should(Ord(stream.Storage)).Be(Ord(ssMemory));
+end;
+
+procedure TDextNatsProtocolTests.KeyValueConfig_LimitMarkerTTL_ShouldEnableMsgTTL;
+var
+  kv: TNatsKeyValueConfig;
+  stream: TNatsStreamConfig;
+  json: string;
+begin
+  kv := TNatsKeyValueConfig.CreateDefault('TTLBUCKET');
+  kv.History := 1;
+  kv.LimitMarkerTTL := 5 * NATS_KV_MIN_TTL_NANOS; { 5s }
+  stream := kv.ToStreamConfig;
+  Should(stream.AllowMsgTTL).BeTrue;
+  Should(stream.SubjectDeleteMarkerTTL).Be(5 * NATS_KV_MIN_TTL_NANOS);
+  json := stream.ToJson;
+  Should(json.Contains('"allow_msg_ttl":true')).BeTrue;
+  Should(json.Contains('"subject_delete_marker_ttl":5000000000')).BeTrue;
+end;
+
+procedure TDextNatsProtocolTests.KeyValue_ValidateTTL_ShouldRejectSubSecond;
+begin
+  Should(
+    procedure
+    var
+      kv: TNatsKeyValueConfig;
+    begin
+      kv := TNatsKeyValueConfig.CreateDefault('TTLBAD');
+      kv.LimitMarkerTTL := NATS_KV_MIN_TTL_NANOS div 2;
+      kv.ToStreamConfig;
+    end).Throw(EDextNatsKeyValueError);
 end;
 
 procedure TDextNatsProtocolTests.StoredMsg_ShouldParseDataAndKvHeaders;
@@ -3069,6 +3127,54 @@ begin
   end;
 end;
 
+procedure TDextNatsKeyValueTests.Create_WithPerKeyTTL_ShouldExpire;
+var
+  bucket: string;
+  cfg: TNatsKeyValueConfig;
+  kv: TDextNatsKeyValue;
+  entry: TNatsKeyValueEntry;
+  rev: UInt64;
+  deadline: TDateTime;
+begin
+  if not EnsureJetStreamOrFail then
+    Exit;
+
+  bucket := UniqueBucket('DEXTKVTTL');
+  cfg := TNatsKeyValueConfig.CreateDefault(bucket);
+  cfg.Storage := ssMemory;
+  cfg.History := 1;
+  cfg.LimitMarkerTTL := 2 * NATS_KV_MIN_TTL_NANOS; { marker floor / enable allow_msg_ttl }
+  kv := nil;
+  try
+    try
+      kv := TDextNatsKeyValue.CreateBucket(FJs, cfg);
+    except
+      on E: EDextNatsJetStreamError do
+      begin
+        { Older nats-server without ADR-48 / API level 1 }
+        LiveSoftSkipOrFail(
+          Format('Per-key TTL unsupported by server (%s). Need nats-server 2.11+.', [E.Message]));
+        Exit;
+      end;
+    end;
+    rev := kv.Create('session', 'ephemeral', 2 * NATS_KV_MIN_TTL_NANOS);
+    Should(Int64(rev) > 0).BeTrue;
+    entry := kv.Get('session');
+    Should(entry.AsString).Be('ephemeral');
+
+    deadline := Now + (4 / SecsPerDay); { wait up to ~4s for 2s TTL }
+    while (Now < deadline) and kv.TryGet('session', entry) do
+      Sleep(200);
+    Should(kv.TryGet('session', entry)).BeFalse;
+  finally
+    kv.Free;
+    try
+      TDextNatsKeyValue.DeleteBucket(FJs, bucket);
+    except
+    end;
+  end;
+end;
+
 { TDextNatsTlsIntegrationTests }
 
 function TDextNatsTlsIntegrationTests.TryGetTlsEndpoint(out AHost: string; out APort: Word): Boolean;
@@ -3869,6 +3975,10 @@ begin
   info := Default(TNatsObjectInfo);
   info.Name := 'invoice.pdf';
   info.Description := 'demo';
+  info.Headers := nil;
+  info.Headers.Add('content-type', 'application/pdf');
+  info.Metadata := TCollections.CreateDictionary<string, string>;
+  info.Metadata.AddOrSetValue('order', 'ord_8w2k');
   info.Bucket := 'INVOICES';
   info.Nuid := 'ABCDEFGHIJKLMNOPQRSTUV';
   info.Size := 12;
@@ -3876,9 +3986,14 @@ begin
   info.Digest := 'SHA-256=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=';
   info.ChunkSize := 128 * 1024;
   json := info.ToJson;
+  Should(json.Contains('"headers"')).BeTrue;
+  Should(json.Contains('"metadata"')).BeTrue;
   parsed := TNatsObjectInfo.Parse(json);
   Should(parsed.Name).Be(info.Name);
   Should(parsed.Description).Be(info.Description);
+  Should(parsed.Headers.GetValue('content-type')).Be('application/pdf');
+  Should(Assigned(parsed.Metadata)).BeTrue;
+  Should(parsed.Metadata['order']).Be('ord_8w2k');
   Should(parsed.Bucket).Be(info.Bucket);
   Should(parsed.Nuid).Be(info.Nuid);
   Should(parsed.Size).Be(info.Size);
@@ -4144,6 +4259,154 @@ begin
     gotInitial.Free;
     gotUpdate.Free;
     lock.Free;
+    store.Free;
+    FOs.DeleteStore(bucket);
+  end;
+end;
+
+procedure TDextNatsObjectStoreTests.UpdateMeta_ShouldChangeDescriptionHeadersAndRename;
+var
+  cfg: TNatsObjectStoreConfig;
+  store: TDextNatsObjectStore;
+  bucket: string;
+  meta: TNatsObjectMeta;
+  info: TNatsObjectInfo;
+  got: TBytes;
+  nuid: string;
+begin
+  if not EnsureJetStreamOrFail then
+    Exit;
+
+  bucket := UniqueBucket('DEXTOBJU');
+  cfg := TNatsObjectStoreConfig.CreateDefault(bucket);
+  store := FOs.CreateStore(cfg);
+  try
+    info := store.Put('old-name.bin', TEncoding.UTF8.GetBytes('payload'));
+    nuid := info.Nuid;
+
+    meta := TNatsObjectMeta.Create('new-name.bin');
+    meta.Description := 'renamed invoice';
+    meta.Headers := nil;
+    meta.Headers.Add('content-type', 'application/octet-stream');
+    meta.Metadata := TCollections.CreateDictionary<string, string>;
+    meta.Metadata.AddOrSetValue('k', 'v');
+    info := store.UpdateMeta('old-name.bin', meta);
+
+    Should(info.Name).Be('new-name.bin');
+    Should(info.Description).Be('renamed invoice');
+    Should(info.Nuid).Be(nuid);
+    Should(info.Headers.GetValue('content-type')).Be('application/octet-stream');
+    Should(Assigned(info.Metadata)).BeTrue;
+    Should(info.Metadata['k']).Be('v');
+
+    got := store.Get('new-name.bin', info);
+    Should(TEncoding.UTF8.GetString(got)).Be('payload');
+    Should(info.Description).Be('renamed invoice');
+    Should(info.Nuid).Be(nuid);
+
+    Should(
+      procedure
+      begin
+        store.Get('old-name.bin');
+      end).Throw(EDextNatsObjectStoreError);
+  finally
+    store.Free;
+    FOs.DeleteStore(bucket);
+  end;
+end;
+
+procedure TDextNatsObjectStoreTests.UpdateMeta_DeletedOrConflict_ShouldRaise;
+var
+  cfg: TNatsObjectStoreConfig;
+  store: TDextNatsObjectStore;
+  bucket: string;
+  metaDeleted, metaMissing, metaConflict: TNatsObjectMeta;
+begin
+  if not EnsureJetStreamOrFail then
+    Exit;
+
+  bucket := UniqueBucket('DEXTOBJN');
+  cfg := TNatsObjectStoreConfig.CreateDefault(bucket);
+  store := FOs.CreateStore(cfg);
+  try
+    store.Put('a.bin', TEncoding.UTF8.GetBytes('a'));
+    store.Put('b.bin', TEncoding.UTF8.GetBytes('b'));
+    store.Delete('a.bin');
+
+    metaDeleted := TNatsObjectMeta.Create('a.bin');
+    metaDeleted.Description := 'gone';
+    Should(
+      procedure
+      begin
+        store.UpdateMeta('a.bin', metaDeleted);
+      end).Throw(EDextNatsObjectStoreError);
+
+    metaMissing := TNatsObjectMeta.Create('nope.bin');
+    Should(
+      procedure
+      begin
+        store.UpdateMeta('missing.bin', metaMissing);
+      end).Throw(EDextNatsObjectStoreError);
+
+    { Rename onto a live name must fail. }
+    store.Put('c.bin', TEncoding.UTF8.GetBytes('c'));
+    metaConflict := TNatsObjectMeta.Create('b.bin');
+    metaConflict.Description := 'takeover';
+    Should(
+      procedure
+      begin
+        store.UpdateMeta('c.bin', metaConflict);
+      end).Throw(EDextNatsObjectStoreError);
+  finally
+    store.Free;
+    FOs.DeleteStore(bucket);
+  end;
+end;
+
+procedure TDextNatsObjectStoreTests.Seal_ShouldRejectFurtherMutations;
+var
+  cfg: TNatsObjectStoreConfig;
+  store: TDextNatsObjectStore;
+  bucket: string;
+  meta: TNatsObjectMeta;
+  got: TBytes;
+begin
+  if not EnsureJetStreamOrFail then
+    Exit;
+
+  bucket := UniqueBucket('DEXTOBJS');
+  cfg := TNatsObjectStoreConfig.CreateDefault(bucket);
+  store := FOs.CreateStore(cfg);
+  try
+    store.Put('keep.bin', TEncoding.UTF8.GetBytes('keep'));
+    Should(store.IsSealed).BeFalse;
+    store.Seal;
+    Should(store.IsSealed).BeTrue;
+    store.Seal; // idempotent
+
+    got := store.Get('keep.bin');
+    Should(TEncoding.UTF8.GetString(got)).Be('keep');
+
+    Should(
+      procedure
+      begin
+        store.Put('more.bin', TEncoding.UTF8.GetBytes('nope'));
+      end).Throw(EDextNatsJetStreamError);
+
+    meta := TNatsObjectMeta.Create('keep.bin');
+    meta.Description := 'sealed';
+    Should(
+      procedure
+      begin
+        store.UpdateMeta('keep.bin', meta);
+      end).Throw(EDextNatsJetStreamError);
+
+    Should(
+      procedure
+      begin
+        store.Delete('keep.bin');
+      end).Throw(EDextNatsJetStreamError);
+  finally
     store.Free;
     FOs.DeleteStore(bucket);
   end;
