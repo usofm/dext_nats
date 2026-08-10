@@ -75,7 +75,8 @@ Demo/
                                 Dext.Testing suite — see its own header comment.
   KeyValueE2E/                  JetStream Key-Value E2E console smoke test
                                 (CreateBucket / Put / Get / Keys / History /
-                                Delete / Purge / DeleteBucket) against a local
+                                Delete / Purge, CAS Create/Update, optional
+                                per-key TTL, DeleteBucket) against a local
                                 `nats-server -js`.
   ObjectStoreE2E/               JetStream Object Store E2E console smoke test
                                 (CreateStore / Put / Get / List / Keys /
@@ -217,7 +218,8 @@ parsing frames anywhere else.
   auth with `Tests/nkey` fixtures on 4224),
   `Demo/JetStreamSmokeTest/` (JetStream admin / pull / dedup),
   `Demo/KeyValueE2E/` (JetStream KV CreateBucket / Put / Get / Keys /
-  History / Delete / Purge / DeleteBucket), and
+  History / Delete / Purge, CAS Create/Update, optional per-key TTL,
+  DeleteBucket), and
   `Demo/ObjectStoreE2E/` (JetStream Object Store CreateStore / Put / Get /
   List / Keys / Delete / DeleteStore)
 - [x] VCL demo (`Demo/VCLDemo/`): multi-connection tabs, connect toggle,
