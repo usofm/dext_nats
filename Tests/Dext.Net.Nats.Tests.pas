@@ -119,6 +119,9 @@ type
     FClient: TDextNatsClient;
     procedure EnsureServerOrFail;
     function UniqueSubject(const APrefix: string): string;
+    procedure RecreateClientForStalePingReconnect(AReconnectWaitMs: Integer;
+      AMaxPendingBufferBytes: Int64);
+    procedure StabilizePingAfterForcedDisconnect;
   public
     [SetUp]
     procedure SetUp;
@@ -157,12 +160,18 @@ type
     procedure WildcardSubscribe_ShouldMatch;
     [Test, Category('Integration')]
     procedure BinaryPayload_ShouldRoundTrip;
+    [Test, Category('Integration')]
+    procedure Reconnect_Outbox_ShouldDeliverBufferedPublish;
+    [Test, Category('Integration')]
+    procedure Resubscribe_AfterReconnect_ShouldDeliver;
     [Test, Category('Integration'), Category('Negative')]
     procedure Connect_ClosedPort_ShouldRaise;
     [Test, Category('Integration'), Category('Negative')]
     procedure Publish_BeforeConnect_ShouldRaise;
     [Test, Category('Integration'), Category('Negative')]
     procedure HandlerException_ShouldFireOnError;
+    [Test, Category('Integration'), Category('Negative')]
+    procedure Request_Timeout_ShouldRaise;
   end;
 
   [TestFixture('NATS JetStream Integration (requires nats-server -js)')]
@@ -206,6 +215,8 @@ type
     procedure GetStreamInfo_Missing_ShouldRaise;
     [Test, Category('JetStream'), Category('Negative')]
     procedure DeleteConsumer_Missing_ShouldRaise;
+    [Test, Category('JetStream'), Category('Negative')]
+    procedure CreateStream_IncompatibleDuplicate_ShouldRaise;
   end;
 
   [TestFixture('NATS TLS Integration')]
@@ -223,6 +234,8 @@ type
     procedure Connect_Tls_ShouldHandshakeWhenConfigured;
     [Test, Category('TLS')]
     procedure PublishSubscribe_Tls_ShouldDeliverWhenConfigured;
+    [Test, Category('TLS')]
+    procedure RequestReply_Tls_ShouldRoundTripWhenConfigured;
   end;
 
   [TestFixture('NATS Concurrency / Stress')]
@@ -230,6 +243,9 @@ type
   private
     FClient: TDextNatsClient;
     procedure EnsureServerOrFail;
+    procedure RecreateClientForStalePingReconnect(AReconnectWaitMs: Integer;
+      AMaxPendingBufferBytes: Int64);
+    procedure StabilizePingAfterForcedDisconnect;
   public
     [SetUp]
     procedure SetUp;
@@ -242,6 +258,10 @@ type
     procedure ConcurrentRequests_ShouldRoundTrip;
     [Test, Category('Stress'), Explicit('Set DEXT_NATS_RUN_STRESS=1')]
     procedure RequestTimeout_LateReply_ShouldNotCrash;
+    [Test, Category('Stress'), Explicit('Set DEXT_NATS_RUN_STRESS=1')]
+    procedure StalePing_ShouldDisconnectAndReconnect;
+    [Test, Category('Stress'), Explicit('Set DEXT_NATS_RUN_STRESS=1')]
+    procedure PendingBuffer_ShouldRejectWhenFullDuringReconnect;
   end;
 
 implementation
@@ -881,6 +901,44 @@ begin
     IntToHex(Random(MaxInt), 8);
 end;
 
+procedure TDextNatsIntegrationTests.StabilizePingAfterForcedDisconnect;
+var
+  opts: TDextNatsOptions;
+begin
+  // MaxPingsOutstanding=0 is only used to induce one stale-ping socket close.
+  // Raise limits immediately so PingLoop does not flap after reconnect.
+  opts := FClient.Options;
+  opts.MaxPingsOutstanding := 10;
+  opts.PingIntervalMs := 120000;
+  FClient.Options := opts;
+end;
+
+procedure TDextNatsIntegrationTests.RecreateClientForStalePingReconnect(
+  AReconnectWaitMs: Integer; AMaxPendingBufferBytes: Int64);
+var
+  opts: TDextNatsOptions;
+begin
+  if Assigned(FClient) then
+  begin
+    try
+      FClient.Disconnect;
+    except
+    end;
+    FreeAndNil(FClient);
+  end;
+
+  opts := TDextNatsOptions.CreateDefault;
+  opts.AllowReconnect := True;
+  opts.MaxReconnectAttempts := 20;
+  opts.ReconnectWaitMs := AReconnectWaitMs;
+  opts.PingIntervalMs := 120;
+  opts.MaxPingsOutstanding := 0;
+  opts.MaxPendingBufferBytes := AMaxPendingBufferBytes;
+  opts.ConnectTimeoutMs := 5000;
+  opts.RequestTimeoutMs := 5000;
+  FClient := TDextNatsClient.Create(opts);
+end;
+
 procedure TDextNatsIntegrationTests.EnsureServerOrFail;
 begin
   if EnvFlagTrue('DEXT_NATS_SKIP_LIVE') then
@@ -1281,6 +1339,99 @@ begin
   end;
 end;
 
+procedure TDextNatsIntegrationTests.Reconnect_Outbox_ShouldDeliverBufferedPublish;
+var
+  subject: string;
+  received, reconnected: TEvent;
+  payload: string;
+begin
+  if EnvFlagTrue('DEXT_NATS_SKIP_LIVE') then
+    raise EDextNatsException.Create('DEXT_NATS_SKIP_LIVE=1 — live integration tests disabled');
+
+  RecreateClientForStalePingReconnect(400, 8 * 1024 * 1024);
+  subject := UniqueSubject('dext.nats.test.outbox');
+  received := TEvent.Create(nil, True, False, '');
+  reconnected := TEvent.Create(nil, True, False, '');
+  try
+    FClient.OnDisconnected :=
+      procedure
+      begin
+        StabilizePingAfterForcedDisconnect;
+        // Still inside HandleConnectionLost, before TryReconnect — buffer into outbox.
+        FClient.Publish(subject, 'buffered-during-disconnect');
+      end;
+    FClient.OnConnected :=
+      procedure(const AInfo: TNatsServerInfo; AIsReconnect: Boolean)
+      begin
+        if AIsReconnect then
+          reconnected.SetEvent;
+      end;
+
+    FClient.Connect('127.0.0.1', NATS_DEFAULT_PORT);
+    FClient.Subscribe(subject,
+      procedure(const AMsg: TNatsMsg)
+      begin
+        payload := AMsg.AsString;
+        received.SetEvent;
+      end);
+
+    Should(reconnected.WaitFor(10000) = wrSignaled).BeTrue;
+    Should(received.WaitFor(5000) = wrSignaled).BeTrue;
+    Should(payload).Be('buffered-during-disconnect');
+    Should(FClient.Connected).BeTrue;
+  finally
+    received.Free;
+    reconnected.Free;
+  end;
+end;
+
+procedure TDextNatsIntegrationTests.Resubscribe_AfterReconnect_ShouldDeliver;
+var
+  subject: string;
+  received, reconnected: TEvent;
+  payload: string;
+begin
+  if EnvFlagTrue('DEXT_NATS_SKIP_LIVE') then
+    raise EDextNatsException.Create('DEXT_NATS_SKIP_LIVE=1 — live integration tests disabled');
+
+  RecreateClientForStalePingReconnect(400, 8 * 1024 * 1024);
+  subject := UniqueSubject('dext.nats.test.resub');
+  received := TEvent.Create(nil, True, False, '');
+  reconnected := TEvent.Create(nil, True, False, '');
+  try
+    FClient.OnDisconnected :=
+      procedure
+      begin
+        StabilizePingAfterForcedDisconnect;
+      end;
+    FClient.OnConnected :=
+      procedure(const AInfo: TNatsServerInfo; AIsReconnect: Boolean)
+      begin
+        if AIsReconnect then
+          reconnected.SetEvent;
+      end;
+
+    FClient.Connect('127.0.0.1', NATS_DEFAULT_PORT);
+    FClient.Subscribe(subject,
+      procedure(const AMsg: TNatsMsg)
+      begin
+        payload := AMsg.AsString;
+        received.SetEvent;
+      end);
+
+    Should(reconnected.WaitFor(10000) = wrSignaled).BeTrue;
+    Should(FClient.Connected).BeTrue;
+
+    // Fresh publish after reconnect — proves ResendSubscriptions restored the SUB.
+    FClient.Publish(subject, 'after-reconnect');
+    Should(received.WaitFor(5000) = wrSignaled).BeTrue;
+    Should(payload).Be('after-reconnect');
+  finally
+    received.Free;
+    reconnected.Free;
+  end;
+end;
+
 procedure TDextNatsIntegrationTests.Connect_ClosedPort_ShouldRaise;
 begin
   Should(
@@ -1327,6 +1478,25 @@ begin
   finally
     errEvent.Free;
   end;
+end;
+
+procedure TDextNatsIntegrationTests.Request_Timeout_ShouldRaise;
+var
+  subject: string;
+begin
+  EnsureServerOrFail;
+  subject := UniqueSubject('dext.nats.test.req.timeout');
+  // Silent subscriber avoids 503 no-responders; Request must time out instead.
+  FClient.Subscribe(subject,
+    procedure(const AMsg: TNatsMsg)
+    begin
+    end);
+
+  Should(
+    procedure
+    begin
+      FClient.Request(subject, 'q', 250);
+    end).Throw(EDextNatsTimeoutError);
 end;
 
 { TDextNatsJetStreamTests }
@@ -1748,6 +1918,31 @@ begin
   end;
 end;
 
+procedure TDextNatsJetStreamTests.CreateStream_IncompatibleDuplicate_ShouldRaise;
+var
+  stream, subjectA, subjectB: string;
+  cfg: TNatsStreamConfig;
+begin
+  EnsureJetStreamOrFail;
+  stream := UniqueName('DEXT_JS_DUPCFG');
+  subjectA := JsUniqueSubject(stream) + '.a';
+  subjectB := JsUniqueSubject(stream) + '.b';
+  cfg := TNatsStreamConfig.CreateDefault(stream, [subjectA]);
+  cfg.Storage := ssMemory;
+  FJs.CreateStream(cfg);
+  try
+    cfg := TNatsStreamConfig.CreateDefault(stream, [subjectB]);
+    cfg.Storage := ssMemory;
+    Should(
+      procedure
+      begin
+        FJs.CreateStream(cfg);
+      end).Throw(EDextNatsJetStreamError);
+  finally
+    FJs.DeleteStream(stream);
+  end;
+end;
+
 { TDextNatsTlsIntegrationTests }
 
 function TDextNatsTlsIntegrationTests.TryGetTlsEndpoint(out AHost: string; out APort: Word): Boolean;
@@ -1831,7 +2026,66 @@ begin
   end;
 end;
 
+procedure TDextNatsTlsIntegrationTests.RequestReply_Tls_ShouldRoundTripWhenConfigured;
+var
+  host: string;
+  port: Word;
+  subject: string;
+  reply: TNatsMsg;
+begin
+  if not TryGetTlsEndpoint(host, port) then
+    Exit;
+
+  FClient.Connect(host, port);
+  subject := 'dext.nats.tls.req.' + FormatDateTime('hhnnsszzz', Now);
+  FClient.Subscribe(subject,
+    procedure(const AMsg: TNatsMsg)
+    begin
+      if AMsg.HasReplyTo then
+        FClient.Publish(AMsg.ReplyTo, 'tls-reply:' + AMsg.AsString);
+    end);
+
+  reply := FClient.Request(subject, 'ping', 3000);
+  Should(reply.AsString).Be('tls-reply:ping');
+end;
+
 { TDextNatsStressTests }
+
+procedure TDextNatsStressTests.StabilizePingAfterForcedDisconnect;
+var
+  opts: TDextNatsOptions;
+begin
+  opts := FClient.Options;
+  opts.MaxPingsOutstanding := 10;
+  opts.PingIntervalMs := 120000;
+  FClient.Options := opts;
+end;
+
+procedure TDextNatsStressTests.RecreateClientForStalePingReconnect(
+  AReconnectWaitMs: Integer; AMaxPendingBufferBytes: Int64);
+var
+  opts: TDextNatsOptions;
+begin
+  if Assigned(FClient) then
+  begin
+    try
+      FClient.Disconnect;
+    except
+    end;
+    FreeAndNil(FClient);
+  end;
+
+  opts := TDextNatsOptions.CreateDefault;
+  opts.AllowReconnect := True;
+  opts.MaxReconnectAttempts := 20;
+  opts.ReconnectWaitMs := AReconnectWaitMs;
+  opts.PingIntervalMs := 120;
+  opts.MaxPingsOutstanding := 0;
+  opts.MaxPendingBufferBytes := AMaxPendingBufferBytes;
+  opts.ConnectTimeoutMs := 5000;
+  opts.RequestTimeoutMs := 5000;
+  FClient := TDextNatsClient.Create(opts);
+end;
 
 procedure TDextNatsStressTests.EnsureServerOrFail;
 begin
@@ -1967,6 +2221,82 @@ begin
   // Allow late reply to arrive after timeout / claim-gate release without AV.
   Sleep(1000);
   Should(FClient.Connected).BeTrue;
+end;
+
+procedure TDextNatsStressTests.StalePing_ShouldDisconnectAndReconnect;
+var
+  disconnected, reconnected: TEvent;
+  sawDisconnect: Boolean;
+begin
+  RecreateClientForStalePingReconnect(400, 8 * 1024 * 1024);
+  sawDisconnect := False;
+  disconnected := TEvent.Create(nil, True, False, '');
+  reconnected := TEvent.Create(nil, True, False, '');
+  try
+    FClient.OnDisconnected :=
+      procedure
+      begin
+        StabilizePingAfterForcedDisconnect;
+        sawDisconnect := True;
+        disconnected.SetEvent;
+      end;
+    FClient.OnConnected :=
+      procedure(const AInfo: TNatsServerInfo; AIsReconnect: Boolean)
+      begin
+        if AIsReconnect then
+          reconnected.SetEvent;
+      end;
+
+    FClient.Connect('127.0.0.1', NATS_DEFAULT_PORT);
+    Should(disconnected.WaitFor(5000) = wrSignaled).BeTrue;
+    Should(sawDisconnect).BeTrue;
+    Should(reconnected.WaitFor(10000) = wrSignaled).BeTrue;
+    Should(FClient.Connected).BeTrue;
+  finally
+    disconnected.Free;
+    reconnected.Free;
+  end;
+end;
+
+procedure TDextNatsStressTests.PendingBuffer_ShouldRejectWhenFullDuringReconnect;
+var
+  rejected: Boolean;
+  disconnected, done: TEvent;
+  errText: string;
+begin
+  // Tiny outbox + long reconnect wait so Publish during disconnect hits the ceiling.
+  RecreateClientForStalePingReconnect(2500, 32);
+  rejected := False;
+  errText := '';
+  disconnected := TEvent.Create(nil, True, False, '');
+  done := TEvent.Create(nil, True, False, '');
+  try
+    FClient.OnDisconnected :=
+      procedure
+      begin
+        StabilizePingAfterForcedDisconnect;
+        disconnected.SetEvent;
+        try
+          FClient.Publish('dext.nats.stress.pending', StringOfChar('x', 128));
+        except
+          on E: EDextNatsException do
+          begin
+            rejected := True;
+            errText := E.Message;
+          end;
+        end;
+        done.SetEvent;
+      end;
+
+    FClient.Connect('127.0.0.1', NATS_DEFAULT_PORT);
+    Should(disconnected.WaitFor(5000) = wrSignaled).BeTrue;
+    Should(done.WaitFor(2000) = wrSignaled).BeTrue;
+    Should(rejected).BeTrue;
+    Should(errText.Contains('reconnect buffer') or errText.Contains('Not connected')).BeTrue;
+  finally
+    disconnected.Free;
+    done.Free;
+  end;
 end;
 
 end.

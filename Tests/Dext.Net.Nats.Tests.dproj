@@ -40,7 +40,7 @@
         <DCC_DcuOutput>..\Output\$(Platform)\$(Config)</DCC_DcuOutput>
         <DCC_ExeOutput>..\Output\$(Platform)\$(Config)</DCC_ExeOutput>
         <DCC_Namespace>System;Xml;Data;Datasnap;Web;Soap;$(DCC_Namespace)</DCC_Namespace>
-        <DCC_UnitSearchPath>..\Source;..\..\dext\Sources\Common;..\..\dext\Sources\Core;..\..\dext\Sources\Core\Base;..\..\dext\Sources\Core\Json;..\..\dext\Sources\Core\Interception;..\..\dext\Sources\Net;..\..\dext\Sources\Testing;..\..\dext\Sources\Logging;..\..\dext\Sources\JSON;$(DCC_UnitSearchPath)</DCC_UnitSearchPath>
+        <DCC_UnitSearchPath>..\Source;..\..\dext\Sources\Common;..\..\dext\Sources\Core;..\..\dext\Sources\Core\Base;..\..\dext\Sources\Core\Json;..\..\dext\Sources\Core\Interception;..\..\dext\Sources\Net;..\..\dext\Sources\Testing;..\..\dext\Sources\Logging;..\..\dext\Sources\JSON;..\..\dext\Sources\Debug;..\Output\$(Platform)\$(Config);$(DCC_UnitSearchPath)</DCC_UnitSearchPath>
         <VerInfo_Keys>CompanyName=;FileDescription=$(MSBuildProjectName);FileVersion=1.0.0.0;InternalName=;LegalCopyright=;LegalTrademarks;OriginalFilename=;ProgramID=com.embarcadero.$(MSBuildProjectName);ProductName=$(MSBuildProjectName);ProductVersion=1.0.0.0;Comments=</VerInfo_Keys>
         <VerInfo_Locale>1033</VerInfo_Locale>
         <Icns_MainIcns>$(BDS)\bin\delphi_PROJECTICNS.icns</Icns_MainIcns>

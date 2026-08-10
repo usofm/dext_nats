@@ -1,7 +1,7 @@
 ﻿# برنامهٔ جامع تست — Dext.Nats (`TEST_PLAN`)
 
 > **هدف:** پوشش کامل لایهٔ پروتکل، کلاینت cleartext، JetStream (pull)، TLS، همزمانی، و مسیرهای خطا — بدون پیاده‌سازی در این سند.  
-> **وضعیت فعلی (پس از پیاده‌سازی T0–T5 جزئی):** حدود **۷۰ تست سبز** در اجرای پیش‌فرض (Unit+Integration+JetStream+TLS soft-skip)؛ Stress با `DEXT_NATS_RUN_STRESS=1`؛ TLS زنده با `DEXT_NATS_TLS_PORT`. Baseline قبلی: ۱۵+۱ Ignore.  
+> **وضعیت فعلی (پس از I-13/14، S-04/05، TLS live، N-02/N-04):** **۷۵ تست سبز** در اجرای پیش‌فرض (Unit+Integration+JetStream+TLS soft-skip بدون env)؛ با `DEXT_NATS_TLS_PORT` + `DEXT_NATS_RUN_STRESS=1` → **۸۰/۸۰**. Fixture TLS محلی: `Tests/tls/` (self-signed، پورت ۴۲۲۳).  
 > **کامپایلر:** فقط Delphi 12 / Studio **23.0** (`dcc32`).  
 > **چارچوب:** `Dext.Testing` + `Should()`؛ فقط `Dext.Collections`.  
 > **مرجع تاریخی فازها:** `nats_complete_phased_d5d5e289.plan.md` (فاز ۱–۳ feature کامل شده؛ این سند فازهای *تست* بعدی است).
@@ -71,11 +71,13 @@
 
 **سیاست:** fail اگر سرور نباشد یا `ServerInfo.Jetstream=false`.
 
-#### `TDextNatsTlsIntegrationTests` — **۱ (skipped)**
+#### `TDextNatsTlsIntegrationTests` — **۳ (env-gated soft-skip)**
 
 | ID | متد | پوشش |
 |----|-----|------|
-| T-01 | `Connect_Tls_ShouldHandshakeWhenConfigured` | `[Ignore(...)]` دائمی؛ env `DEXT_NATS_TLS_HOST` / `DEXT_NATS_TLS_PORT`؛ `VerifyServerCertificate=False` |
+| T-01 | `Connect_Tls_ShouldHandshakeWhenConfigured` | soft-skip بدون `DEXT_NATS_TLS_PORT`؛ live با `Tests/tls`؛ `VerifyServerCertificate=False` |
+| T-02 | `PublishSubscribe_Tls_ShouldDeliverWhenConfigured` | Pub/Sub روی TLS |
+| T-03 | `RequestReply_Tls_ShouldRoundTripWhenConfigured` | Request/Reply روی TLS |
 
 ### ۲.۳ شکاف‌های مهم نسبت به API عمومی
 
@@ -206,8 +208,8 @@
 | I-10 | `Flush` بعد از Publish تضمین تحویل به سرور | ADD | |
 | I-11 | `Ping` + `Flush` (PONG path) | ADD | |
 | I-12 | `MaxPayload`: Publish بزرگ‌تر از `ServerInfo.MaxPayload` → exception واضح | ADD | ساخت `TBytes` oversized |
-| I-13 | Reconnect + outbox: قطع socket مصنوعی، Publish در حین disconnect، پس از reconnect پیام برسد | ADD | سخت؛ نیاز `AllowReconnect`, `ReconnectWaitMs` کوتاه؛ قطع با بستن از سمت سرور یا kill connection |
-| I-14 | Resubscribe بعد از reconnect | ADD | وابسته به I-13 |
+| I-13 | Reconnect + outbox: قطع socket مصنوعی، Publish در حین disconnect، پس از reconnect پیام برسد | EXISTS | `MaxPingsOutstanding=0` → PingLoop socket close؛ Publish در `OnDisconnected` → outbox |
+| I-14 | Resubscribe بعد از reconnect | EXISTS | Publish تازه بعد از reconnect |
 | I-15 | `RequestAsync` reply و timeout callback | ADD | |
 | I-16 | `OnConnected` / `OnDisconnected` fire می‌شوند | ADD | |
 | I-17 | Wildcard subscribe `dext.nats.test.>` | ADD | اختیاری اما کم‌هزینه |
@@ -245,9 +247,9 @@
 
 | ID | سناریو | وضعیت | سیاست |
 |----|--------|-------|--------|
-| T-01 | Connect با `TLS.Enabled` / سرور `tls_required` | EXISTS (Ignore) | تبدیل به **env-gated skip** (نه Ignore دائمی) |
-| T-02 | Pub/Sub روی اتصال TLS | ADD | همان endpoint |
-| T-03 | Request/Reply روی TLS | ADD | اختیاری اگر T-01/T-02 سبز |
+| T-01 | Connect با `TLS.Enabled` / سرور `tls_required` | EXISTS | env-gated soft-skip بدون `DEXT_NATS_TLS_PORT` |
+| T-02 | Pub/Sub روی اتصال TLS | EXISTS | همان endpoint |
+| T-03 | Request/Reply روی TLS | EXISTS | تأیید با `Tests/tls/nats-tls.conf` روی ۴۲۲۳ |
 
 **پیش‌نیاز محلی:**
 
@@ -269,8 +271,8 @@
 | S-01 | چند subscription موازی روی subjectهای مختلف + publish همزمان | ADD | race روی FSubscriptions |
 | S-02 | چند Request همزمان از threadهای مختلف | ADD | claim gate / inbox |
 | S-03 | Request timeout درست وقتی reply دیر می‌رسد: بدون AV/double-free (claim gate) | ADD | timeout خیلی کوتاه + responder عمداً دیر |
-| S-04 | `MaxPingsOutstanding` + `PingIntervalMs` کوتاه → stale → Disconnect socket از PingLoop → RecvLoop reconnect (اگر AllowReconnect) | ADD | flaky؛ فقط local/manual یا `[Explicit]`/`[Category('Stress')]` |
-| S-05 | فشار Publish زیاد در حین reconnect با سقف `MaxPendingBufferBytes` | ADD | negative: reject وقتی پر |
+| S-04 | `MaxPingsOutstanding` + `PingIntervalMs` کوتاه → stale → Disconnect socket از PingLoop → RecvLoop reconnect (اگر AllowReconnect) | EXISTS | Explicit؛ `MaxPingsOutstanding=0` برای القای stale قطعی |
+| S-05 | فشار Publish زیاد در حین reconnect با سقف `MaxPendingBufferBytes` | EXISTS | Explicit؛ buffer=32 → reject در `OnDisconnected` |
 
 **توصیه:** Stress را در CI پیش‌فرض **اجرا نکن**؛ فقط با فیلتر دسته یا env.
 
@@ -495,7 +497,7 @@ flowchart TD
 ### فاز T2 — Integration cleartext
 
 - [x] I-05..I-12, I-15..I-18 (queue, headers, unsub, flush/ping, MaxPayload, async, events, binary)
-- [ ] I-13/I-14 reconnect/outbox — هنوز Explicit/unimplemented (flaky روی Windows)
+- [x] I-13/I-14 reconnect/outbox/resubscribe (`Reconnect_Outbox_*`, `Resubscribe_AfterReconnect_*`)
 - **معیار خروج:** core API عمومی کلاینت در مسیر شاد پوشش دارد
 
 ### فاز T3 — JetStream (خودکارسازی Demo)
@@ -508,16 +510,16 @@ flowchart TD
 
 - [x] T-01 env-gated (soft-skip بدون `DEXT_NATS_TLS_PORT`)
 - [x] T-02 Pub/Sub روی TLS (همان env)
-- [ ] T-03 Request/Reply روی TLS
-- [ ] سند کانفیگ نمونهٔ `nats-server` TLS + تأیید با سرور TLS واقعی
+- [x] T-03 Request/Reply روی TLS
+- [x] کانفیگ نمونه + cert خودامضا در `Tests/tls/` (`nats-tls.conf` روی ۴۲۲۳؛ تأیید زنده سبز)
 - **معیار خروج:** با env و سرور TLS محلی سبز؛ بدون آن skip تمیز
 
 ### فاز T5 — Concurrency + negative سخت
 
 - [x] S-01..S-03 (Explicit؛ با `DEXT_NATS_RUN_STRESS=1`)
-- [ ] S-04/S-05 stale ping / pending buffer
+- [x] S-04/S-05 stale ping / pending buffer (`StalePing_*`, `PendingBuffer_*`)
 - [x] N-01, N-06, N-07, N-08 (+ بخشی از negative در JS)
-- [ ] N-02..N-05 کامل به‌صورت fixture جدا (بخشی داخل JS/integration پوشش داده شده)
+- [x] N-02 (`Request_Timeout_ShouldRaise`)، N-04 (`CreateStream_IncompatibleDuplicate_*`)، N-05 (`DeleteConsumer_Missing_*`)؛ N-03 همچنان از طریق `EnsureJetStreamOrFail` در JS
 - **معیار خروج:** claim-gate و مسیرهای خطای اصلی بدون AV در تست‌های تکرارشونده
 
 ---
@@ -580,9 +582,9 @@ flowchart TD
 - [x] Category Unit بدون سرور ۱۰۰٪ سبز
 - [x] با `nats-server -js`: Integration + JetStream سبز (hard-require live؛ `REQUIRE_LIVE` skip-policy هنوز کامل نشده)
 - [ ] بدون سرور: liveها skip تمیز (exit code موفقیت‌آمیز مگر REQUIRE_LIVE)
-- [x] TLS بدون env → soft-skip؛ با env+سرور → هنوز نیاز به تأیید محلی TLS
+- [x] TLS بدون env → soft-skip؛ با env+سرور (`Tests/tls`، پورت ۴۲۲۳) → T-01..T-03 سبز
 - [x] Stress اختیاری و جدا از CI پیش‌فرض (`DEXT_NATS_RUN_STRESS=1`)
-- [ ] شکاف‌های بخش ۲.۳ یا بسته شده‌اند یا در جدول «عمداً خارج از scope» مانده‌اند (I-13/14، S-04/05، TLS live، N-02..N-05 باقی)
+- [x] شکاف‌های بخش ۲.۳ عملی بسته شده‌اند؛ NKey/JWT / DI / push / observability عمداً خارج از scope
 - [x] Demo همچنان به‌عنوان smoke دستی قابل اجراست
 
 ---
@@ -591,14 +593,14 @@ flowchart TD
 
 | سبد | موجود | هدف تقریبی | اولویت فاز |
 |-----|-------|------------|------------|
-| Unit | 10 | 35–40 | T1 |
-| Integration | 4 | 16–18 | T2 |
-| JetStream | 1 | 11–13 | T3 |
-| TLS | 1 skip | 2–3 env-gated | T4 |
-| Stress | 0 | 3–5 opt-in | T5 |
-| Negative (پراکنده) | جزئی | ۸ سناریو | T2–T5 |
-| **جمع** | **16 (۱۵+۱ skip)** | **~70–80** | — |
+| Unit | ~35 | 35–40 | T1 |
+| Integration | ~22 (incl. negatives) | 16–18 | T2 |
+| JetStream | ~15 (incl. negatives) | 11–13 | T3 |
+| TLS | 3 env-gated | 2–3 env-gated | T4 |
+| Stress | 5 opt-in Explicit | 3–5 opt-in | T5 |
+| Negative (پراکنده) | N-01..N-08 پوشش عملی | ۸ سناریو | T2–T5 |
+| **جمع** | **۷۵ پیش‌فرض / ۸۰ با TLS+Stress** | **~70–80** | — |
 
 ---
 
-*این سند فقط برنامه است — تست‌های جدید هنوز پیاده نشده‌اند. هنگام پیاده‌سازی، هر ID را در commit/PR ذکر کن تا ردیابی gap آسان بماند.*
+*برنامهٔ تست؛ وضعیت چک‌باکس‌های فاز T0–T5 با suite فعلی هم‌خوان است. برای TLS زنده: `nats-server -c Tests/tls/nats-tls.conf` و `DEXT_NATS_TLS_PORT=4223`.*
