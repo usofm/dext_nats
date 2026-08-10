@@ -1,4 +1,4 @@
-{***************************************************************************}
+﻿{***************************************************************************}
 {                                                                           }
 {           Dext.Nats                                                     }
 {                                                                           }
@@ -469,6 +469,10 @@ type
     procedure ObjectInfo_ParseToJson_ShouldRoundTrip;
     [Test, Category('Unit'), Category('ObjectStore')]
     procedure ObjectInfo_Link_ParseToJson_ShouldRoundTrip;
+    [Test, Category('Unit'), Category('ObjectStore')]
+    procedure ObjectInfo_EndOfInitialMarker_ShouldBeEmpty;
+    [Test, Category('Unit'), Category('ObjectStore')]
+    procedure WatchOptions_ShouldDefaultFalse;
     [Test, Category('JetStream'), Category('ObjectStore')]
     procedure Store_CreatePutGetDelete_ShouldRoundTrip;
     [Test, Category('JetStream'), Category('ObjectStore')]
@@ -483,6 +487,14 @@ type
     procedure Store_List_EmptyBucket_ShouldReturnEmpty;
     [Test, Category('JetStream'), Category('ObjectStore')]
     procedure WatchAll_ShouldDeliverCurrentAndUpdates;
+    [Test, Category('JetStream'), Category('ObjectStore')]
+    procedure WatchAll_ShouldSignalEndOfInitial;
+    [Test, Category('JetStream'), Category('ObjectStore')]
+    procedure WatchAll_EmptyBucket_ShouldSignalEndOfInitial;
+    [Test, Category('JetStream'), Category('ObjectStore')]
+    procedure WatchAll_UpdatesOnly_ShouldSkipInitialAndMarker;
+    [Test, Category('JetStream'), Category('ObjectStore')]
+    procedure WatchAll_MetaOnly_ShouldOmitPayload;
     [Test, Category('JetStream'), Category('ObjectStore')]
     procedure UpdateMeta_ShouldChangeDescriptionHeadersAndRename;
     [Test, Category('JetStream'), Category('ObjectStore'), Category('Negative')]
@@ -4641,6 +4653,27 @@ begin
   Should(parsed.Link.Name).Be('');
 end;
 
+procedure TDextNatsObjectStoreTests.ObjectInfo_EndOfInitialMarker_ShouldBeEmpty;
+var
+  info: TNatsObjectInfo;
+begin
+  info := TNatsObjectInfo.EndOfInitialMarker;
+  Should(info.IsEndOfInitial).BeTrue;
+  Should(info.EndOfInitial).BeTrue;
+  Should(info.Name).Be('');
+  Should(info.IsLink).BeFalse;
+  Should(info.Deleted).BeFalse;
+end;
+
+procedure TDextNatsObjectStoreTests.WatchOptions_ShouldDefaultFalse;
+var
+  opts: TNatsObjectStoreWatchOptions;
+begin
+  opts := TNatsObjectStoreWatchOptions.CreateDefault;
+  Should(opts.MetaOnly).BeFalse;
+  Should(opts.UpdatesOnly).BeFalse;
+end;
+
 procedure TDextNatsObjectStoreTests.Store_CreatePutGetDelete_ShouldRoundTrip;
 var
   cfg: TNatsObjectStoreConfig;
@@ -4957,7 +4990,7 @@ begin
     watcher := store.WatchAll(
       procedure(const AInfo: TNatsObjectInfo)
       begin
-        if AInfo.Deleted then
+        if AInfo.IsEndOfInitial or AInfo.Deleted then
           Exit;
         lock.Enter;
         try
@@ -5000,6 +5033,265 @@ begin
       watcher.Free;
     gotInitial.Free;
     gotUpdate.Free;
+    lock.Free;
+    store.Free;
+    FOs.DeleteStore(bucket);
+  end;
+end;
+
+procedure TDextNatsObjectStoreTests.WatchAll_ShouldSignalEndOfInitial;
+var
+  cfg: TNatsObjectStoreConfig;
+  store: TDextNatsObjectStore;
+  watcher: TDextNatsObjectStoreWatcher;
+  bucket: string;
+  lock: TCriticalSection;
+  gotNames: IList<string>;
+  markerAt: Integer;
+  gotMarker, gotUpdate: TEvent;
+  i: Integer;
+begin
+  if not EnsureJetStreamOrFail then
+    Exit;
+
+  bucket := UniqueBucket('DEXTOBJEOI');
+  cfg := TNatsObjectStoreConfig.CreateDefault(bucket);
+  cfg.Storage := ssMemory;
+  store := FOs.CreateStore(cfg);
+  lock := TCriticalSection.Create;
+  gotNames := TCollections.CreateList<string>;
+  gotMarker := TEvent.Create(nil, True, False, '');
+  gotUpdate := TEvent.Create(nil, True, False, '');
+  watcher := nil;
+  markerAt := -1;
+  try
+    store.Put('a.txt', TEncoding.UTF8.GetBytes('one'));
+    store.Put('b.txt', TEncoding.UTF8.GetBytes('two'));
+
+    watcher := store.WatchAll(
+      procedure(const AInfo: TNatsObjectInfo)
+      begin
+        lock.Enter;
+        try
+          if AInfo.IsEndOfInitial then
+          begin
+            if markerAt < 0 then
+              markerAt := gotNames.Count;
+            gotMarker.SetEvent;
+          end
+          else if not AInfo.Deleted then
+          begin
+            gotNames.Add(AInfo.Name + '=' + IntToStr(Integer(AInfo.Size)));
+            if (AInfo.Name = 'a.txt') and (AInfo.Size = 5) then
+              gotUpdate.SetEvent;
+          end;
+        finally
+          lock.Leave;
+        end;
+      end);
+
+    Should(gotMarker.WaitFor(5000) = wrSignaled).BeTrue;
+    Should(watcher.InitialDone).BeTrue;
+    lock.Enter;
+    try
+      Should(markerAt >= 0).BeTrue;
+      Should(markerAt >= 2).BeTrue;
+      for i := 0 to markerAt - 1 do
+        Should((gotNames[i] = 'a.txt=3') or (gotNames[i] = 'b.txt=3')).BeTrue;
+    finally
+      lock.Leave;
+    end;
+
+    store.Put('a.txt', TEncoding.UTF8.GetBytes('three'));
+    Should(gotUpdate.WaitFor(5000) = wrSignaled).BeTrue;
+  finally
+    if watcher <> nil then
+      watcher.Free;
+    gotMarker.Free;
+    gotUpdate.Free;
+    lock.Free;
+    store.Free;
+    FOs.DeleteStore(bucket);
+  end;
+end;
+
+procedure TDextNatsObjectStoreTests.WatchAll_EmptyBucket_ShouldSignalEndOfInitial;
+var
+  cfg: TNatsObjectStoreConfig;
+  store: TDextNatsObjectStore;
+  watcher: TDextNatsObjectStoreWatcher;
+  bucket: string;
+  gotMarker: TEvent;
+  sawEntry: Boolean;
+begin
+  if not EnsureJetStreamOrFail then
+    Exit;
+
+  bucket := UniqueBucket('DEXTOBJEMP');
+  cfg := TNatsObjectStoreConfig.CreateDefault(bucket);
+  cfg.Storage := ssMemory;
+  store := FOs.CreateStore(cfg);
+  gotMarker := TEvent.Create(nil, True, False, '');
+  watcher := nil;
+  sawEntry := False;
+  try
+    watcher := store.WatchAll(
+      procedure(const AInfo: TNatsObjectInfo)
+      begin
+        if AInfo.IsEndOfInitial then
+          gotMarker.SetEvent
+        else
+          sawEntry := True;
+      end);
+
+    Should(gotMarker.WaitFor(5000) = wrSignaled).BeTrue;
+    Should(watcher.InitialDone).BeTrue;
+    Should(sawEntry).BeFalse;
+  finally
+    if watcher <> nil then
+      watcher.Free;
+    gotMarker.Free;
+    store.Free;
+    FOs.DeleteStore(bucket);
+  end;
+end;
+
+procedure TDextNatsObjectStoreTests.WatchAll_UpdatesOnly_ShouldSkipInitialAndMarker;
+var
+  cfg: TNatsObjectStoreConfig;
+  store: TDextNatsObjectStore;
+  watcher: TDextNatsObjectStoreWatcher;
+  opts: TNatsObjectStoreWatchOptions;
+  bucket: string;
+  lock: TCriticalSection;
+  got: IList<string>;
+  gotUpdate: TEvent;
+  sawMarker: Boolean;
+  i: Integer;
+begin
+  if not EnsureJetStreamOrFail then
+    Exit;
+
+  bucket := UniqueBucket('DEXTOBJUO');
+  cfg := TNatsObjectStoreConfig.CreateDefault(bucket);
+  cfg.Storage := ssMemory;
+  store := FOs.CreateStore(cfg);
+  lock := TCriticalSection.Create;
+  got := TCollections.CreateList<string>;
+  gotUpdate := TEvent.Create(nil, True, False, '');
+  watcher := nil;
+  sawMarker := False;
+  try
+    store.Put('seed.txt', TEncoding.UTF8.GetBytes('old-value')); { size 9 }
+    opts := TNatsObjectStoreWatchOptions.CreateDefault;
+    opts.UpdatesOnly := True;
+
+    watcher := store.WatchAll(
+      procedure(const AInfo: TNatsObjectInfo)
+      begin
+        lock.Enter;
+        try
+          if AInfo.IsEndOfInitial then
+            sawMarker := True
+          else if not AInfo.Deleted then
+          begin
+            got.Add(AInfo.Name + '=' + IntToStr(Integer(AInfo.Size)));
+            if (AInfo.Name = 'seed.txt') and (AInfo.Size = 1) then
+              gotUpdate.SetEvent;
+          end;
+        finally
+          lock.Leave;
+        end;
+      end,
+      opts);
+
+    Should(watcher.InitialDone).BeTrue;
+    Sleep(300);
+    store.Put('seed.txt', TEncoding.UTF8.GetBytes('x')); { size 1 }
+    Should(gotUpdate.WaitFor(5000) = wrSignaled).BeTrue;
+
+    lock.Enter;
+    try
+      Should(sawMarker).BeFalse;
+      Should(got.Count > 0).BeTrue;
+      for i := 0 to got.Count - 1 do
+        Should(got[i] <> 'seed.txt=9').BeTrue;
+      Should(got[got.Count - 1]).Be('seed.txt=1');
+    finally
+      lock.Leave;
+    end;
+  finally
+    if watcher <> nil then
+      watcher.Free;
+    gotUpdate.Free;
+    lock.Free;
+    store.Free;
+    FOs.DeleteStore(bucket);
+  end;
+end;
+
+procedure TDextNatsObjectStoreTests.WatchAll_MetaOnly_ShouldOmitPayload;
+var
+  cfg: TNatsObjectStoreConfig;
+  store: TDextNatsObjectStore;
+  watcher: TDextNatsObjectStoreWatcher;
+  opts: TNatsObjectStoreWatchOptions;
+  bucket: string;
+  lock: TCriticalSection;
+  gotName: string;
+  gotSize: Int64;
+  gotMarker: TEvent;
+begin
+  if not EnsureJetStreamOrFail then
+    Exit;
+
+  bucket := UniqueBucket('DEXTOBJMO');
+  cfg := TNatsObjectStoreConfig.CreateDefault(bucket);
+  cfg.Storage := ssMemory;
+  store := FOs.CreateStore(cfg);
+  lock := TCriticalSection.Create;
+  gotMarker := TEvent.Create(nil, True, False, '');
+  watcher := nil;
+  gotName := '';
+  gotSize := -1;
+  try
+    store.Put('meta.bin', TEncoding.UTF8.GetBytes('secret-payload'));
+    opts := TNatsObjectStoreWatchOptions.CreateDefault;
+    opts.MetaOnly := True;
+
+    watcher := store.WatchAll(
+      procedure(const AInfo: TNatsObjectInfo)
+      begin
+        if AInfo.IsEndOfInitial then
+        begin
+          gotMarker.SetEvent;
+          Exit;
+        end;
+        if AInfo.Deleted then
+          Exit;
+        lock.Enter;
+        try
+          gotName := AInfo.Name;
+          gotSize := Int64(AInfo.Size);
+        finally
+          lock.Leave;
+        end;
+      end,
+      opts);
+
+    Should(gotMarker.WaitFor(5000) = wrSignaled).BeTrue;
+    lock.Enter;
+    try
+      Should(gotName).Be('meta.bin');
+      { headers_only: ObjectInfo JSON omitted → Size stays 0 }
+      Should(gotSize).Be(0);
+    finally
+      lock.Leave;
+    end;
+  finally
+    if watcher <> nil then
+      watcher.Free;
+    gotMarker.Free;
     lock.Free;
     store.Free;
     FOs.DeleteStore(bucket);

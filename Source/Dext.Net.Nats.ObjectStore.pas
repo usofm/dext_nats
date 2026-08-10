@@ -22,7 +22,8 @@
 {  JetStream Object Store (ADR-20). Buckets are OBJ_<bucket> streams with   }
 {  chunk subjects $O.<bucket>.C.> and metadata $O.<bucket>.M.>.             }
 {  CreateStore / DeleteStore / Put / Get / Delete / List / Keys,            }
-{  Watch / WatchAll, UpdateMeta, Seal, AddLink / AddBucketLink.             }
+{  Watch / WatchAll (EndOfInitial marker + MetaOnly / UpdatesOnly),         }
+{  UpdateMeta, Seal, AddLink / AddBucketLink.                               }
 {  Streaming Put/Get: TStream + PutFile/GetFile (chunked, no full TBytes).  }
 {  Get follows object links (same or other bucket); bucket links raise.     }
 {  TDextNatsObjectStoreContext wraps a TDextNatsJetStreamContext (or        }
@@ -36,6 +37,7 @@ interface
 uses
   System.SysUtils,
   System.Classes,
+  System.SyncObjs,
   Dext.Collections,
   Dext.Collections.Dict,
   Dext.Net.Nats.Protocol,
@@ -108,10 +110,19 @@ type
     ChunkSize: Integer;
     /// <summary>When set (<see cref="IsLink"/>), meta is a link; see <c>options.link</c>.</summary>
     Link: TNatsObjectLink;
+    /// <summary>
+    ///   True for the synthetic end-of-initial-values marker (nats.go / KV Watch equivalent).
+    ///   Name is empty; this is not a close signal — live updates continue after it.
+    /// </summary>
+    EndOfInitial: Boolean;
     /// <summary>True when <c>options.link</c> is present (object or bucket link).</summary>
     function IsLink: Boolean;
     /// <summary>True when this is a bucket link (<see cref="IsLink"/> and empty link name).</summary>
     function IsBucketLink: Boolean;
+    /// <summary>True when this info is the end-of-initial snapshot marker.</summary>
+    function IsEndOfInitial: Boolean;
+    /// <summary>Builds the end-of-initial marker (empty name).</summary>
+    class function EndOfInitialMarker: TNatsObjectInfo; static;
     /// <summary>Parses ObjectInfo JSON (mtime is ignored / never stored).</summary>
     class function Parse(const AJson: string): TNatsObjectInfo; static;
     /// <summary>Serializes ObjectInfo for metadata publish (omits mtime).</summary>
@@ -121,11 +132,29 @@ type
   /// <summary>Callback for <see cref="TDextNatsObjectStore.Watch"/> / WatchAll deliveries.</summary>
   TNatsObjectStoreWatchHandler = reference to procedure(const AInfo: TNatsObjectInfo);
 
+  /// <summary>Options for <see cref="TDextNatsObjectStore.Watch"/> / WatchAll.</summary>
+  TNatsObjectStoreWatchOptions = record
+    /// <summary>
+    ///   Headers-only consumer: object name (from meta subject) without ObjectInfo JSON
+    ///   payload. Maps to JetStream <c>headers_only</c>. Watch already targets meta
+    ///   subjects — use this to avoid transferring meta JSON bodies.
+    /// </summary>
+    MetaOnly: Boolean;
+    /// <summary>
+    ///   Skip the last-per-subject snapshot; deliver only new updates
+    ///   (<c>deliver_policy=new</c>). No EndOfInitial marker is sent (nats.go / KV semantics).
+    /// </summary>
+    UpdatesOnly: Boolean;
+    /// <summary>Defaults: MetaOnly=False, UpdatesOnly=False (snapshot + updates + marker).</summary>
+    class function CreateDefault: TNatsObjectStoreWatchOptions; static;
+  end;
+
   /// <summary>
   ///   Active Object Store watch (ephemeral push consumer + deliver-subject SUB).
   ///   Does not own the JetStream context. Call <see cref="Stop"/> or Free before
   ///   freeing the Object Store. Handlers run on the client's receive thread —
-  ///   do not block with Request/Fetch.
+  ///   do not block with Request/Fetch. The EndOfInitial marker may also be
+  ///   delivered on the Watch caller thread when the snapshot is already empty.
   /// </summary>
   TDextNatsObjectStoreWatcher = class
   private
@@ -134,14 +163,18 @@ type
     FConsumerName: string;
     FPushSub: TDextNatsJetStreamPushSubscription;
     FActive: Boolean;
+    FGate: TObject; { TNatsOsWatchGate }
+    function GetInitialDone: Boolean;
   public
     constructor Create(AJs: TDextNatsJetStreamContext; const AStreamName, AConsumerName: string;
-      APushSub: TDextNatsJetStreamPushSubscription);
+      APushSub: TDextNatsJetStreamPushSubscription; AGate: TObject);
     destructor Destroy; override;
     /// <summary>Unsubscribes the push SUB and deletes the ephemeral consumer. Idempotent.</summary>
     procedure Stop;
     property Active: Boolean read FActive;
     property ConsumerName: string read FConsumerName;
+    /// <summary>True after the end-of-initial marker has been delivered (or UpdatesOnly watch).</summary>
+    property InitialDone: Boolean read GetInitialDone;
   end;
 
   TDextNatsObjectStoreContext = class;
@@ -172,8 +205,10 @@ type
       const ADescription: string; const AHeaders: TNatsHeaders;
       const AMetadata: IDictionary<string, string>): TNatsObjectInfo;
     function InfoFromJsMsg(const AMsg: TNatsJsMsg): TNatsObjectInfo;
+    function NameFromMetaSubject(const ASubject: string): string;
     function StartWatch(const AFilterSubject: string;
-      AHandler: TNatsObjectStoreWatchHandler): TDextNatsObjectStoreWatcher;
+      AHandler: TNatsObjectStoreWatchHandler;
+      const AOptions: TNatsObjectStoreWatchOptions): TDextNatsObjectStoreWatcher;
   public
     constructor Create(AContext: TDextNatsObjectStoreContext; const ABucket: string;
       AChunkSize: Integer = 0);
@@ -261,16 +296,24 @@ type
     /// <summary>Live (non-deleted) object names from <see cref="List"/>.</summary>
     function Keys: IList<string>;
     /// <summary>
-    ///   Watches one object: delivers the current last-per-subject meta (if any), then updates.
+    ///   Watches one object: delivers the current last-per-subject meta (if any), then
+    ///   an <see cref="TNatsObjectInfo.EndOfInitial"/> marker, then live updates.
     ///   Caller must Free the watcher (or Stop) before freeing this store.
     /// </summary>
-    function Watch(const AName: string; AHandler: TNatsObjectStoreWatchHandler): TDextNatsObjectStoreWatcher;
+    function Watch(const AName: string; AHandler: TNatsObjectStoreWatchHandler): TDextNatsObjectStoreWatcher; overload;
+    /// <summary>Watch one object with <see cref="TNatsObjectStoreWatchOptions"/>.</summary>
+    function Watch(const AName: string; AHandler: TNatsObjectStoreWatchHandler;
+      const AOptions: TNatsObjectStoreWatchOptions): TDextNatsObjectStoreWatcher; overload;
     /// <summary>
     ///   Watches the whole bucket meta subjects (<c>$O.&lt;bucket&gt;.M.&gt;</c>):
-    ///   last-per-subject snapshot + subsequent updates. Minimal MVP: no end-of-initial
-    ///   marker; handlers run on the receive thread.
+    ///   last-per-subject snapshot + EndOfInitial marker + subsequent updates.
+    ///   Handlers run on the receive thread (marker may fire on the caller thread
+    ///   when the snapshot is empty).
     /// </summary>
-    function WatchAll(AHandler: TNatsObjectStoreWatchHandler): TDextNatsObjectStoreWatcher;
+    function WatchAll(AHandler: TNatsObjectStoreWatchHandler): TDextNatsObjectStoreWatcher; overload;
+    /// <summary>WatchAll with <see cref="TNatsObjectStoreWatchOptions"/>.</summary>
+    function WatchAll(AHandler: TNatsObjectStoreWatchHandler;
+      const AOptions: TNatsObjectStoreWatchOptions): TDextNatsObjectStoreWatcher; overload;
 
     property Bucket: string read FBucket;
     property StreamName: string read FStreamName;
@@ -492,6 +535,22 @@ begin
   Result := TNetEncoding.Base64URL.EncodeBytesToString(TEncoding.UTF8.GetBytes(AName));
 end;
 
+function ObjDecodeName(const AEncoded: string): string;
+var
+  bytes: TBytes;
+begin
+  Result := '';
+  if AEncoded = '' then
+    Exit;
+  try
+    bytes := TNetEncoding.Base64URL.DecodeStringToBytes(AEncoded);
+    if Length(bytes) > 0 then
+      Result := TEncoding.UTF8.GetString(bytes);
+  except
+    Result := '';
+  end;
+end;
+
 function ObjNewNuid: string;
 var
   guid: TGUID;
@@ -557,12 +616,30 @@ end;
 
 function TNatsObjectInfo.IsLink: Boolean;
 begin
-  Result := Link.Bucket <> '';
+  Result := (not EndOfInitial) and (Link.Bucket <> '');
 end;
 
 function TNatsObjectInfo.IsBucketLink: Boolean;
 begin
   Result := IsLink and (Link.Name = '');
+end;
+
+function TNatsObjectInfo.IsEndOfInitial: Boolean;
+begin
+  Result := EndOfInitial;
+end;
+
+class function TNatsObjectInfo.EndOfInitialMarker: TNatsObjectInfo;
+begin
+  Result := Default(TNatsObjectInfo);
+  Result.EndOfInitial := True;
+end;
+
+{ TNatsObjectStoreWatchOptions }
+
+class function TNatsObjectStoreWatchOptions.CreateDefault: TNatsObjectStoreWatchOptions;
+begin
+  Result := Default(TNatsObjectStoreWatchOptions);
 end;
 
 procedure ObjParseLinkObject(var AReader: TUtf8JsonReader; out ALink: TNatsObjectLink);
@@ -1587,20 +1664,186 @@ begin
       Result.Add(infos[i].Name);
 end;
 
+function TDextNatsObjectStore.NameFromMetaSubject(const ASubject: string): string;
+var
+  prefix, enc: string;
+  p: Integer;
+begin
+  Result := '';
+  prefix := Format('$O.%s.M.', [FBucket]);
+  if not ASubject.StartsWith(prefix, True) then
+    Exit;
+  enc := Copy(ASubject, Length(prefix) + 1, MaxInt);
+  { Reject wildcards / multi-token leftovers. }
+  p := Pos('.', enc);
+  if p > 0 then
+    Exit;
+  Result := ObjDecodeName(enc);
+end;
+
 function TDextNatsObjectStore.InfoFromJsMsg(const AMsg: TNatsJsMsg): TNatsObjectInfo;
 begin
   Result := Default(TNatsObjectInfo);
   if Length(AMsg.Payload) = 0 then
+  begin
+    { MetaOnly / headers_only: recover object name from $O.<bucket>.M.<b64url>. }
+    Result.Name := NameFromMetaSubject(AMsg.Subject);
+    Result.Bucket := FBucket;
     Exit;
+  end;
   Result := TNatsObjectInfo.Parse(TEncoding.UTF8.GetString(AMsg.Payload));
   if Result.Bucket = '' then
     Result.Bucket := FBucket;
 end;
 
+{ TNatsOsWatchGate — coordinates EndOfInitial using consumer NumPending
+  (nats.go / KV Watch semantics). Owned by TDextNatsObjectStoreWatcher. }
+
+type
+  TNatsOsWatchGate = class
+  private
+    FLock: TCriticalSection;
+    FHandler: TNatsObjectStoreWatchHandler;
+    FUpdatesOnly: Boolean;
+    FStopped: Boolean;
+    FInitDone: Boolean;
+    FInitPendingKnown: Boolean;
+    FInitPending: UInt64;
+    FReceived: UInt64;
+  public
+    constructor Create(AHandler: TNatsObjectStoreWatchHandler; AUpdatesOnly: Boolean);
+    destructor Destroy; override;
+    procedure Stop;
+    procedure HandleJsMsg(const AInfo: TNatsObjectInfo; ANumPending: Integer);
+    procedure NotifyConsumerPending(ANumPending: UInt64);
+    function InitialDone: Boolean;
+  end;
+
+constructor TNatsOsWatchGate.Create(AHandler: TNatsObjectStoreWatchHandler; AUpdatesOnly: Boolean);
+begin
+  inherited Create;
+  FLock := TCriticalSection.Create;
+  FHandler := AHandler;
+  FUpdatesOnly := AUpdatesOnly;
+  { UpdatesOnly skips the snapshot marker entirely (nats.go / KV). }
+  FInitDone := AUpdatesOnly;
+  FInitPendingKnown := AUpdatesOnly;
+end;
+
+destructor TNatsOsWatchGate.Destroy;
+begin
+  Stop;
+  FreeAndNil(FLock);
+  inherited;
+end;
+
+procedure TNatsOsWatchGate.Stop;
+begin
+  FLock.Enter;
+  try
+    FStopped := True;
+  finally
+    FLock.Leave;
+  end;
+end;
+
+function TNatsOsWatchGate.InitialDone: Boolean;
+begin
+  FLock.Enter;
+  try
+    Result := FInitDone;
+  finally
+    FLock.Leave;
+  end;
+end;
+
+procedure TNatsOsWatchGate.NotifyConsumerPending(ANumPending: UInt64);
+var
+  fireMarker: Boolean;
+  handler: TNatsObjectStoreWatchHandler;
+begin
+  fireMarker := False;
+  handler := nil;
+  FLock.Enter;
+  try
+    if FStopped or FUpdatesOnly then
+      Exit;
+    if not FInitPendingKnown then
+    begin
+      FInitPending := ANumPending;
+      FInitPendingKnown := True;
+    end;
+    if (not FInitDone) and (FReceived >= FInitPending) then
+    begin
+      FInitDone := True;
+      fireMarker := True;
+      handler := FHandler;
+    end;
+  finally
+    FLock.Leave;
+  end;
+  if fireMarker and Assigned(handler) then
+    handler(TNatsObjectInfo.EndOfInitialMarker);
+end;
+
+procedure TNatsOsWatchGate.HandleJsMsg(const AInfo: TNatsObjectInfo; ANumPending: Integer);
+var
+  fireMarker: Boolean;
+  handler: TNatsObjectStoreWatchHandler;
+  pending: UInt64;
+begin
+  fireMarker := False;
+  handler := nil;
+  if ANumPending < 0 then
+    pending := 0
+  else
+    pending := UInt64(ANumPending);
+
+  FLock.Enter;
+  try
+    if FStopped then
+      Exit;
+    handler := FHandler;
+    if not FInitDone then
+    begin
+      if not FInitPendingKnown then
+      begin
+        { Bootstrap from this delivery: NumPending is remaining after this msg. }
+        FInitPending := pending + 1;
+        FInitPendingKnown := True;
+      end;
+      Inc(FReceived);
+    end;
+  finally
+    FLock.Leave;
+  end;
+
+  if Assigned(handler) then
+    handler(AInfo);
+
+  FLock.Enter;
+  try
+    if FStopped or FInitDone or FUpdatesOnly then
+      Exit;
+    if (FReceived >= FInitPending) or (pending = 0) then
+    begin
+      FInitDone := True;
+      fireMarker := True;
+      handler := FHandler;
+    end;
+  finally
+    FLock.Leave;
+  end;
+
+  if fireMarker and Assigned(handler) then
+    handler(TNatsObjectInfo.EndOfInitialMarker);
+end;
+
 { TDextNatsObjectStoreWatcher }
 
 constructor TDextNatsObjectStoreWatcher.Create(AJs: TDextNatsJetStreamContext;
-  const AStreamName, AConsumerName: string; APushSub: TDextNatsJetStreamPushSubscription);
+  const AStreamName, AConsumerName: string; APushSub: TDextNatsJetStreamPushSubscription;
+  AGate: TObject);
 begin
   inherited Create;
   if AJs = nil then
@@ -1611,13 +1854,23 @@ begin
   FStreamName := AStreamName;
   FConsumerName := AConsumerName;
   FPushSub := APushSub;
+  FGate := AGate;
   FActive := True;
 end;
 
 destructor TDextNatsObjectStoreWatcher.Destroy;
 begin
   Stop;
+  FreeAndNil(FGate);
   inherited;
+end;
+
+function TDextNatsObjectStoreWatcher.GetInitialDone: Boolean;
+begin
+  if FGate is TNatsOsWatchGate then
+    Result := TNatsOsWatchGate(FGate).InitialDone
+  else
+    Result := False;
 end;
 
 procedure TDextNatsObjectStoreWatcher.Stop;
@@ -1625,6 +1878,8 @@ begin
   if not FActive then
     Exit;
   FActive := False;
+  if FGate is TNatsOsWatchGate then
+    TNatsOsWatchGate(FGate).Stop;
   if FPushSub <> nil then
   begin
     try
@@ -1641,13 +1896,15 @@ begin
 end;
 
 function TDextNatsObjectStore.StartWatch(const AFilterSubject: string;
-  AHandler: TNatsObjectStoreWatchHandler): TDextNatsObjectStoreWatcher;
+  AHandler: TNatsObjectStoreWatchHandler;
+  const AOptions: TNatsObjectStoreWatchOptions): TDextNatsObjectStoreWatcher;
 var
   deliver, consumerName: string;
   cons: TNatsConsumerConfig;
   consInfo: TNatsConsumerInfo;
   push: TDextNatsJetStreamPushSubscription;
   js: TDextNatsJetStreamContext;
+  gate: TNatsOsWatchGate;
 begin
   if not Assigned(AHandler) then
     raise EDextNatsObjectStoreError.Create('Watch requires a handler');
@@ -1657,47 +1914,67 @@ begin
   js := FContext.FJs;
   deliver := js.Client.NewInbox;
   consumerName := 'oswatch_' + ObjNewNuid;
-
-  { Subscribe before CONSUMER.CREATE so the deliver subject has interest. }
-  push := js.SubscribePush(deliver,
-    procedure(const AMsg: TNatsJsMsg)
-    var
-      info: TNatsObjectInfo;
-    begin
-      info := InfoFromJsMsg(AMsg);
-      if info.Name = '' then
-        Exit;
-      AHandler(info);
-    end);
+  gate := TNatsOsWatchGate.Create(AHandler, AOptions.UpdatesOnly);
+  push := nil;
   try
+    { Subscribe before CONSUMER.CREATE so the deliver subject has interest. }
+    push := js.SubscribePush(deliver,
+      procedure(const AMsg: TNatsJsMsg)
+      var
+        info: TNatsObjectInfo;
+      begin
+        info := InfoFromJsMsg(AMsg);
+        if info.Name = '' then
+          Exit;
+        gate.HandleJsMsg(info, AMsg.NumPending);
+      end);
     cons := TNatsConsumerConfig.CreateDefault;
     cons.Name := consumerName;
     cons.FilterSubject := AFilterSubject;
     cons.DeliverSubject := deliver;
-    cons.DeliverPolicy := dpLastPerSubject;
+    if AOptions.UpdatesOnly then
+      cons.DeliverPolicy := dpNew
+    else
+      cons.DeliverPolicy := dpLastPerSubject;
     cons.AckPolicy := apNone;
     { ack_policy=none rejects a positive max_ack_pending (JS API 10082). }
     cons.MaxAckPending := 0;
+    cons.HeadersOnly := AOptions.MetaOnly;
     consInfo := js.CreateConsumer(FStreamName, cons);
+    gate.NotifyConsumerPending(consInfo.NumPending);
   except
-    push.Free;
+    if push <> nil then
+      push.Free;
+    gate.Free;
     raise;
   end;
 
-  Result := TDextNatsObjectStoreWatcher.Create(js, FStreamName, consInfo.Name, push);
+  Result := TDextNatsObjectStoreWatcher.Create(js, FStreamName, consInfo.Name, push, gate);
 end;
 
 function TDextNatsObjectStore.Watch(const AName: string;
   AHandler: TNatsObjectStoreWatchHandler): TDextNatsObjectStoreWatcher;
 begin
+  Result := Watch(AName, AHandler, TNatsObjectStoreWatchOptions.CreateDefault);
+end;
+
+function TDextNatsObjectStore.Watch(const AName: string; AHandler: TNatsObjectStoreWatchHandler;
+  const AOptions: TNatsObjectStoreWatchOptions): TDextNatsObjectStoreWatcher;
+begin
   if AName = '' then
     raise EDextNatsObjectStoreError.Create('Object name is required');
-  Result := StartWatch(MetaSubject(AName), AHandler);
+  Result := StartWatch(MetaSubject(AName), AHandler, AOptions);
 end;
 
 function TDextNatsObjectStore.WatchAll(AHandler: TNatsObjectStoreWatchHandler): TDextNatsObjectStoreWatcher;
 begin
-  Result := StartWatch(MetaWildcardSubject, AHandler);
+  Result := WatchAll(AHandler, TNatsObjectStoreWatchOptions.CreateDefault);
+end;
+
+function TDextNatsObjectStore.WatchAll(AHandler: TNatsObjectStoreWatchHandler;
+  const AOptions: TNatsObjectStoreWatchOptions): TDextNatsObjectStoreWatcher;
+begin
+  Result := StartWatch(MetaWildcardSubject, AHandler, AOptions);
 end;
 
 end.

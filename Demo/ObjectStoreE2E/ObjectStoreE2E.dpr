@@ -21,7 +21,8 @@
 {                                                                           }
 {  Manual end-to-end smoke test for JetStream Object Store                  }
 {  (Dext.Net.Nats.ObjectStore). Interactive console against a local         }
-{  nats-server with JetStream enabled.                                      }
+{  nats-server with JetStream enabled. Covers PutFile/GetFile via temp      }
+{  files under the system temp directory.                                   }
 {                                                                           }
 {  REQUIRES the target nats-server to be started with JetStream enabled,   }
 {  e.g.:                                                                    }
@@ -49,6 +50,7 @@ uses
   System.SysUtils,
   System.SyncObjs,
   System.Classes,
+  System.IOUtils,
   Dext.Collections,
   Dext.Utils,
   Dext.Net.Nats.Protocol in '..\..\Source\Dext.Net.Nats.Protocol.pas',
@@ -64,6 +66,7 @@ const
   OBJ_INVOICE = 'invoice.pdf';
   OBJ_README = 'readme.txt';
   OBJ_SCRATCH = 'scratch.bin';
+  OBJ_FILEBLOB = 'fileblob.bin';
   OBJ_LINK = 'invoice-link';
 
   WATCH_TIMEOUT_MS = 5000;
@@ -187,7 +190,7 @@ var
   store: TDextNatsObjectStore;
   cfg: TNatsObjectStoreConfig;
   bucket: string;
-  invoiceBytes, readmeBytes, scratchBytes, got: TBytes;
+  invoiceBytes, readmeBytes, scratchBytes, fileBlobBytes, got: TBytes;
   info, targetInfo, linkInfo: TNatsObjectInfo;
   meta: TNatsObjectMeta;
   keys: IList<string>;
@@ -198,6 +201,7 @@ var
   watchNames: IList<string>;
   watchReady: TEvent;
   watchCount: Integer;
+  srcPath, destPath: string;
 begin
   host := ResolveHost;
   port := ResolvePort;
@@ -205,6 +209,9 @@ begin
   invoiceBytes := Utf8Bytes('%PDF-1.4 dext-nats ObjectStoreE2E invoice');
   readmeBytes := Utf8Bytes('hello object store');
   scratchBytes := Utf8Bytes('temp-blob');
+  fileBlobBytes := Utf8Bytes('ObjectStoreE2E PutFile/GetFile payload');
+  srcPath := '';
+  destPath := '';
 
   Writeln('=== Dext.Nats JetStream Object Store E2E ===');
   Writeln('NOTE: this requires nats-server WITH JetStream enabled (nats-server -js).');
@@ -316,7 +323,53 @@ begin
         end;
       end;
 
-      { Step 5: Keys + List. }
+      { Step 5: PutFile / GetFile round-trip via system temp files. }
+      try
+        try
+          srcPath := TPath.Combine(TPath.GetTempPath,
+            'dext_os_e2e_src_' + IntToHex(Random(MaxInt), 8) + '.bin');
+          destPath := TPath.Combine(TPath.GetTempPath,
+            'dext_os_e2e_dst_' + IntToHex(Random(MaxInt), 8) + '.bin');
+          TFile.WriteAllBytes(srcPath, fileBlobBytes);
+
+          info := store.PutFile(OBJ_FILEBLOB, srcPath);
+          if (info.Name = OBJ_FILEBLOB) and (info.Size = UInt64(Length(fileBlobBytes))) and
+             (info.Chunks >= 1) and (not info.Deleted) then
+            PrintPass(Format('PutFile("%s", temp) size=%d chunks=%d digest=%s.',
+              [OBJ_FILEBLOB, Int64(info.Size), info.Chunks, info.Digest]))
+          else
+            PrintFail(Format('PutFile("%s"): unexpected meta name=%s size=%d chunks=%d.',
+              [OBJ_FILEBLOB, info.Name, Int64(info.Size), info.Chunks]));
+
+          info := store.GetFile(OBJ_FILEBLOB, destPath);
+          got := TFile.ReadAllBytes(destPath);
+          if BytesEqual(got, fileBlobBytes) and (info.Name = OBJ_FILEBLOB) and
+             (info.Size = UInt64(Length(fileBlobBytes))) then
+            PrintPass(Format('GetFile("%s", temp) round-trip OK (%d bytes).',
+              [OBJ_FILEBLOB, Length(got)]))
+          else
+            PrintFail(Format('GetFile("%s"): payload/meta mismatch (got %d bytes, expected %d).',
+              [OBJ_FILEBLOB, Length(got), Length(fileBlobBytes)]));
+
+          { Drop the temp object so Keys/List still expect the original three names. }
+          store.Delete(OBJ_FILEBLOB);
+          PrintPass(Format('Delete("%s") after PutFile/GetFile (Keys baseline unchanged).',
+            [OBJ_FILEBLOB]));
+        except
+          on E: Exception do
+          begin
+            PrintFail('PutFile/GetFile failed: ' + E.Message);
+            Exit;
+          end;
+        end;
+      finally
+        if (srcPath <> '') and TFile.Exists(srcPath) then
+          TFile.Delete(srcPath);
+        if (destPath <> '') and TFile.Exists(destPath) then
+          TFile.Delete(destPath);
+      end;
+
+      { Step 6: Keys + List. }
       try
         keys := store.Keys;
         PrintInfo(Format('Keys.Count=%d', [keys.Count]));
@@ -342,7 +395,7 @@ begin
         end;
       end;
 
-      { Step 6: Delete. }
+      { Step 7: Delete. }
       try
         store.Delete(OBJ_SCRATCH);
         getRaised := False;
@@ -369,7 +422,7 @@ begin
           PrintFail('Delete failed: ' + E.Message);
       end;
 
-      { Step 7: UpdateMeta (description + headers; before Seal). }
+      { Step 8: UpdateMeta (description + headers; before Seal). }
       try
         meta := TNatsObjectMeta.Create(OBJ_INVOICE);
         meta.Description := 'ObjectStoreE2E invoice';
@@ -394,7 +447,7 @@ begin
           PrintFail('UpdateMeta failed: ' + E.Message);
       end;
 
-      { Step 8: WatchAll — brief receive then Stop (before Seal). }
+      { Step 9: WatchAll — brief receive then Stop (before Seal). }
       watcher := nil;
       watchLock := TCriticalSection.Create;
       watchNames := TCollections.CreateList<string>;
@@ -451,7 +504,7 @@ begin
         watchLock.Free;
       end;
 
-      { Step 9 (optional): AddLink + Get through link (before Seal). }
+      { Step 10 (optional): AddLink + Get through link (before Seal). }
       try
         targetInfo := store.GetInfo(OBJ_INVOICE);
         linkInfo := store.AddLink(OBJ_LINK, targetInfo);
@@ -476,7 +529,7 @@ begin
           PrintFail('AddLink/Get-via-link failed: ' + E.Message);
       end;
 
-      { Step 10: Seal + verify further Put fails / IsSealed (after Watch/UpdateMeta/AddLink). }
+      { Step 11: Seal + verify further Put fails / IsSealed (after Watch/UpdateMeta/AddLink). }
       try
         if store.IsSealed then
           PrintFail('IsSealed was True before Seal.')
@@ -514,7 +567,7 @@ begin
           PrintFail('Seal failed: ' + E.Message);
       end;
 
-      { Step 11: DeleteStore (works even when sealed). }
+      { Step 12: DeleteStore (works even when sealed). }
       try
         FreeAndNil(store);
         osCtx.DeleteStore(bucket);
@@ -531,7 +584,7 @@ begin
       FreeAndNil(osCtx);
     end;
 
-    { Step 12: disconnect. }
+    { Step 13: disconnect. }
     try
       client.Disconnect;
       PrintPass('Disconnected cleanly.');
