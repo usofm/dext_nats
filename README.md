@@ -255,6 +255,7 @@ Interactive console programs under `Demo/` (not a `Dext.Testing` suite). Require
 | `Demo/TlsE2E/` | TLS upgrade after cleartext INFO | `nats-server -c Demo\TlsE2E\nats-tls.conf` from repo root (port **4223**; certs from `Tests/tls/`) | `msbuild Demo\TlsE2E\TlsE2E.dproj /p:Config=Debug /p:Platform=Win32` | `Output\Win32\Debug\TlsE2E.exe` (default `127.0.0.1:4223`) |
 | `Demo/NKeyE2E/` | NKey (bare seed) auth handshake | `nats-server -c Demo\NKeyE2E\nats-nkey.conf` (port **4224**; same user as `Tests/nkey/`) | `msbuild Demo\NKeyE2E\NKeyE2E.dproj /p:Config=Debug /p:Platform=Win32` | `Output\Win32\Debug\NKeyE2E.exe` (default `127.0.0.1:4224`) |
 | `Demo/JetStreamSmokeTest/` | Stream admin, dedup publish, pull Fetch/Ack | `nats-server -js` | `msbuild Demo\JetStreamSmokeTest\JetStreamSmokeTest.dproj /p:Config=Debug /p:Platform=Win32` | `Output\Win32\Debug\JetStreamSmokeTest.exe` |
+| `Demo/KeyValueE2E/` | JetStream KV (CreateBucket / Put / Get / Keys / History / Delete / Purge / DeleteBucket) | `nats-server -js` | `msbuild Demo\KeyValueE2E\KeyValueE2E.dproj /p:Config=Debug /p:Platform=Win32` | `Output\Win32\Debug\KeyValueE2E.exe` |
 
 Plain-core demos default to `127.0.0.1:4222`. TlsE2E / NKeyE2E need OpenSSL `libssl-3.dll` / `libcrypto-3.dll` beside the exe (same as other TLS/NKey paths). Equivalent TLS config: `cd Tests\tls` then `nats-server -c nats-tls.conf`. Equivalent NKey config: `nats-server -c Tests\nkey\nats-nkey.conf`.
 

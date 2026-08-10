@@ -71,6 +71,10 @@ Demo/
                                 stream/consumer paths and dedup'd publish
                                 against a local `nats-server -js`. Not a
                                 Dext.Testing suite — see its own header comment.
+  KeyValueE2E/                  JetStream Key-Value E2E console smoke test
+                                (CreateBucket / Put / Get / Keys / History /
+                                Delete / Purge / DeleteBucket) against a local
+                                `nats-server -js`.
 Tests/                          Dext.Testing-based unit + integration tests.
 LICENSE                         Apache 2.0.
 ```
@@ -195,8 +199,10 @@ parsing frames anywhere else.
   `Demo/QueueGroupE2E/` (queue-group load balancing), `Demo/HeadersE2E/`
   (message headers HPUB/HMSG + RequestWithHeaders), `Demo/TlsE2E/` (TLS
   upgrade with `Tests/tls` fixtures on 4223), `Demo/NKeyE2E/` (NKey seed
-  auth with `Tests/nkey` fixtures on 4224), and
-  `Demo/JetStreamSmokeTest/` (JetStream admin / pull / dedup)
+  auth with `Tests/nkey` fixtures on 4224),
+  `Demo/JetStreamSmokeTest/` (JetStream admin / pull / dedup), and
+  `Demo/KeyValueE2E/` (JetStream KV CreateBucket / Put / Get / Keys /
+  History / Delete / Purge / DeleteBucket)
 - [x] TLS on `TDextNatsClient` via `TDextTLSOptions` / `IDextTLSEngine`
       (upgrade after cleartext INFO when `tls_required` or `Options.TLS.Enabled`)
 - [x] `README.md` with usage examples
