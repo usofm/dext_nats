@@ -75,6 +75,10 @@ Demo/
                                 (CreateBucket / Put / Get / Keys / History /
                                 Delete / Purge / DeleteBucket) against a local
                                 `nats-server -js`.
+  ObjectStoreE2E/               JetStream Object Store E2E console smoke test
+                                (CreateStore / Put / Get / List / Keys /
+                                Delete / DeleteStore) against a local
+                                `nats-server -js`.
 Tests/                          Dext.Testing-based unit + integration tests.
 LICENSE                         Apache 2.0.
 ```
@@ -200,9 +204,11 @@ parsing frames anywhere else.
   (message headers HPUB/HMSG + RequestWithHeaders), `Demo/TlsE2E/` (TLS
   upgrade with `Tests/tls` fixtures on 4223), `Demo/NKeyE2E/` (NKey seed
   auth with `Tests/nkey` fixtures on 4224),
-  `Demo/JetStreamSmokeTest/` (JetStream admin / pull / dedup), and
+  `Demo/JetStreamSmokeTest/` (JetStream admin / pull / dedup),
   `Demo/KeyValueE2E/` (JetStream KV CreateBucket / Put / Get / Keys /
-  History / Delete / Purge / DeleteBucket)
+  History / Delete / Purge / DeleteBucket), and
+  `Demo/ObjectStoreE2E/` (JetStream Object Store CreateStore / Put / Get /
+  List / Keys / Delete / DeleteStore)
 - [x] TLS on `TDextNatsClient` via `TDextTLSOptions` / `IDextTLSEngine`
       (upgrade after cleartext INFO when `tls_required` or `Options.TLS.Enabled`)
 - [x] `README.md` with usage examples
