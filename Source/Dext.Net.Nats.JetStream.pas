@@ -20,8 +20,9 @@
 {                                                                           }
 {  JetStream layer for the NATS client. Stream admin (create/update/info/   }
 {  delete), dedup'd publish with a Nats-Msg-Id header, pull-consumer admin  }
-{  (create/info/delete), Fetch, and Ack/Nak/Term/InProgress — all built on  }
-{  plain request/reply and PUB against $JS.API.* subjects.                  }
+{  (create/info/delete), Fetch, push SubscribePush on deliver_subject, and  }
+{  Ack/Nak/Term/InProgress — all built on plain request/reply and PUB       }
+{  against $JS.API.* subjects.                                              }
 {  TDextNatsJetStreamContext wraps an already-connected TDextNatsClient     }
 {  (composition); it neither owns nor frees the client.                     }
 {                                                                           }
@@ -100,6 +101,13 @@ type
     Description: string;
     /// <summary>Optional subject filter within the stream.</summary>
     FilterSubject: string;
+    /// <summary>
+    ///   When non-empty, creates a <b>push</b> consumer that delivers to this subject.
+    ///   Empty = pull consumer (use <see cref="TDextNatsJetStreamContext.Fetch"/>).
+    /// </summary>
+    DeliverSubject: string;
+    /// <summary>Optional queue group for push consumers (load-balanced delivery).</summary>
+    DeliverGroup: string;
     DeliverPolicy: TNatsDeliverPolicy;
     /// <summary>Optional start sequence when DeliverPolicy = dpByStartSequence.</summary>
     OptStartSeq: UInt64;
@@ -108,6 +116,7 @@ type
     AckWait: Int64;
     MaxDeliver: Integer;
     MaxAckPending: Integer;
+    /// <summary>Pull-only: max outstanding Fetch waits. Ignored when DeliverSubject is set.</summary>
     MaxWaiting: Integer;
     ReplayPolicy: TNatsReplayPolicy;
     /// <summary>Defaults for a durable pull consumer: deliver all, ack_policy=explicit.</summary>
@@ -123,6 +132,8 @@ type
     Name: string;
     DurableName: string;
     FilterSubject: string;
+    DeliverSubject: string;
+    DeliverGroup: string;
     NumPending: UInt64;
     NumAckPending: Integer;
     NumRedelivered: Integer;
@@ -158,7 +169,8 @@ type
     class function Parse(const AJson: string): TNatsPublishAck; static;
   end;
 
-  /// <summary>A JetStream message returned by <see cref="TDextNatsJetStreamContext.Fetch"/>.</summary>
+  /// <summary>A JetStream message returned by <see cref="TDextNatsJetStreamContext.Fetch"/>
+  /// or delivered to a push subscription handler.</summary>
   TNatsJsMsg = record
     Subject: string;
     ReplyTo: string;
@@ -178,9 +190,32 @@ type
     class function FromNatsMsg(const AMsg: TNatsMsg): TNatsJsMsg; static;
   end;
 
+  /// <summary>Handler for messages delivered by a JetStream push consumer.</summary>
+  TNatsJsMsgHandler = reference to procedure(const AMsg: TNatsJsMsg);
+
+  /// <summary>
+  ///   Active SUB on a push consumer deliver subject. Does not own the JetStream context or client.
+  ///   Call <see cref="Unsubscribe"/> or Free to stop delivery (sends UNSUB).
+  /// </summary>
+  TDextNatsJetStreamPushSubscription = class
+  private
+    FClient: TDextNatsClient;
+    FSid: Integer;
+    FDeliverSubject: string;
+    FActive: Boolean;
+  public
+    constructor Create(AClient: TDextNatsClient; ASid: Integer; const ADeliverSubject: string);
+    destructor Destroy; override;
+    /// <summary>Unsubscribes from the deliver subject. Safe to call more than once.</summary>
+    procedure Unsubscribe;
+    property Sid: Integer read FSid;
+    property DeliverSubject: string read FDeliverSubject;
+    property Active: Boolean read FActive;
+  end;
+
   /// <summary>
   ///   Thin JetStream wrapper around an already-connected <see cref="TDextNatsClient"/>.
-  ///   Stream admin, dedup'd publish, pull-consumer admin, Fetch, and Ack helpers.
+  ///   Stream admin, dedup'd publish, pull/push consumer admin, Fetch, SubscribePush, and Ack helpers.
   ///   Does not own the wrapped client; the caller remains responsible for its lifetime.
   /// </summary>
   TDextNatsJetStreamContext = class
@@ -207,7 +242,7 @@ type
     /// <summary>Deletes AStreamName and all of its messages. Raises EDextNatsJetStreamError on failure.</summary>
     function DeleteStream(const AStreamName: string): Boolean;
 
-    /// <summary>Creates a consumer on AStreamName from AConfig (pull consumer when no deliver_subject).</summary>
+    /// <summary>Creates a consumer on AStreamName from AConfig (pull when DeliverSubject empty; push otherwise).</summary>
     function CreateConsumer(const AStreamName: string; const AConfig: TNatsConsumerConfig): TNatsConsumerInfo;
     /// <summary>Fetches current metadata for a consumer. Raises EDextNatsJetStreamError if missing.</summary>
     function GetConsumerInfo(const AStreamName, AConsumerName: string): TNatsConsumerInfo;
@@ -221,6 +256,17 @@ type
     /// </summary>
     function Fetch(const AStreamName, AConsumerName: string; ABatch: Integer = 1;
       AExpiresMs: Integer = 5000): IList<TNatsJsMsg>;
+
+    /// <summary>
+    ///   Subscribes to an existing push consumer's deliver subject (looked up via CONSUMER.INFO).
+    ///   Uses DeliverGroup as the NATS queue group when set. Caller must Free the subscription
+    ///   (or call Unsubscribe). Handlers run on the client's receive thread — do not block with Request.
+    /// </summary>
+    function SubscribePush(const AStreamName, AConsumerName: string;
+      AHandler: TNatsJsMsgHandler): TDextNatsJetStreamPushSubscription; overload;
+    /// <summary>Subscribes directly to ADeliverSubject (optional queue group for deliver_group).</summary>
+    function SubscribePush(const ADeliverSubject: string; AHandler: TNatsJsMsgHandler;
+      const AQueueGroup: string = ''): TDextNatsJetStreamPushSubscription; overload;
 
     /// <summary>Acknowledges a fetched message (+ACK on ReplyTo).</summary>
     procedure Ack(const AMsg: TNatsJsMsg); overload;
@@ -414,6 +460,8 @@ begin
   Result.Name := '';
   Result.Description := '';
   Result.FilterSubject := AFilterSubject;
+  Result.DeliverSubject := '';
+  Result.DeliverGroup := '';
   Result.DeliverPolicy := dpAll;
   Result.OptStartSeq := 0;
   Result.AckPolicy := apExplicit;
@@ -466,6 +514,10 @@ begin
       sb.Append('"description":"').Append(NatsJsonEscape(Description)).Append('",');
     if FilterSubject <> '' then
       sb.Append('"filter_subject":"').Append(NatsJsonEscape(FilterSubject)).Append('",');
+    if DeliverSubject <> '' then
+      sb.Append('"deliver_subject":"').Append(NatsJsonEscape(DeliverSubject)).Append('",');
+    if DeliverGroup <> '' then
+      sb.Append('"deliver_group":"').Append(NatsJsonEscape(DeliverGroup)).Append('",');
     sb.Append('"deliver_policy":"').Append(deliverStr).Append('",');
     if (DeliverPolicy = dpByStartSequence) and (OptStartSeq > 0) then
       sb.Append('"opt_start_seq":').Append(OptStartSeq).Append(',');
@@ -474,7 +526,9 @@ begin
       sb.Append('"ack_wait":').Append(AckWait).Append(',');
     sb.Append('"max_deliver":').Append(MaxDeliver).Append(',');
     sb.Append('"max_ack_pending":').Append(MaxAckPending).Append(',');
-    sb.Append('"max_waiting":').Append(MaxWaiting).Append(',');
+    // max_waiting applies to pull consumers only
+    if DeliverSubject = '' then
+      sb.Append('"max_waiting":').Append(MaxWaiting).Append(',');
     sb.Append('"replay_policy":"').Append(replayStr).Append('"');
     sb.Append('}');
     Result := sb.ToString;
@@ -514,6 +568,8 @@ begin
       configObj := TJSONObject(v);
     Result.DurableName := NatsJsonGetStr(configObj, 'durable_name');
     Result.FilterSubject := NatsJsonGetStr(configObj, 'filter_subject');
+    Result.DeliverSubject := NatsJsonGetStr(configObj, 'deliver_subject');
+    Result.DeliverGroup := NatsJsonGetStr(configObj, 'deliver_group');
     if Result.Name = '' then
       Result.Name := Result.DurableName;
   finally
@@ -735,6 +791,81 @@ begin
   finally
     obj.Free;
   end;
+end;
+
+{ TDextNatsJetStreamPushSubscription }
+
+constructor TDextNatsJetStreamPushSubscription.Create(AClient: TDextNatsClient; ASid: Integer;
+  const ADeliverSubject: string);
+begin
+  inherited Create;
+  FClient := AClient;
+  FSid := ASid;
+  FDeliverSubject := ADeliverSubject;
+  FActive := True;
+end;
+
+destructor TDextNatsJetStreamPushSubscription.Destroy;
+begin
+  Unsubscribe;
+  inherited;
+end;
+
+procedure TDextNatsJetStreamPushSubscription.Unsubscribe;
+begin
+  if not FActive then
+    Exit;
+  FActive := False;
+  if Assigned(FClient) and (FSid > 0) then
+  try
+    FClient.Unsubscribe(FSid);
+  except
+  end;
+end;
+
+function TDextNatsJetStreamContext.SubscribePush(const ADeliverSubject: string;
+  AHandler: TNatsJsMsgHandler; const AQueueGroup: string): TDextNatsJetStreamPushSubscription;
+var
+  sid: Integer;
+  handler: TNatsJsMsgHandler;
+begin
+  if ADeliverSubject = '' then
+    raise EDextNatsException.Create('SubscribePush requires a deliver subject');
+  if not Assigned(AHandler) then
+    raise EDextNatsException.Create('SubscribePush requires a message handler');
+  if not FClient.Connected then
+    raise EDextNatsException.Create('Cannot SubscribePush: NATS client is not connected');
+
+  handler := AHandler;
+  sid := FClient.Subscribe(ADeliverSubject,
+    procedure(const AMsg: TNatsMsg)
+    var
+      jsMsg: TNatsJsMsg;
+    begin
+      if NatsJSIsFetchControl(AMsg) then
+        Exit;
+      jsMsg := TNatsJsMsg.FromNatsMsg(AMsg);
+      handler(jsMsg);
+    end,
+    AQueueGroup);
+  Result := TDextNatsJetStreamPushSubscription.Create(FClient, sid, ADeliverSubject);
+end;
+
+function TDextNatsJetStreamContext.SubscribePush(const AStreamName, AConsumerName: string;
+  AHandler: TNatsJsMsgHandler): TDextNatsJetStreamPushSubscription;
+var
+  info: TNatsConsumerInfo;
+begin
+  if (AStreamName = '') or (AConsumerName = '') then
+    raise EDextNatsException.Create('SubscribePush requires stream and consumer names');
+
+  info := GetConsumerInfo(AStreamName, AConsumerName);
+  if info.DeliverSubject = '' then
+    raise EDextNatsException.CreateFmt(
+      'Consumer "%s" on stream "%s" has no deliver_subject (not a push consumer)',
+      [AConsumerName, AStreamName]);
+
+  Result := SubscribePush(info.DeliverSubject, AHandler, info.DeliverGroup);
 end;
 
 function TDextNatsJetStreamContext.Fetch(const AStreamName, AConsumerName: string; ABatch: Integer;

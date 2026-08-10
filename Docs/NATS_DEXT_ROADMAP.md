@@ -340,8 +340,8 @@ function RequestAsync(const ASubject: string; const APayload: TBytes;
 
 **Acceptance:**
 
-- [ ] integration با `nats-server -js`: publish → push handler → Ack.
-- [ ] حذف consumer/subscription بدون leak SID.
+- [x] integration با `nats-server -js`: publish → push handler → Ack.
+- [x] حذف consumer/subscription بدون leak SID.
 
 ---
 

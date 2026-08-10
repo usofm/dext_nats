@@ -132,6 +132,8 @@ type
     [Test, Category('Unit')]
     procedure ConsumerConfig_ShouldSerializeDefaults;
     [Test, Category('Unit')]
+    procedure ConsumerConfig_ShouldSerializePushDeliverSubject;
+    [Test, Category('Unit')]
     procedure ConsumerConfig_ShouldSerializeEnumVariants;
     [Test, Category('Unit')]
     procedure JsMsg_ShouldParseAckSubjectMetadata;
@@ -226,6 +228,8 @@ type
 
     [Test, Category('JetStream')]
     procedure Consumer_FetchAndAck_ShouldRoundTrip;
+    [Test, Category('JetStream')]
+    procedure Consumer_PushSubscribe_ShouldDeliverAndAck;
     [Test, Category('JetStream')]
     procedure Stream_CRUD_ShouldRoundTrip;
     [Test, Category('JetStream')]
@@ -1052,6 +1056,22 @@ begin
   Should(json.Contains('"filter_subject":"orders.*"')).BeTrue;
   Should(json.Contains('"ack_policy":"explicit"')).BeTrue;
   Should(json.Contains('"deliver_policy":"all"')).BeTrue;
+  Should(json.Contains('"max_waiting":')).BeTrue;
+  Should(json.Contains('"deliver_subject"')).BeFalse;
+end;
+
+procedure TDextNatsProtocolTests.ConsumerConfig_ShouldSerializePushDeliverSubject;
+var
+  cfg: TNatsConsumerConfig;
+  json: string;
+begin
+  cfg := TNatsConsumerConfig.CreateDefault('PUSH1', 'orders.*');
+  cfg.DeliverSubject := 'deliver.push1';
+  cfg.DeliverGroup := 'workers';
+  json := cfg.ToJson;
+  Should(json.Contains('"deliver_subject":"deliver.push1"')).BeTrue;
+  Should(json.Contains('"deliver_group":"workers"')).BeTrue;
+  Should(json.Contains('"max_waiting"')).BeFalse;
 end;
 
 procedure TDextNatsProtocolTests.ConsumerConfig_ShouldSerializeEnumVariants;
@@ -1935,6 +1955,60 @@ begin
     Should(FJs.DeleteConsumer(stream, consumer)).BeTrue;
   finally
     FJs.DeleteStream(stream);
+  end;
+end;
+
+procedure TDextNatsJetStreamTests.Consumer_PushSubscribe_ShouldDeliverAndAck;
+var
+  stream, consumer, subject, deliver: string;
+  streamCfg: TNatsStreamConfig;
+  consumerCfg: TNatsConsumerConfig;
+  info: TNatsConsumerInfo;
+  sub: TDextNatsJetStreamPushSubscription;
+  got: TEvent;
+  payload: string;
+  jsCtx: TDextNatsJetStreamContext;
+begin
+  if not EnsureJetStreamOrFail then
+    Exit;
+  stream := UniqueName('DEXT_JS_PUSH_S');
+  consumer := UniqueName('DEXT_JS_PUSH_C');
+  subject := JsUniqueSubject(stream);
+  deliver := '_INBOX.dext.push.' + UniqueName('d');
+  payload := '';
+  got := TEvent.Create(nil, True, False, '');
+  try
+    streamCfg := TNatsStreamConfig.CreateDefault(stream, [subject]);
+    streamCfg.Storage := ssMemory;
+    FJs.CreateStream(streamCfg);
+    try
+      consumerCfg := TNatsConsumerConfig.CreateDefault(consumer, subject);
+      consumerCfg.DeliverSubject := deliver;
+      info := FJs.CreateConsumer(stream, consumerCfg);
+      Should(info.DeliverSubject).Be(deliver);
+
+      jsCtx := FJs;
+      sub := FJs.SubscribePush(stream, consumer,
+        procedure(const AMsg: TNatsJsMsg)
+        begin
+          payload := AMsg.AsString;
+          jsCtx.Ack(AMsg);
+          got.SetEvent;
+        end);
+      try
+        FJs.Publish(subject, 'push-hello');
+        Should(got.WaitFor(5000) = wrSignaled).BeTrue;
+        Should(payload).Be('push-hello');
+      finally
+        sub.Free;
+      end;
+
+      Should(FJs.DeleteConsumer(stream, consumer)).BeTrue;
+    finally
+      FJs.DeleteStream(stream);
+    end;
+  finally
+    got.Free;
   end;
 end;
 

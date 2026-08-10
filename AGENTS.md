@@ -34,7 +34,7 @@ Source/
                                 probe; Web-free — map to IHealthCheck in apps).
   Dext.Net.Nats.JetStream.pas   TDextNatsJetStreamContext: stream admin
                                 (create/update/info/delete), dedup'd publish,
-                                pull-consumer admin, Fetch, Ack/Nak/Term/
+                                pull Fetch + push SubscribePush, Ack/Nak/Term/
                                 InProgress via $JS.API.*.
 Demo/
   JetStreamSmokeTest/           Interactive console program that manually verifies
@@ -151,8 +151,8 @@ parsing frames anywhere else.
       keepalive — now using `Dext.Collections` throughout
 - [x] JetStream (`Dext.Net.Nats.JetStream.pas`): stream admin
  (create/update/info/delete), dedup'd publish with a `Nats-Msg-Id`
- header, pull-consumer admin, Fetch, and Ack/Nak/Term/InProgress;
- push consumers are not implemented
+ header, pull-consumer admin, Fetch, Ack/Nak/Term/InProgress, and push
+ `SubscribePush` on `deliver_subject`
 - [x] Unit/integration tests in `Tests/Dext.Net.Nats.Tests.pas` (use `Dext.Testing`)
 - [x] Console demo project (`.dpr`/`.dproj`): `Demo/JetStreamSmokeTest/` is the
       first one, covering the new JetStream layer; more demos may follow
@@ -165,8 +165,8 @@ parsing frames anywhere else.
       `AddNatsClientAndConnect`, `AddNatsJetStream`)
 - [x] Observability: optional `ILogger`, opt-in `TMetrics` (`EnableMetrics`),
       `TNatsClientMetrics`, `Dext.Net.Nats.HealthChecks`
-- [ ] JetStream push consumers are deferred to a later pass
 - [ ] Protocol hot-path PERF (`Docs/NATS_DEXT_ROADMAP.md` SPEC-PERF-*)
+- [ ] Async `Request`/`Flush` via `TAsyncBuilder` (roadmap SPEC-ASYNC)
 
 ## Working style expected of an agent here
 

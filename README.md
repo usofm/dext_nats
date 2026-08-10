@@ -11,7 +11,7 @@ Native [NATS](https://nats.io) client for the [Dext Framework](https://github.co
 | `Source/Dext.Net.Nats.pas` | `TDextNatsClient` — connect, pub/sub, request/reply, reconnect, TLS, NKey/JWT, optional `ILogger` / metrics |
 | `Source/Dext.Net.Nats.DependencyInjection.pas` | `AddNatsClient` / configure callback / `AddNatsJetStream` for Dext.DI |
 | `Source/Dext.Net.Nats.HealthChecks.pas` | `TNatsHealthCheck` / `AddNatsHealthCheck` (Connected probe) |
-| `Source/Dext.Net.Nats.JetStream.pas` | `TDextNatsJetStreamContext` — streams, pull consumers, Fetch, Ack/Nak/Term |
+| `Source/Dext.Net.Nats.JetStream.pas` | `TDextNatsJetStreamContext` — streams, pull/push consumers, Fetch, SubscribePush, Ack/Nak/Term |
 
 ## Quick start
 
