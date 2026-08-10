@@ -42,6 +42,9 @@ Demo/
   RequestReplyE2E/              Core request/reply E2E console smoke test
                                 (echo responder + no-responders) against a plain
                                 local `nats-server` (no JetStream).
+  QueueGroupE2E/                Core queue-group load-balancing E2E console
+                                smoke test (two workers, same queue) against a
+                                plain local `nats-server` (no JetStream).
   JetStreamSmokeTest/           Interactive console program that manually verifies
                                 stream/consumer paths and dedup'd publish
                                 against a local `nats-server -js`. Not a
@@ -160,7 +163,8 @@ parsing frames anywhere else.
  `SubscribePush` on `deliver_subject`
 - [x] Unit/integration tests in `Tests/Dext.Net.Nats.Tests.pas` (use `Dext.Testing`)
 - [x] Console demo projects (`.dpr`/`.dproj`): `Demo/PubSubE2E/` (core one-way
-  pub/sub), `Demo/RequestReplyE2E/` (request/reply + no-responders), and
+  pub/sub), `Demo/RequestReplyE2E/` (request/reply + no-responders),
+  `Demo/QueueGroupE2E/` (queue-group load balancing), and
   `Demo/JetStreamSmokeTest/` (JetStream admin / pull / dedup)
 - [x] TLS on `TDextNatsClient` via `TDextTLSOptions` / `IDextTLSEngine`
       (upgrade after cleartext INFO when `tls_required` or `Options.TLS.Enabled`)
