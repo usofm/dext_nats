@@ -381,7 +381,8 @@ function RequestAsync(const ASubject: string; const APayload: TBytes;
 - [x] Integration soft-skip: Put/Get/Delete (+ Purge) روی `nats-server -js`.
 - [x] Integration soft-skip: `Keys` / `History` / `WatchAll` روی `nats-server -js`.
 - [x] Integration soft-skip: CAS `Create` / `Update` (+ KeyExists / revision mismatch) روی `nats-server -js`.
-- [ ] **Deferred:** per-key TTL، Watch end-of-initial marker / MetaOnly.
+- [x] Per-key TTL (NATS 2.11+ / ADR-48): `LimitMarkerTTL` → `allow_msg_ttl` + `subject_delete_marker_ttl`; `Create`/`Purge` emit `Nats-TTL`; Put/Update do not accept TTL.
+- [ ] **Deferred:** Watch end-of-initial marker / MetaOnly.
 
 ---
 

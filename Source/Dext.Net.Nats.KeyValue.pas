@@ -23,9 +23,10 @@
 {  TDextNatsKeyValue wraps an existing TDextNatsJetStreamContext by         }
 {  composition and does not own its lifetime. Keys / History / Watch(All)   }
 {  use ephemeral JetStream consumers (pull for Keys/History, push for       }
-{  Watch). CAS Create/Update use Nats-Expected-Last-Subject-Sequence;       }
-{  per-key TTL and Watch end-of-initial marker remain deferred — see       }
-{  Docs/NATS_DEXT_ROADMAP.md SPEC-KV-01.                                    }
+{  Watch). CAS Create/Update use Nats-Expected-Last-Subject-Sequence.       }
+{  Per-key TTL (NATS 2.11+, ADR-48): bucket LimitMarkerTTL enables          }
+{  allow_msg_ttl + subject_delete_marker_ttl; Create/Purge accept Nats-TTL. }
+{  Watch end-of-initial marker remains deferred — SPEC-KV-01.               }
 {                                                                           }
 {***************************************************************************}
 unit Dext.Net.Nats.KeyValue;
@@ -52,8 +53,14 @@ const
   NATS_KV_OP_PURGE = 'PURGE';
   NATS_KV_ROLLUP_HEADER = 'Nats-Rollup';
   NATS_KV_ROLLUP_SUBJECT = 'sub';
+  /// <summary>Per-message / per-key TTL header (ADR-43 / ADR-48).</summary>
+  NATS_KV_TTL_HEADER = 'Nats-TTL';
+  /// <summary>Server limit-marker reason (MaxAge / Purge / Remove).</summary>
+  NATS_KV_MARKER_REASON_HEADER = 'Nats-Marker-Reason';
   /// <summary>Maximum history depth accepted by nats-server for KV buckets.</summary>
   NATS_KV_MAX_HISTORY = 64;
+  /// <summary>Minimum LimitMarkerTTL / Nats-TTL (1 second), in nanoseconds.</summary>
+  NATS_KV_MIN_TTL_NANOS = Int64(1000000000);
 
 type
   /// <summary>Raised for Key-Value validation / not-found errors (distinct from JetStream API errors).</summary>
@@ -81,6 +88,12 @@ type
     MaxValueSize: Integer;
     /// <summary>Bucket TTL as stream MaxAge, in nanoseconds. 0 = unlimited.</summary>
     TTL: Int64;
+    /// <summary>
+    ///   Limit-marker TTL (nanoseconds, min 1s). When &gt; 0, enables stream
+    ///   allow_msg_ttl + subject_delete_marker_ttl (NATS 2.11+ / ADR-48).
+    ///   Required for per-key TTL on Create/Purge. 0 = disabled.
+    /// </summary>
+    LimitMarkerTTL: Int64;
     Storage: TNatsStreamStorage;
     NumReplicas: Integer;
     /// <summary>Defaults: history=1, file storage, unlimited size, 1 replica.</summary>
@@ -96,8 +109,10 @@ type
     Values: UInt64;
     Bytes: UInt64;
     History: Integer;
+    /// <summary>Configured limit-marker TTL in nanoseconds when known; else 0.</summary>
+    LimitMarkerTTL: Int64;
     class function FromStreamInfo(const ABucket: string; const AInfo: TNatsStreamInfo;
-      AHistory: Integer = 1): TNatsKeyValueStatus; static;
+      AHistory: Integer = 1; ALimitMarkerTTL: Int64 = 0): TNatsKeyValueStatus; static;
   end;
 
   /// <summary>One revision of a key (value + metadata).</summary>
@@ -159,16 +174,18 @@ type
     function KeyFromSubject(const ASubject: string): string;
     function EntryFromStored(const AKey: string; const AMsg: TNatsStoredMsg): TNatsKeyValueEntry;
     function EntryFromJsMsg(const AMsg: TNatsJsMsg): TNatsKeyValueEntry;
-    procedure PublishMarker(const AKey, AOperation: string; APurge: Boolean);
     class function IsWrongLastSequence(const E: EDextNatsJetStreamError): Boolean; static;
     /// <summary>Publishes with Nats-Expected-Last-Subject-Sequence = ARevision (CAS).</summary>
-    function PutExpected(const AKey: string; const AValue: TBytes; ARevision: UInt64): UInt64;
+    function PutExpected(const AKey: string; const AValue: TBytes; ARevision: UInt64;
+      ATTLNanos: Int64 = 0): UInt64;
     /// <summary>CAS create implementation shared by Create overloads (avoids ctor name clash).</summary>
-    function CreateKey(const AKey: string; const AValue: TBytes): UInt64;
+    function CreateKey(const AKey: string; const AValue: TBytes; ATTLNanos: Int64): UInt64;
     function PullSubjectEntries(const AFilterSubject: string; ADeliver: TNatsDeliverPolicy;
       AIncludeDeletes: Boolean): IList<TNatsKeyValueEntry>;
     function StartWatch(const AFilterSubject: string;
       AHandler: TNatsKeyValueWatchHandler): TDextNatsKeyValueWatcher;
+    class procedure ValidateTTLNanos(ATTLNanos: Int64; const ALabel: string); static;
+    class function OperationFromHeaders(const AHeaders: TNatsHeaders): TNatsKvOperation; static;
   public
     /// <summary>Binds to an existing bucket (does not create it). Validates the name only.</summary>
     constructor Create(AJs: TDextNatsJetStreamContext; const ABucket: string); overload;
@@ -197,8 +214,16 @@ type
     ///   Raises <see cref="EDextNatsKeyExists"/> if a live value is already present.
     /// </summary>
     function Create(const AKey: string; const AValue: TBytes): UInt64; overload;
+    /// <summary>
+    ///   Create with per-key TTL (Nats-TTL). ATTLNanos in nanoseconds; 0 = no TTL.
+    ///   Bucket must have <see cref="TNatsKeyValueConfig.LimitMarkerTTL"/> set (NATS 2.11+).
+    ///   Put/Update do not accept TTL (ADR-48). Prefer History=1 with per-key TTL.
+    /// </summary>
+    function Create(const AKey: string; const AValue: TBytes; ATTLNanos: Int64): UInt64; overload;
     /// <summary>UTF-8 convenience overload of Create (CAS).</summary>
     function Create(const AKey, AValue: string): UInt64; overload;
+    /// <summary>UTF-8 Create with per-key TTL (see byte overload).</summary>
+    function Create(const AKey, AValue: string; ATTLNanos: Int64): UInt64; overload;
     /// <summary>
     ///   Updates AKey only if its current revision equals ARevision
     ///   (Nats-Expected-Last-Subject-Sequence). Raises
@@ -214,7 +239,12 @@ type
     /// <summary>Writes a DEL marker (history retained up to bucket History).</summary>
     procedure Delete(const AKey: string);
     /// <summary>Writes a PURGE rollup marker (prior revisions removed for the key).</summary>
-    procedure Purge(const AKey: string);
+    procedure Purge(const AKey: string); overload;
+    /// <summary>
+    ///   Purge with TTL on the purge marker (Nats-TTL). ATTLNanos nanoseconds; 0 = no TTL.
+    ///   Bucket must support limit markers. TTL on Delete is not supported (ADR-48).
+    /// </summary>
+    procedure Purge(const AKey: string; ATTLNanos: Int64); overload;
     /// <summary>Current bucket status from STREAM.INFO.</summary>
     function Status: TNatsKeyValueStatus;
 
@@ -270,6 +300,7 @@ begin
   Result.MaxBytes := -1;
   Result.MaxValueSize := -1;
   Result.TTL := 0;
+  Result.LimitMarkerTTL := 0;
   Result.Storage := ssFile;
   Result.NumReplicas := 1;
 end;
@@ -286,6 +317,8 @@ begin
   if hist > NATS_KV_MAX_HISTORY then
     raise EDextNatsKeyValueError.CreateFmt(
       'KV history %d exceeds maximum %d', [hist, NATS_KV_MAX_HISTORY]);
+  if LimitMarkerTTL > 0 then
+    TDextNatsKeyValue.ValidateTTLNanos(LimitMarkerTTL, 'LimitMarkerTTL');
 
   Result := TNatsStreamConfig.CreateDefault(
     TDextNatsKeyValue.StreamNameForBucket(Bucket),
@@ -309,6 +342,11 @@ begin
   Result.AllowRollup := True;
   Result.MaxMsgs := -1;
   Result.MaxConsumers := -1;
+  if LimitMarkerTTL > 0 then
+  begin
+    Result.AllowMsgTTL := True;
+    Result.SubjectDeleteMarkerTTL := LimitMarkerTTL;
+  end;
   dupWindow := 120000000000;
   if (TTL > 0) and (TTL < dupWindow) then
     Result.DuplicateWindow := TTL
@@ -319,7 +357,7 @@ end;
 { TNatsKeyValueStatus }
 
 class function TNatsKeyValueStatus.FromStreamInfo(const ABucket: string; const AInfo: TNatsStreamInfo;
-  AHistory: Integer): TNatsKeyValueStatus;
+  AHistory: Integer; ALimitMarkerTTL: Int64): TNatsKeyValueStatus;
 begin
   Result := Default(TNatsKeyValueStatus);
   Result.Bucket := ABucket;
@@ -331,6 +369,7 @@ begin
   Result.History := AHistory;
   if Result.History <= 0 then
     Result.History := 1;
+  Result.LimitMarkerTTL := ALimitMarkerTTL;
 end;
 
 { TNatsKeyValueEntry }
@@ -383,6 +422,33 @@ begin
   for i := 1 to Length(AKey) do
     if not IsValidKeyChar(AKey[i]) then
       raise EDextNatsKeyValueError.CreateFmt('Invalid KV key: %s', [AKey]);
+end;
+
+class procedure TDextNatsKeyValue.ValidateTTLNanos(ATTLNanos: Int64; const ALabel: string);
+begin
+  if ATTLNanos <= 0 then
+    Exit;
+  if ATTLNanos < NATS_KV_MIN_TTL_NANOS then
+    raise EDextNatsKeyValueError.CreateFmt(
+      'KV %s must be at least 1 second (%d ns)', [ALabel, NATS_KV_MIN_TTL_NANOS]);
+end;
+
+class function TDextNatsKeyValue.OperationFromHeaders(const AHeaders: TNatsHeaders): TNatsKvOperation;
+var
+  op, reason: string;
+begin
+  Result := kvoPut;
+  op := AHeaders.GetValue(NATS_KV_OP_HEADER);
+  if SameText(op, NATS_KV_OP_DEL) then
+    Exit(kvoDelete);
+  if SameText(op, NATS_KV_OP_PURGE) then
+    Exit(kvoPurge);
+  { ADR-48 limit markers: MaxAge/Purge → PURGE, Remove → DEL }
+  reason := AHeaders.GetValue(NATS_KV_MARKER_REASON_HEADER);
+  if SameText(reason, 'MaxAge') or SameText(reason, 'Purge') then
+    Result := kvoPurge
+  else if SameText(reason, 'Remove') then
+    Result := kvoDelete;
 end;
 
 class function TDextNatsKeyValue.StreamNameForBucket(const ABucket: string): string;
@@ -474,8 +540,6 @@ end;
 
 function TDextNatsKeyValue.EntryFromStored(const AKey: string;
   const AMsg: TNatsStoredMsg): TNatsKeyValueEntry;
-var
-  op: string;
 begin
   Result := Default(TNatsKeyValueEntry);
   Result.Bucket := FBucket;
@@ -483,17 +547,10 @@ begin
   Result.Value := AMsg.Data;
   Result.Revision := AMsg.Sequence;
   Result.Created := AMsg.TimeStamp;
-  Result.Operation := kvoPut;
-  op := AMsg.Headers.GetValue(NATS_KV_OP_HEADER);
-  if SameText(op, NATS_KV_OP_DEL) then
-    Result.Operation := kvoDelete
-  else if SameText(op, NATS_KV_OP_PURGE) then
-    Result.Operation := kvoPurge;
+  Result.Operation := OperationFromHeaders(AMsg.Headers);
 end;
 
 function TDextNatsKeyValue.EntryFromJsMsg(const AMsg: TNatsJsMsg): TNatsKeyValueEntry;
-var
-  op: string;
 begin
   Result := Default(TNatsKeyValueEntry);
   Result.Bucket := FBucket;
@@ -504,12 +561,7 @@ begin
     Result.Created := IntToStr(AMsg.Timestamp)
   else
     Result.Created := '';
-  Result.Operation := kvoPut;
-  op := AMsg.Headers.GetValue(NATS_KV_OP_HEADER);
-  if SameText(op, NATS_KV_OP_DEL) then
-    Result.Operation := kvoDelete
-  else if SameText(op, NATS_KV_OP_PURGE) then
-    Result.Operation := kvoPurge;
+  Result.Operation := OperationFromHeaders(AMsg.Headers);
 end;
 
 class function TDextNatsKeyValue.IsWrongLastSequence(const E: EDextNatsJetStreamError): Boolean;
@@ -521,15 +573,17 @@ begin
 end;
 
 function TDextNatsKeyValue.PutExpected(const AKey: string; const AValue: TBytes;
-  ARevision: UInt64): UInt64;
+  ARevision: UInt64; ATTLNanos: Int64): UInt64;
 var
   opts: TNatsJetStreamPublishOptions;
   ack: TNatsPublishAck;
 begin
   ValidateKeyName(AKey);
+  ValidateTTLNanos(ATTLNanos, 'TTL');
   opts := TNatsJetStreamPublishOptions.CreateDefault;
   opts.ExpectedLastSubjectSequence := ARevision;
   opts.ExpectedLastSubjectSequenceSet := True;
+  opts.MsgTTL := ATTLNanos;
   ack := FJs.Publish(SubjectForKey(FBucket, AKey), AValue, opts);
   Result := ack.Sequence;
 end;
@@ -548,14 +602,16 @@ begin
   Result := Put(AKey, TEncoding.UTF8.GetBytes(AValue));
 end;
 
-function TDextNatsKeyValue.CreateKey(const AKey: string; const AValue: TBytes): UInt64;
+function TDextNatsKeyValue.CreateKey(const AKey: string; const AValue: TBytes;
+  ATTLNanos: Int64): UInt64;
 var
   msg: TNatsStoredMsg;
   entry: TNatsKeyValueEntry;
 begin
   ValidateKeyName(AKey);
+  ValidateTTLNanos(ATTLNanos, 'TTL');
   try
-    Result := PutExpected(AKey, AValue, 0);
+    Result := PutExpected(AKey, AValue, 0, ATTLNanos);
     Exit;
   except
     on E: EDextNatsJetStreamError do
@@ -569,7 +625,7 @@ begin
         entry := EntryFromStored(AKey, msg);
         if not entry.IsPut then
         begin
-          Result := PutExpected(AKey, AValue, entry.Revision);
+          Result := PutExpected(AKey, AValue, entry.Revision, ATTLNanos);
           Exit;
         end;
       except
@@ -586,12 +642,23 @@ end;
 
 function TDextNatsKeyValue.Create(const AKey: string; const AValue: TBytes): UInt64;
 begin
-  Result := CreateKey(AKey, AValue);
+  Result := CreateKey(AKey, AValue, 0);
+end;
+
+function TDextNatsKeyValue.Create(const AKey: string; const AValue: TBytes;
+  ATTLNanos: Int64): UInt64;
+begin
+  Result := CreateKey(AKey, AValue, ATTLNanos);
 end;
 
 function TDextNatsKeyValue.Create(const AKey, AValue: string): UInt64;
 begin
-  Result := CreateKey(AKey, TEncoding.UTF8.GetBytes(AValue));
+  Result := CreateKey(AKey, TEncoding.UTF8.GetBytes(AValue), 0);
+end;
+
+function TDextNatsKeyValue.Create(const AKey, AValue: string; ATTLNanos: Int64): UInt64;
+begin
+  Result := CreateKey(AKey, TEncoding.UTF8.GetBytes(AValue), ATTLNanos);
 end;
 
 function TDextNatsKeyValue.Update(const AKey: string; const AValue: TBytes;
@@ -651,28 +718,39 @@ begin
     raise EDextNatsKeyNotFound.CreateFmt('KV key not found: %s.%s', [FBucket, AKey]);
 end;
 
-procedure TDextNatsKeyValue.PublishMarker(const AKey, AOperation: string; APurge: Boolean);
+procedure TDextNatsKeyValue.Delete(const AKey: string);
 var
   headers: TNatsHeaders;
   empty: TBytes;
 begin
   ValidateKeyName(AKey);
   headers := nil;
-  headers.Add(NATS_KV_OP_HEADER, AOperation);
-  if APurge then
-    headers.Add(NATS_KV_ROLLUP_HEADER, NATS_KV_ROLLUP_SUBJECT);
+  headers.Add(NATS_KV_OP_HEADER, NATS_KV_OP_DEL);
   SetLength(empty, 0);
   FJs.PublishWithHeaders(SubjectForKey(FBucket, AKey), empty, headers);
 end;
 
-procedure TDextNatsKeyValue.Delete(const AKey: string);
-begin
-  PublishMarker(AKey, NATS_KV_OP_DEL, False);
-end;
-
 procedure TDextNatsKeyValue.Purge(const AKey: string);
 begin
-  PublishMarker(AKey, NATS_KV_OP_PURGE, True);
+  Purge(AKey, 0);
+end;
+
+procedure TDextNatsKeyValue.Purge(const AKey: string; ATTLNanos: Int64);
+var
+  opts: TNatsJetStreamPublishOptions;
+  headers: TNatsHeaders;
+  empty: TBytes;
+begin
+  ValidateKeyName(AKey);
+  ValidateTTLNanos(ATTLNanos, 'TTL');
+  headers := nil;
+  headers.Add(NATS_KV_OP_HEADER, NATS_KV_OP_PURGE);
+  headers.Add(NATS_KV_ROLLUP_HEADER, NATS_KV_ROLLUP_SUBJECT);
+  opts := TNatsJetStreamPublishOptions.CreateDefault;
+  opts.ExtraHeaders := headers;
+  opts.MsgTTL := ATTLNanos;
+  SetLength(empty, 0);
+  FJs.Publish(SubjectForKey(FBucket, AKey), empty, opts);
 end;
 
 function TDextNatsKeyValue.Status: TNatsKeyValueStatus;
