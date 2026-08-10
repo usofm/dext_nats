@@ -165,7 +165,10 @@ parsing frames anywhere else.
       `AddNatsClientAndConnect`, `AddNatsJetStream`)
 - [x] Observability: optional `ILogger`, opt-in `TMetrics` (`EnableMetrics`),
       `TNatsClientMetrics`, `Dext.Net.Nats.HealthChecks`
-- [ ] Protocol hot-path PERF (`Docs/NATS_DEXT_ROADMAP.md` SPEC-PERF-*)
+- [x] Protocol hot-path PERF (`Docs/NATS_DEXT_ROADMAP.md` SPEC-PERF-01..05):
+  `TNatsByteWriter` encode path, byte `ParseControlLine`, INFO/CONNECT via
+  `Dext.Json.Utf8` (`TUtf8JsonReader`/`TUtf8JsonWriter`); JetStream still uses
+  `System.JSON` + `NatsJsonGet*` helpers for now
 - [ ] Async `Request`/`Flush` via `TAsyncBuilder` (roadmap SPEC-ASYNC)
 
 ## Working style expected of an agent here

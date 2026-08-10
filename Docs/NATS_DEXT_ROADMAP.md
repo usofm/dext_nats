@@ -87,8 +87,8 @@
 
 **Acceptance:**
 
-- [ ] تست‌های U-06 و encode موجود سبز بمانند.
-- [ ] مسیر `PUB` روی hot path حداکثر **یک** `SetLength` نهایی برای خروجی داشته باشد (نه N کپی میانی).
+- [x] تست‌های U-06 و encode موجود سبز بمانند.
+- [x] مسیر `PUB` روی hot path حداکثر **یک** `SetLength` نهایی برای خروجی داشته باشد (نه N کپی میانی).
 - [ ] بنچمارک ساده (اختیاری در تست/دمو): ≥ همان throughput قبلی؛ هدف: کاهش تخصیص‌های میانی به صفر.
 
 #### SPEC-PERF-02 — Parse کنترل‌لاین روی `TByteSpan` بدون `GetString` اجباری
@@ -103,8 +103,8 @@
 
 **Acceptance:**
 
-- [ ] همهٔ تست‌های parser (U-01…U-05 و موارد TEST_PLAN بعدی) سبز.
-- [ ] رفتار قاب‌های ناقص / سقف `NATS_MAX_FRAME_BYTES` بدون تغییر معنایی.
+- [x] همهٔ تست‌های parser (U-01…U-05 و موارد TEST_PLAN بعدی) سبز.
+- [x] رفتار قاب‌های ناقص / سقف `NATS_MAX_FRAME_BYTES` بدون تغییر معنایی.
 
 #### SPEC-PERF-03 — INFO / CONNECT / JS JSON با `Dext.Json.Utf8`
 
@@ -128,9 +128,9 @@ Dext.Json.Utf8.pas
 
 **Acceptance:**
 
-- [ ] U-01، U-02، U-07 و تست‌های JS JSON موجود سبز.
-- [ ] `uses System.JSON` از `Protocol.pas` حذف شود (یا فقط پشت `{$IFDEF}` موقت در یک PR میانی — هدف نهایی حذف کامل).
-- [ ] فیلدهای INFO: `server_id`, `version`, `go`, `host`, `port`, `headers`, `auth_required`, `tls_required`, `max_payload`, `connect_urls`, `jetstream`, `proto` (در حد پشتیبانی فعلی) حفظ شوند.
+- [x] U-01، U-02، U-07 و تست‌های JS JSON موجود سبز.
+- [ ] `uses System.JSON` از `Protocol.pas` حذف شود (یا فقط پشت `{$IFDEF}` موقت در یک PR میانی — هدف نهایی حذف کامل). *Deferred: still required for public `NatsJsonGet*` JetStream helpers.*
+- [x] فیلدهای INFO: `server_id`, `version`, `go`, `host`, `port`, `headers`, `auth_required`, `tls_required`, `max_payload`, `connect_urls`, `jetstream`, `proto` (در حد پشتیبانی فعلی) حفظ شوند.
 
 #### SPEC-PERF-04 — Payload: مالکیت واضح + حداقل کپی
 
@@ -142,8 +142,8 @@ Dext.Json.Utf8.pas
 
 **Acceptance:**
 
-- [ ] هیچ API عمومی payload را به‌صورت view ناپایدار برنگرداند مگر با doc صریح و تست lifetime.
-- [ ] تست integration pub/sub و request/reply بدون رگرسیون.
+- [x] هیچ API عمومی payload را به‌صورت view ناپایدار برنگرداند مگر با doc صریح و تست lifetime.
+- [x] تست integration pub/sub و request/reply بدون رگرسیون.
 
 #### SPEC-PERF-05 — سقف ایمنی و تخصیص بافر parser
 
@@ -155,7 +155,7 @@ Dext.Json.Utf8.pas
 
 **Acceptance:**
 
-- [ ] تست ceiling از `TEST_PLAN` (اگر موجود) یا تست جدید unit برای frame oversized.
+- [x] تست ceiling از `TEST_PLAN` (اگر موجود) یا تست جدید unit برای frame oversized.
 
 ---
 

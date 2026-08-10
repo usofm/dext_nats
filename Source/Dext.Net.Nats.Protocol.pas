@@ -31,11 +31,11 @@ interface
 
 uses
   System.SysUtils,
-  System.Classes,
   System.JSON,
   Dext.Collections.Dict,
   Dext.Collections,
-  Dext.Core.Span;
+  Dext.Core.Span,
+  Dext.Json.Utf8;
 
 const
   NATS_DEFAULT_PORT = 4222;
@@ -167,7 +167,7 @@ type
     FPendingTotalBytes: Integer;
     function IndexOfCrLf(AStart: Integer): Integer;
     procedure ShiftBuffer(ACount: Integer);
-    function ParseControlLine(const ALine: string; out AFrame: TNatsFrame;
+    function ParseControlLine(AOffset, ALength: Integer; out AFrame: TNatsFrame;
       out AHeaderBytes, ATotalBytes: Integer): Boolean;
   public
     constructor Create;
@@ -220,6 +220,205 @@ function NatsEncodePong: TBytes;
 
 implementation
 
+type
+  /// <summary>Growable byte sink used by frame encoders and CONNECT JSON (implementation only).</summary>
+  PNatsByteWriter = ^TNatsByteWriter;
+  TNatsByteWriter = record
+  private
+    FBuf: TBytes;
+    FLen: Integer;
+  public
+    procedure Reset;
+    procedure EnsureCapacity(ANeeded: Integer);
+    procedure WriteByte(AValue: Byte); inline;
+    procedure WriteBytes(AData: Pointer; ALength: Integer); overload;
+    procedure WriteBytes(const AData: TBytes); overload;
+    procedure WriteAscii(const S: string);
+    procedure WriteUtf8(const S: string);
+    procedure WriteCrLf; inline;
+    procedure WriteIntDec(AValue: Integer);
+    function ToBytes: TBytes;
+  end;
+
+var
+  GNatsEncodedPing: TBytes;
+  GNatsEncodedPong: TBytes;
+
+{ TNatsByteWriter }
+
+procedure TNatsByteWriter.Reset;
+begin
+  FLen := 0;
+end;
+
+procedure TNatsByteWriter.EnsureCapacity(ANeeded: Integer);
+var
+  cap: Integer;
+begin
+  if ANeeded <= Length(FBuf) then
+    Exit;
+  // Geometric / next power-of-two capacity (avoids +N linear realloc churn).
+  cap := Length(FBuf);
+  if cap = 0 then
+    cap := 256;
+  while cap < ANeeded do
+  begin
+    if cap > (MaxInt div 2) then
+    begin
+      cap := ANeeded;
+      Break;
+    end;
+    cap := cap * 2;
+  end;
+  SetLength(FBuf, cap);
+end;
+
+procedure TNatsByteWriter.WriteByte(AValue: Byte);
+begin
+  EnsureCapacity(FLen + 1);
+  FBuf[FLen] := AValue;
+  Inc(FLen);
+end;
+
+procedure TNatsByteWriter.WriteBytes(AData: Pointer; ALength: Integer);
+begin
+  if (ALength <= 0) or (AData = nil) then
+    Exit;
+  EnsureCapacity(FLen + ALength);
+  Move(AData^, FBuf[FLen], ALength);
+  Inc(FLen, ALength);
+end;
+
+procedure TNatsByteWriter.WriteBytes(const AData: TBytes);
+begin
+  if Length(AData) = 0 then
+    Exit;
+  WriteBytes(@AData[0], Length(AData));
+end;
+
+procedure TNatsByteWriter.WriteAscii(const S: string);
+var
+  i, n: Integer;
+  p: PByte;
+begin
+  n := Length(S);
+  if n = 0 then
+    Exit;
+  for i := 1 to n do
+    if Ord(S[i]) > 127 then
+    begin
+      // Fall back to UTF-8 for non-ASCII (subjects are normally ASCII).
+      WriteUtf8(S);
+      Exit;
+    end;
+  EnsureCapacity(FLen + n);
+  p := @FBuf[FLen];
+  for i := 1 to n do
+  begin
+    p^ := Byte(Ord(S[i]));
+    Inc(p);
+  end;
+  Inc(FLen, n);
+end;
+
+procedure TNatsByteWriter.WriteUtf8(const S: string);
+var
+  n, written: Integer;
+  i: Integer;
+  p: PByte;
+  ascii: Boolean;
+begin
+  n := Length(S);
+  if n = 0 then
+    Exit;
+
+  ascii := True;
+  for i := 1 to n do
+    if Ord(S[i]) > 127 then
+    begin
+      ascii := False;
+      Break;
+    end;
+
+  if ascii then
+  begin
+    EnsureCapacity(FLen + n);
+    p := @FBuf[FLen];
+    for i := 1 to n do
+    begin
+      p^ := Byte(Ord(S[i]));
+      Inc(p);
+    end;
+    Inc(FLen, n);
+    Exit;
+  end;
+
+  written := TEncoding.UTF8.GetByteCount(S);
+  EnsureCapacity(FLen + written);
+  written := TEncoding.UTF8.GetBytes(S, 1, n, FBuf, FLen);
+  Inc(FLen, written);
+end;
+
+procedure TNatsByteWriter.WriteCrLf;
+begin
+  EnsureCapacity(FLen + 2);
+  FBuf[FLen] := 13;
+  FBuf[FLen + 1] := 10;
+  Inc(FLen, 2);
+end;
+
+procedure TNatsByteWriter.WriteIntDec(AValue: Integer);
+var
+  tmp: array[0..11] of Byte;
+  i, n: Integer;
+  v: Cardinal;
+  neg: Boolean;
+begin
+  if AValue = 0 then
+  begin
+    WriteByte(Ord('0'));
+    Exit;
+  end;
+
+  neg := AValue < 0;
+  if AValue = Low(Integer) then
+  begin
+    WriteAscii('-2147483648');
+    Exit;
+  end;
+
+  if neg then
+    v := Cardinal(-AValue)
+  else
+    v := Cardinal(AValue);
+
+  n := 0;
+  while v > 0 do
+  begin
+    tmp[n] := Byte(Ord('0') + (v mod 10));
+    v := v div 10;
+    Inc(n);
+  end;
+
+  if neg then
+    WriteByte(Ord('-'));
+  for i := n - 1 downto 0 do
+    WriteByte(tmp[i]);
+end;
+
+function TNatsByteWriter.ToBytes: TBytes;
+begin
+  SetLength(Result, FLen);
+  if FLen > 0 then
+    Move(FBuf[0], Result[0], FLen);
+end;
+
+procedure NatsUtf8WriteToByteWriter(AContext, AData: Pointer; ALength: Integer);
+begin
+  if (ALength > 0) and (AContext <> nil) then
+    PNatsByteWriter(AContext)^.WriteBytes(AData, ALength);
+end;
+
 { Small helpers }
 
 function NatsBoolStr(AValue: Boolean): string;
@@ -253,24 +452,6 @@ begin
       else
         Result := Result + C;
     end;
-  end;
-end;
-
-function NatsConcatBytes(const AParts: array of TBytes): TBytes;
-var
-  total, pos, i: Integer;
-begin
-  total := 0;
-  for i := 0 to High(AParts) do
-    Inc(total, Length(AParts[i]));
-
-  SetLength(Result, total);
-  pos := 0;
-  for i := 0 to High(AParts) do
-  begin
-    if Length(AParts[i]) > 0 then
-      Move(AParts[i][0], Result[pos], Length(AParts[i]));
-    Inc(pos, Length(AParts[i]));
   end;
 end;
 
@@ -318,11 +499,80 @@ begin
     Result := (v is TJSONTrue) or SameText(v.Value, 'true');
 end;
 
-/// <summary>Splits a NATS control line on single spaces, ignoring empty tokens
-/// caused by accidental repeated separators.</summary>
-function NatsSplitLine(const ALine: string): TArray<string>;
+function NatsBytesToUtf8(const ABuf: TBytes; AOffset, ALength: Integer): string;
 begin
-  Result := ALine.Split([' '], TStringSplitOptions.ExcludeEmpty);
+  if ALength <= 0 then
+    Result := ''
+  else
+    Result := TEncoding.UTF8.GetString(ABuf, AOffset, ALength);
+end;
+
+function NatsOpcodeEquals(const ABuf: TBytes; AOffset, ALength: Integer;
+  const AOpcode: RawByteString): Boolean;
+var
+  i: Integer;
+begin
+  if ALength <> Length(AOpcode) then
+    Exit(False);
+  for i := 1 to ALength do
+    if ABuf[AOffset + i - 1] <> Byte(AOpcode[i]) then
+      Exit(False);
+  Result := True;
+end;
+
+function NatsNextToken(const ABuf: TBytes; var APos: Integer; ALineEnd: Integer;
+  out ATokStart, ATokLen: Integer): Boolean;
+begin
+  while (APos < ALineEnd) and (ABuf[APos] = Ord(' ')) do
+    Inc(APos);
+  if APos >= ALineEnd then
+    Exit(False);
+  ATokStart := APos;
+  while (APos < ALineEnd) and (ABuf[APos] <> Ord(' ')) do
+    Inc(APos);
+  ATokLen := APos - ATokStart;
+  Result := True;
+end;
+
+function NatsTryParseIntDec(const ABuf: TBytes; AOffset, ALength: Integer;
+  out AValue: Integer): Boolean;
+var
+  i: Integer;
+  neg: Boolean;
+  v: Integer;
+  d: Integer;
+begin
+  AValue := 0;
+  if ALength <= 0 then
+    Exit(False);
+
+  i := 0;
+  neg := False;
+  if ABuf[AOffset] = Ord('-') then
+  begin
+    neg := True;
+    Inc(i);
+    if i >= ALength then
+      Exit(False);
+  end;
+
+  v := 0;
+  while i < ALength do
+  begin
+    d := ABuf[AOffset + i] - Ord('0');
+    if (d < 0) or (d > 9) then
+      Exit(False);
+    if v > (MaxInt - d) div 10 then
+      Exit(False);
+    v := v * 10 + d;
+    Inc(i);
+  end;
+
+  if neg then
+    AValue := -v
+  else
+    AValue := v;
+  Result := True;
 end;
 
 function NatsNewInbox: string;
@@ -336,6 +586,69 @@ begin
   raw := StringReplace(raw, '}', '', [rfReplaceAll]);
   raw := StringReplace(raw, '-', '', [rfReplaceAll]);
   Result := NATS_INBOX_PREFIX + LowerCase(raw);
+end;
+
+procedure WriteConnectJson(const AOptions: TNatsConnectOptions; var AWriter: TNatsByteWriter);
+var
+  jw: TUtf8JsonWriter;
+begin
+  jw := TUtf8JsonWriter.Create(@AWriter, NatsUtf8WriteToByteWriter, False);
+  jw.WriteStartObject;
+
+  jw.WritePropertyName('verbose');
+  jw.WriteBoolean(AOptions.Verbose);
+  jw.WritePropertyName('pedantic');
+  jw.WriteBoolean(AOptions.Pedantic);
+  jw.WritePropertyName('tls_required');
+  jw.WriteBoolean(AOptions.TlsRequired);
+
+  if AOptions.AuthToken <> '' then
+  begin
+    jw.WritePropertyName('auth_token');
+    jw.WriteString(AOptions.AuthToken);
+  end;
+  if AOptions.User <> '' then
+  begin
+    jw.WritePropertyName('user');
+    jw.WriteString(AOptions.User);
+  end;
+  if AOptions.Password <> '' then
+  begin
+    jw.WritePropertyName('pass');
+    jw.WriteString(AOptions.Password);
+  end;
+  if AOptions.JWT <> '' then
+  begin
+    jw.WritePropertyName('jwt');
+    jw.WriteString(AOptions.JWT);
+  end;
+  if AOptions.Nkey <> '' then
+  begin
+    jw.WritePropertyName('nkey');
+    jw.WriteString(AOptions.Nkey);
+  end;
+  if AOptions.Sig <> '' then
+  begin
+    jw.WritePropertyName('sig');
+    jw.WriteString(AOptions.Sig);
+  end;
+
+  jw.WritePropertyName('name');
+  jw.WriteString(AOptions.Name);
+  jw.WritePropertyName('lang');
+  jw.WriteString(AOptions.Lang);
+  jw.WritePropertyName('version');
+  jw.WriteString(AOptions.Version);
+  jw.WritePropertyName('protocol');
+  jw.WriteNumber(AOptions.Protocol);
+  jw.WritePropertyName('echo');
+  jw.WriteBoolean(AOptions.Echo);
+  jw.WritePropertyName('headers');
+  jw.WriteBoolean(AOptions.Headers);
+  jw.WritePropertyName('no_responders');
+  jw.WriteBoolean(AOptions.NoResponders);
+
+  jw.WriteEndObject;
 end;
 
 { TNatsHeadersHelper }
@@ -430,54 +743,166 @@ end;
 
 class function TNatsServerInfo.Parse(const AJson: string): TNatsServerInfo;
 var
-  obj: TJSONObject;
-  urlsArr: TJSONValue;
-  arr: TJSONArray;
-  i: Integer;
+  bytes: TBytes;
+  span: TByteSpan;
+  reader: TUtf8JsonReader;
+  urls: TArray<string>;
+  urlCount: Integer;
 begin
-  FillChar(Result, SizeOf(Result), 0);
+  Result := Default(TNatsServerInfo);
   if Trim(AJson) = '' then
     raise EDextNatsProtocolError.Create('Empty INFO payload received from NATS server');
 
-  obj := TJSONObject.ParseJSONValue(AJson) as TJSONObject;
-  if not Assigned(obj) then
-    raise EDextNatsProtocolError.CreateFmt('Malformed INFO payload received from NATS server: %s', [AJson]);
-  try
-    Result.ServerId := NatsJsonGetStr(obj, 'server_id');
-    Result.ServerName := NatsJsonGetStr(obj, 'server_name');
-    Result.Version := NatsJsonGetStr(obj, 'version');
-    Result.Proto := NatsJsonGetInt(obj, 'proto');
-    Result.GoVersion := NatsJsonGetStr(obj, 'go');
-    Result.Host := NatsJsonGetStr(obj, 'host');
-    Result.Port := NatsJsonGetInt(obj, 'port');
-    Result.HeadersSupported := NatsJsonGetBool(obj, 'headers');
-    Result.MaxPayload := NatsJsonGetInt64(obj, 'max_payload');
-    Result.ClientId := NatsJsonGetInt64(obj, 'client_id');
-    Result.ClientIp := NatsJsonGetStr(obj, 'client_ip');
-    Result.AuthRequired := NatsJsonGetBool(obj, 'auth_required');
-    Result.TlsRequired := NatsJsonGetBool(obj, 'tls_required');
-    Result.TlsAvailable := NatsJsonGetBool(obj, 'tls_available');
-    Result.Jetstream := NatsJsonGetBool(obj, 'jetstream');
-    Result.Nonce := NatsJsonGetStr(obj, 'nonce');
+  bytes := TEncoding.UTF8.GetBytes(AJson);
+  if Length(bytes) = 0 then
+    raise EDextNatsProtocolError.Create('Empty INFO payload received from NATS server');
 
-    urlsArr := obj.GetValue('connect_urls');
-    if Assigned(urlsArr) and (urlsArr is TJSONArray) then
+  span := TByteSpan.Create(@bytes[0], Length(bytes));
+  urlCount := 0;
+  try
+    reader := TUtf8JsonReader.Create(span);
+    if (not reader.Read) or (reader.TokenType <> TJsonTokenType.StartObject) then
+      raise EDextNatsProtocolError.CreateFmt(
+        'Malformed INFO payload received from NATS server: %s', [AJson]);
+
+    while reader.Read do
     begin
-      arr := TJSONArray(urlsArr);
-      SetLength(Result.ConnectUrls, arr.Count);
-      for i := 0 to arr.Count - 1 do
-        Result.ConnectUrls[i] := arr.Items[i].Value;
+      if reader.TokenType = TJsonTokenType.EndObject then
+        Break;
+      if reader.TokenType <> TJsonTokenType.PropertyName then
+        Continue;
+
+      if reader.ValueSpanEquals('server_id') then
+      begin
+        if reader.Read then
+          Result.ServerId := reader.GetString;
+      end
+      else if reader.ValueSpanEquals('server_name') then
+      begin
+        if reader.Read then
+          Result.ServerName := reader.GetString;
+      end
+      else if reader.ValueSpanEquals('version') then
+      begin
+        if reader.Read then
+          Result.Version := reader.GetString;
+      end
+      else if reader.ValueSpanEquals('proto') then
+      begin
+        if reader.Read then
+          Result.Proto := reader.GetInt32;
+      end
+      else if reader.ValueSpanEquals('go') then
+      begin
+        if reader.Read then
+          Result.GoVersion := reader.GetString;
+      end
+      else if reader.ValueSpanEquals('host') then
+      begin
+        if reader.Read then
+          Result.Host := reader.GetString;
+      end
+      else if reader.ValueSpanEquals('port') then
+      begin
+        if reader.Read then
+          Result.Port := reader.GetInt32;
+      end
+      else if reader.ValueSpanEquals('headers') then
+      begin
+        if reader.Read then
+          Result.HeadersSupported := reader.GetBoolean;
+      end
+      else if reader.ValueSpanEquals('max_payload') then
+      begin
+        if reader.Read then
+          Result.MaxPayload := reader.GetInt64;
+      end
+      else if reader.ValueSpanEquals('client_id') then
+      begin
+        if reader.Read then
+          Result.ClientId := reader.GetInt64;
+      end
+      else if reader.ValueSpanEquals('client_ip') then
+      begin
+        if reader.Read then
+          Result.ClientIp := reader.GetString;
+      end
+      else if reader.ValueSpanEquals('auth_required') then
+      begin
+        if reader.Read then
+          Result.AuthRequired := reader.GetBoolean;
+      end
+      else if reader.ValueSpanEquals('tls_required') then
+      begin
+        if reader.Read then
+          Result.TlsRequired := reader.GetBoolean;
+      end
+      else if reader.ValueSpanEquals('tls_available') then
+      begin
+        if reader.Read then
+          Result.TlsAvailable := reader.GetBoolean;
+      end
+      else if reader.ValueSpanEquals('jetstream') then
+      begin
+        if reader.Read then
+          Result.Jetstream := reader.GetBoolean;
+      end
+      else if reader.ValueSpanEquals('nonce') then
+      begin
+        if reader.Read then
+          Result.Nonce := reader.GetString;
+      end
+      else if reader.ValueSpanEquals('connect_urls') then
+      begin
+        if reader.Read then
+        begin
+          if reader.TokenType = TJsonTokenType.StartArray then
+          begin
+            while reader.Read do
+            begin
+              if reader.TokenType = TJsonTokenType.EndArray then
+                Break;
+              if reader.TokenType = TJsonTokenType.StringValue then
+              begin
+                if urlCount >= Length(urls) then
+                  SetLength(urls, urlCount + 4);
+                urls[urlCount] := reader.GetString;
+                Inc(urlCount);
+              end
+              else if reader.TokenType in [TJsonTokenType.StartObject, TJsonTokenType.StartArray] then
+                reader.Skip;
+            end;
+          end
+          else if reader.TokenType in [TJsonTokenType.StartObject, TJsonTokenType.StartArray] then
+            reader.Skip;
+        end;
+      end
+      else
+      begin
+        if reader.Read then
+        begin
+          if reader.TokenType in [TJsonTokenType.StartObject, TJsonTokenType.StartArray] then
+            reader.Skip;
+        end;
+      end;
     end;
-  finally
-    obj.Free;
+  except
+    on E: EDextNatsProtocolError do
+      raise;
+    on E: EJsonException do
+      raise EDextNatsProtocolError.CreateFmt(
+        'Malformed INFO payload received from NATS server: %s', [AJson]);
   end;
+
+  SetLength(urls, urlCount);
+  Result.ConnectUrls := urls;
 end;
 
 { TNatsConnectOptions }
 
 class function TNatsConnectOptions.CreateDefault: TNatsConnectOptions;
 begin
-  FillChar(Result, SizeOf(Result), 0);
+  Result := Default(TNatsConnectOptions);
   Result.Verbose := False;
   Result.Pedantic := False;
   Result.TlsRequired := False;
@@ -491,108 +916,115 @@ end;
 
 function TNatsConnectOptions.ToJson: string;
 var
-  sb: TStringBuilder;
+  w: TNatsByteWriter;
 begin
-  sb := TStringBuilder.Create;
-  try
-    sb.Append('{');
-    sb.Append('"verbose":').Append(NatsBoolStr(Verbose)).Append(',');
-    sb.Append('"pedantic":').Append(NatsBoolStr(Pedantic)).Append(',');
-    sb.Append('"tls_required":').Append(NatsBoolStr(TlsRequired)).Append(',');
-    if AuthToken <> '' then
-      sb.Append('"auth_token":"').Append(NatsJsonEscape(AuthToken)).Append('",');
-    if User <> '' then
-      sb.Append('"user":"').Append(NatsJsonEscape(User)).Append('",');
-    if Password <> '' then
-      sb.Append('"pass":"').Append(NatsJsonEscape(Password)).Append('",');
-    if JWT <> '' then
-      sb.Append('"jwt":"').Append(NatsJsonEscape(JWT)).Append('",');
-    if Nkey <> '' then
-      sb.Append('"nkey":"').Append(NatsJsonEscape(Nkey)).Append('",');
-    if Sig <> '' then
-      sb.Append('"sig":"').Append(NatsJsonEscape(Sig)).Append('",');
-    sb.Append('"name":"').Append(NatsJsonEscape(Name)).Append('",');
-    sb.Append('"lang":"').Append(NatsJsonEscape(Lang)).Append('",');
-    sb.Append('"version":"').Append(NatsJsonEscape(Version)).Append('",');
-    sb.Append('"protocol":').Append(Protocol).Append(',');
-    sb.Append('"echo":').Append(NatsBoolStr(Echo)).Append(',');
-    sb.Append('"headers":').Append(NatsBoolStr(Headers)).Append(',');
-    sb.Append('"no_responders":').Append(NatsBoolStr(NoResponders));
-    sb.Append('}');
-    Result := sb.ToString;
-  finally
-    sb.Free;
-  end;
+  w.Reset;
+  WriteConnectJson(Self, w);
+  Result := TEncoding.UTF8.GetString(w.ToBytes);
 end;
 
 { Frame encoders }
 
 function NatsEncodeConnect(const AOptions: TNatsConnectOptions): TBytes;
+var
+  w: TNatsByteWriter;
 begin
-  Result := TEncoding.UTF8.GetBytes('CONNECT ' + AOptions.ToJson + NATS_CRLF);
+  w.Reset;
+  w.WriteAscii('CONNECT ');
+  WriteConnectJson(AOptions, w);
+  w.WriteCrLf;
+  Result := w.ToBytes;
 end;
 
 function NatsEncodePub(const ASubject, AReplyTo: string; const APayload: TBytes): TBytes;
 var
-  line: string;
+  w: TNatsByteWriter;
 begin
-  if AReplyTo = '' then
-    line := Format('PUB %s %d' + NATS_CRLF, [ASubject, Length(APayload)])
-  else
-    line := Format('PUB %s %s %d' + NATS_CRLF, [ASubject, AReplyTo, Length(APayload)]);
-
-  Result := NatsConcatBytes([TEncoding.UTF8.GetBytes(line), APayload, TEncoding.UTF8.GetBytes(NATS_CRLF)]);
+  w.Reset;
+  w.WriteAscii('PUB ');
+  w.WriteUtf8(ASubject);
+  w.WriteByte(Ord(' '));
+  if AReplyTo <> '' then
+  begin
+    w.WriteUtf8(AReplyTo);
+    w.WriteByte(Ord(' '));
+  end;
+  w.WriteIntDec(Length(APayload));
+  w.WriteCrLf;
+  w.WriteBytes(APayload);
+  w.WriteCrLf;
+  Result := w.ToBytes;
 end;
 
 function NatsEncodeHPub(const ASubject, AReplyTo: string; const AHeaders: TNatsHeaders;
   const APayload: TBytes): TBytes;
 var
+  w: TNatsByteWriter;
   headerBlock: TBytes;
-  line: string;
 begin
   headerBlock := AHeaders.Encode;
 
-  if AReplyTo = '' then
-    line := Format('HPUB %s %d %d' + NATS_CRLF,
-      [ASubject, Length(headerBlock), Length(headerBlock) + Length(APayload)])
-  else
-    line := Format('HPUB %s %s %d %d' + NATS_CRLF,
-      [ASubject, AReplyTo, Length(headerBlock), Length(headerBlock) + Length(APayload)]);
-
-  Result := NatsConcatBytes([TEncoding.UTF8.GetBytes(line), headerBlock, APayload,
-    TEncoding.UTF8.GetBytes(NATS_CRLF)]);
+  w.Reset;
+  w.WriteAscii('HPUB ');
+  w.WriteUtf8(ASubject);
+  w.WriteByte(Ord(' '));
+  if AReplyTo <> '' then
+  begin
+    w.WriteUtf8(AReplyTo);
+    w.WriteByte(Ord(' '));
+  end;
+  w.WriteIntDec(Length(headerBlock));
+  w.WriteByte(Ord(' '));
+  w.WriteIntDec(Length(headerBlock) + Length(APayload));
+  w.WriteCrLf;
+  w.WriteBytes(headerBlock);
+  w.WriteBytes(APayload);
+  w.WriteCrLf;
+  Result := w.ToBytes;
 end;
 
 function NatsEncodeSub(const ASubject, AQueue: string; ASid: Integer): TBytes;
 var
-  line: string;
+  w: TNatsByteWriter;
 begin
-  if AQueue = '' then
-    line := Format('SUB %s %d' + NATS_CRLF, [ASubject, ASid])
-  else
-    line := Format('SUB %s %s %d' + NATS_CRLF, [ASubject, AQueue, ASid]);
-  Result := TEncoding.UTF8.GetBytes(line);
+  w.Reset;
+  w.WriteAscii('SUB ');
+  w.WriteUtf8(ASubject);
+  w.WriteByte(Ord(' '));
+  if AQueue <> '' then
+  begin
+    w.WriteUtf8(AQueue);
+    w.WriteByte(Ord(' '));
+  end;
+  w.WriteIntDec(ASid);
+  w.WriteCrLf;
+  Result := w.ToBytes;
 end;
 
 function NatsEncodeUnsub(ASid: Integer; AMaxMsgs: Integer): TBytes;
 var
-  line: string;
+  w: TNatsByteWriter;
 begin
-  if AMaxMsgs <= 0 then
-    line := Format('UNSUB %d' + NATS_CRLF, [ASid])
-  else
-    line := Format('UNSUB %d %d' + NATS_CRLF, [ASid, AMaxMsgs]);
-  Result := TEncoding.UTF8.GetBytes(line);
+  w.Reset;
+  w.WriteAscii('UNSUB ');
+  w.WriteIntDec(ASid);
+  if AMaxMsgs > 0 then
+  begin
+    w.WriteByte(Ord(' '));
+    w.WriteIntDec(AMaxMsgs);
+  end;
+  w.WriteCrLf;
+  Result := w.ToBytes;
 end;
 
 function NatsEncodePing: TBytes;
 begin
-  Result := TEncoding.UTF8.GetBytes('PING' + NATS_CRLF);
+  Result := GNatsEncodedPing;
 end;
 
 function NatsEncodePong: TBytes;
 begin
-  Result := TEncoding.UTF8.GetBytes('PONG' + NATS_CRLF);
+  Result := GNatsEncodedPong;
 end;
 
 { TDextNatsFrameParser }
@@ -606,11 +1038,29 @@ begin
 end;
 
 procedure TDextNatsFrameParser.Append(const AData: TByteSpan);
+var
+  needed, cap: Integer;
 begin
   if AData.Length = 0 then Exit;
 
-  if FBufferLen + AData.Length > Length(FBuffer) then
-    SetLength(FBuffer, FBufferLen + AData.Length + 4096);
+  needed := FBufferLen + AData.Length;
+  if needed > Length(FBuffer) then
+  begin
+    // Geometric / next power-of-two capacity (not linear +4096 only).
+    cap := Length(FBuffer);
+    if cap = 0 then
+      cap := 4096;
+    while cap < needed do
+    begin
+      if cap > (MaxInt div 2) then
+      begin
+        cap := needed;
+        Break;
+      end;
+      cap := cap * 2;
+    end;
+    SetLength(FBuffer, cap);
+  end;
 
   Move(AData.Data^, FBuffer[FBufferLen], AData.Length);
   Inc(FBufferLen, AData.Length);
@@ -659,93 +1109,122 @@ begin
   Dec(FBufferLen, ACount);
 end;
 
-function TDextNatsFrameParser.ParseControlLine(const ALine: string; out AFrame: TNatsFrame;
+function TDextNatsFrameParser.ParseControlLine(AOffset, ALength: Integer; out AFrame: TNatsFrame;
   out AHeaderBytes, ATotalBytes: Integer): Boolean;
 var
-  parts: TArray<string>;
-  cmd: string;
-  sp: Integer;
+  pos, lineEnd: Integer;
+  opStart, opLen: Integer;
+  t1s, t1l, t2s, t2l, t3s, t3l, t4s, t4l, t5s, t5l: Integer;
+  tokCount: Integer;
+  errText: string;
 begin
   AHeaderBytes := 0;
   ATotalBytes := 0;
-  FillChar(AFrame, SizeOf(AFrame), 0);
+  AFrame := Default(TNatsFrame);
 
-  if ALine = '' then Exit(False);
+  if ALength <= 0 then
+    Exit(False);
 
-  sp := ALine.IndexOf(' ');
-  if sp < 0 then
-    cmd := ALine
-  else
-    cmd := Copy(ALine, 1, sp);
+  lineEnd := AOffset + ALength;
+  pos := AOffset;
+  if not NatsNextToken(FBuffer, pos, lineEnd, opStart, opLen) then
+    Exit(False);
 
-  if SameText(cmd, 'PING') then
+  if NatsOpcodeEquals(FBuffer, opStart, opLen, 'PING') then
   begin
     AFrame.Kind := nfPing;
     Result := True;
   end
-  else if SameText(cmd, 'PONG') then
+  else if NatsOpcodeEquals(FBuffer, opStart, opLen, 'PONG') then
   begin
     AFrame.Kind := nfPong;
     Result := True;
   end
-  else if cmd = '+OK' then
+  else if NatsOpcodeEquals(FBuffer, opStart, opLen, '+OK') then
   begin
     AFrame.Kind := nfOK;
     Result := True;
   end
-  else if SameText(cmd, '-ERR') then
+  else if NatsOpcodeEquals(FBuffer, opStart, opLen, '-ERR') then
   begin
     AFrame.Kind := nfErr;
-    AFrame.ErrorText := Trim(Copy(ALine, 5, MaxInt));
-    AFrame.ErrorText := AFrame.ErrorText.Trim(['''']);
+    errText := Trim(NatsBytesToUtf8(FBuffer, pos, lineEnd - pos));
+    AFrame.ErrorText := errText.Trim(['''']);
     Result := True;
   end
-  else if SameText(cmd, 'INFO') then
+  else if NatsOpcodeEquals(FBuffer, opStart, opLen, 'INFO') then
   begin
     AFrame.Kind := nfInfo;
-    AFrame.InfoJson := Trim(Copy(ALine, 5, MaxInt));
+    AFrame.InfoJson := Trim(NatsBytesToUtf8(FBuffer, pos, lineEnd - pos));
     Result := True;
   end
-  else if SameText(cmd, 'MSG') then
+  else if NatsOpcodeEquals(FBuffer, opStart, opLen, 'MSG') then
   begin
     AFrame.Kind := nfMsg;
-    parts := NatsSplitLine(ALine);
     // MSG <subject> <sid> [reply-to] <#bytes>
-    if (Length(parts) < 4) or (Length(parts) > 5) then Exit(False);
+    tokCount := 0;
+    if NatsNextToken(FBuffer, pos, lineEnd, t1s, t1l) then Inc(tokCount) else t1l := 0;
+    if NatsNextToken(FBuffer, pos, lineEnd, t2s, t2l) then Inc(tokCount) else t2l := 0;
+    if NatsNextToken(FBuffer, pos, lineEnd, t3s, t3l) then Inc(tokCount) else t3l := 0;
+    if NatsNextToken(FBuffer, pos, lineEnd, t4s, t4l) then Inc(tokCount) else t4l := 0;
+    if NatsNextToken(FBuffer, pos, lineEnd, t5s, t5l) then
+      Exit(False); // too many tokens
 
-    AFrame.Subject := parts[1];
-    if not TryStrToInt(parts[2], AFrame.Sid) then Exit(False);
+    if (tokCount < 3) or (tokCount > 4) then
+      Exit(False);
 
-    if Length(parts) = 4 then
-      ATotalBytes := StrToIntDef(parts[3], -1)
+    AFrame.Subject := NatsBytesToUtf8(FBuffer, t1s, t1l);
+    if not NatsTryParseIntDec(FBuffer, t2s, t2l, AFrame.Sid) then
+      Exit(False);
+
+    if tokCount = 3 then
+    begin
+      if not NatsTryParseIntDec(FBuffer, t3s, t3l, ATotalBytes) then
+        Exit(False);
+    end
     else
     begin
-      AFrame.ReplyTo := parts[3];
-      ATotalBytes := StrToIntDef(parts[4], -1);
+      AFrame.ReplyTo := NatsBytesToUtf8(FBuffer, t3s, t3l);
+      if not NatsTryParseIntDec(FBuffer, t4s, t4l, ATotalBytes) then
+        Exit(False);
     end;
 
     Result := ATotalBytes >= 0;
   end
-  else if SameText(cmd, 'HMSG') then
+  else if NatsOpcodeEquals(FBuffer, opStart, opLen, 'HMSG') then
   begin
     AFrame.Kind := nfHMsg;
-    parts := NatsSplitLine(ALine);
     // HMSG <subject> <sid> [reply-to] <#header-bytes> <#total-bytes>
-    if (Length(parts) < 5) or (Length(parts) > 6) then Exit(False);
+    tokCount := 0;
+    if NatsNextToken(FBuffer, pos, lineEnd, t1s, t1l) then Inc(tokCount) else t1l := 0;
+    if NatsNextToken(FBuffer, pos, lineEnd, t2s, t2l) then Inc(tokCount) else t2l := 0;
+    if NatsNextToken(FBuffer, pos, lineEnd, t3s, t3l) then Inc(tokCount) else t3l := 0;
+    if NatsNextToken(FBuffer, pos, lineEnd, t4s, t4l) then Inc(tokCount) else t4l := 0;
+    if NatsNextToken(FBuffer, pos, lineEnd, t5s, t5l) then Inc(tokCount) else t5l := 0;
+    if NatsNextToken(FBuffer, pos, lineEnd, opStart, opLen) then
+      Exit(False); // too many tokens
 
-    AFrame.Subject := parts[1];
-    if not TryStrToInt(parts[2], AFrame.Sid) then Exit(False);
+    if (tokCount < 4) or (tokCount > 5) then
+      Exit(False);
 
-    if Length(parts) = 5 then
+    AFrame.Subject := NatsBytesToUtf8(FBuffer, t1s, t1l);
+    if not NatsTryParseIntDec(FBuffer, t2s, t2l, AFrame.Sid) then
+      Exit(False);
+
+    if tokCount = 4 then
     begin
-      AHeaderBytes := StrToIntDef(parts[3], -1);
-      ATotalBytes := StrToIntDef(parts[4], -1);
+      if not NatsTryParseIntDec(FBuffer, t3s, t3l, AHeaderBytes) then
+        Exit(False);
+      if not NatsTryParseIntDec(FBuffer, t4s, t4l, ATotalBytes) then
+        Exit(False);
     end
     else
     begin
-      AFrame.ReplyTo := parts[3];
-      AHeaderBytes := StrToIntDef(parts[4], -1);
-      ATotalBytes := StrToIntDef(parts[5], -1);
+      AFrame.ReplyTo := NatsBytesToUtf8(FBuffer, t3s, t3l);
+      if not NatsTryParseIntDec(FBuffer, t4s, t4l, AHeaderBytes) then
+        Exit(False);
+      if not NatsTryParseIntDec(FBuffer, t5s, t5l, ATotalBytes) then
+        Exit(False);
     end;
 
     Result := (AHeaderBytes >= 0) and (ATotalBytes >= AHeaderBytes);
@@ -769,8 +1248,7 @@ var
   payload: TBytes;
   payloadLen: Integer;
 begin
-  Result := False;
-  FillChar(AFrame, SizeOf(AFrame), 0);
+  AFrame := Default(TNatsFrame);
 
   if not FHasPendingControl then
   begin
@@ -778,9 +1256,10 @@ begin
     if crlfIdx < 0 then
       Exit(False);
 
-    line := TEncoding.UTF8.GetString(FBuffer, 0, crlfIdx);
-    if not ParseControlLine(line, FPendingFrame, headerBytes, totalBytes) then
+    // Opcode match on raw bytes — avoid GetString of the whole line on the hot path.
+    if not ParseControlLine(0, crlfIdx, FPendingFrame, headerBytes, totalBytes) then
     begin
+      line := NatsBytesToUtf8(FBuffer, 0, crlfIdx);
       ShiftBuffer(crlfIdx + 2);
       raise EDextNatsProtocolError.CreateFmt('Malformed NATS protocol line: "%s"', [line]);
     end;
@@ -818,6 +1297,7 @@ begin
   end
   else
   begin
+    // Single Move into owned Payload TBytes (no double copy).
     SetLength(payload, FPendingTotalBytes);
     if FPendingTotalBytes > 0 then
       Move(FBuffer[FPendingLineLength], payload[0], FPendingTotalBytes);
@@ -829,5 +1309,9 @@ begin
   FHasPendingControl := False;
   Result := True;
 end;
+
+initialization
+  GNatsEncodedPing := BytesOf(RawByteString('PING'#13#10));
+  GNatsEncodedPong := BytesOf(RawByteString('PONG'#13#10));
 
 end.
