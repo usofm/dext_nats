@@ -19,10 +19,11 @@
 {***************************************************************************}
 {                                                                           }
 {  JetStream layer for the NATS client. Stream admin (create/update/info/   }
-{  delete), dedup'd publish with a Nats-Msg-Id header, pull-consumer admin  }
-{  (create/info/delete), Fetch, push SubscribePush on deliver_subject, and  }
-{  Ack/Nak/Term/InProgress — all built on plain request/reply and PUB       }
-{  against $JS.API.* subjects.                                              }
+{  delete, ListStreams / ListStreamNames), dedup'd publish with a           }
+{  Nats-Msg-Id header, pull-consumer admin (create/info/delete,             }
+{  ListConsumers / ListConsumerNames), Fetch, push SubscribePush on         }
+{  deliver_subject, and Ack/Nak/Term/InProgress — all built on plain        }
+{  request/reply and PUB against $JS.API.* subjects.                        }
 {  TDextNatsJetStreamContext wraps an already-connected TDextNatsClient     }
 {  (composition); it neither owns nor frees the client.                     }
 {                                                                           }
@@ -286,6 +287,16 @@ type
     function StreamExists(const AStreamName: string): Boolean;
     /// <summary>Deletes AStreamName and all of its messages. Raises EDextNatsJetStreamError on failure.</summary>
     function DeleteStream(const AStreamName: string): Boolean;
+    /// <summary>
+    ///   Lists all stream names via paged <c>$JS.API.STREAM.NAMES</c>.
+    ///   When ASubjectFilter is non-empty, only streams matching that subject are returned.
+    /// </summary>
+    function ListStreamNames(const ASubjectFilter: string = ''): IList<string>;
+    /// <summary>
+    ///   Lists full stream info via paged <c>$JS.API.STREAM.LIST</c>.
+    ///   When ASubjectFilter is non-empty, only streams matching that subject are returned.
+    /// </summary>
+    function ListStreams(const ASubjectFilter: string = ''): IList<TNatsStreamInfo>;
 
     /// <summary>Retrieves the last stored message for ASubject via STREAM.MSG.GET (last_by_subj).</summary>
     function GetLastMessage(const AStreamName, ASubject: string; ATimeoutMs: Integer = 0): TNatsStoredMsg;
@@ -298,6 +309,10 @@ type
     function GetConsumerInfo(const AStreamName, AConsumerName: string): TNatsConsumerInfo;
     /// <summary>Deletes a consumer. Raises EDextNatsJetStreamError on failure.</summary>
     function DeleteConsumer(const AStreamName, AConsumerName: string): Boolean;
+    /// <summary>Lists consumer names on AStreamName via paged <c>$JS.API.CONSUMER.NAMES.{stream}</c>.</summary>
+    function ListConsumerNames(const AStreamName: string): IList<string>;
+    /// <summary>Lists full consumer info on AStreamName via paged <c>$JS.API.CONSUMER.LIST.{stream}</c>.</summary>
+    function ListConsumers(const AStreamName: string): IList<TNatsConsumerInfo>;
 
     /// <summary>
     ///   Pulls up to ABatch messages from a pull consumer. AExpiresMs is how long the server
@@ -542,6 +557,524 @@ begin
   else
     Result := (Length(AMsg.Payload) = 0) and (AMsg.StatusCode <> 0);
   end;
+end;
+
+function NatsJSBuildPagedListRequest(AOffset: Integer; const ASubjectFilter: string): string;
+var
+  w: TJsByteWriter;
+  jw: TUtf8JsonWriter;
+begin
+  w.Reset;
+  jw := TUtf8JsonWriter.Create(@w, JsUtf8WriteToByteWriter, False);
+  jw.WriteStartObject;
+  jw.WritePropertyName('offset');
+  jw.WriteNumber(AOffset);
+  if ASubjectFilter <> '' then
+  begin
+    jw.WritePropertyName('subject');
+    jw.WriteString(ASubjectFilter);
+  end;
+  jw.WriteEndObject;
+  Result := TEncoding.UTF8.GetString(w.ToBytes);
+end;
+
+procedure NatsJSParseStreamConfigObject(var AReader: TUtf8JsonReader; out AConfig: TNatsStreamConfig); forward;
+
+/// <summary>Reader is positioned on StartObject of a stream_info / stream_create response body.</summary>
+procedure NatsJSParseStreamInfoObject(var AReader: TUtf8JsonReader; out AInfo: TNatsStreamInfo);
+begin
+  AInfo := Default(TNatsStreamInfo);
+  while AReader.Read do
+  begin
+    if AReader.TokenType = TJsonTokenType.EndObject then
+      Break;
+    if AReader.TokenType <> TJsonTokenType.PropertyName then
+      Continue;
+
+    if AReader.ValueSpanEquals('error') then
+    begin
+      if AReader.Read then
+      begin
+        if AReader.TokenType = TJsonTokenType.StartObject then
+          NatsJSRaiseFromErrorObject(AReader)
+        else
+          NatsJSSkipValue(AReader);
+      end;
+    end
+    else if AReader.ValueSpanEquals('config') then
+    begin
+      if AReader.Read then
+      begin
+        if AReader.TokenType = TJsonTokenType.StartObject then
+        begin
+          NatsJSParseStreamConfigObject(AReader, AInfo.Config);
+          if AInfo.Name = '' then
+            AInfo.Name := AInfo.Config.Name;
+        end
+        else
+          NatsJSSkipValue(AReader);
+      end;
+    end
+    else if AReader.ValueSpanEquals('state') then
+    begin
+      if AReader.Read then
+      begin
+        if AReader.TokenType = TJsonTokenType.StartObject then
+        begin
+          while AReader.Read do
+          begin
+            if AReader.TokenType = TJsonTokenType.EndObject then
+              Break;
+            if AReader.TokenType <> TJsonTokenType.PropertyName then
+              Continue;
+            if AReader.ValueSpanEquals('messages') then
+            begin
+              if AReader.Read and (AReader.TokenType = TJsonTokenType.Number) then
+                AInfo.Messages := UInt64(AReader.GetInt64)
+              else
+                NatsJSSkipValue(AReader);
+            end
+            else if AReader.ValueSpanEquals('bytes') then
+            begin
+              if AReader.Read and (AReader.TokenType = TJsonTokenType.Number) then
+                AInfo.Bytes := UInt64(AReader.GetInt64)
+              else
+                NatsJSSkipValue(AReader);
+            end
+            else if AReader.ValueSpanEquals('first_seq') then
+            begin
+              if AReader.Read and (AReader.TokenType = TJsonTokenType.Number) then
+                AInfo.FirstSeq := UInt64(AReader.GetInt64)
+              else
+                NatsJSSkipValue(AReader);
+            end
+            else if AReader.ValueSpanEquals('last_seq') then
+            begin
+              if AReader.Read and (AReader.TokenType = TJsonTokenType.Number) then
+                AInfo.LastSeq := UInt64(AReader.GetInt64)
+              else
+                NatsJSSkipValue(AReader);
+            end
+            else if AReader.ValueSpanEquals('consumer_count') then
+            begin
+              if AReader.Read and (AReader.TokenType = TJsonTokenType.Number) then
+                AInfo.ConsumerCount := AReader.GetInt32
+              else
+                NatsJSSkipValue(AReader);
+            end
+            else
+              NatsJSHandlePropValue(AReader);
+          end;
+        end
+        else
+          NatsJSSkipValue(AReader);
+      end;
+    end
+    else
+      NatsJSHandlePropValue(AReader);
+  end;
+end;
+
+/// <summary>Reader is positioned on StartObject of a consumer_info / consumer_create response body.</summary>
+procedure NatsJSParseConsumerInfoObject(var AReader: TUtf8JsonReader; out AInfo: TNatsConsumerInfo);
+begin
+  { Default — not FillChar — so managed string fields are finalized across ListConsumers pages. }
+  AInfo := Default(TNatsConsumerInfo);
+  while AReader.Read do
+  begin
+    if AReader.TokenType = TJsonTokenType.EndObject then
+      Break;
+    if AReader.TokenType <> TJsonTokenType.PropertyName then
+      Continue;
+
+    if AReader.ValueSpanEquals('error') then
+    begin
+      if AReader.Read then
+      begin
+        if AReader.TokenType = TJsonTokenType.StartObject then
+          NatsJSRaiseFromErrorObject(AReader)
+        else
+          NatsJSSkipValue(AReader);
+      end;
+    end
+    else if AReader.ValueSpanEquals('stream_name') then
+    begin
+      if AReader.Read and (AReader.TokenType = TJsonTokenType.StringValue) then
+        AInfo.StreamName := AReader.GetString
+      else
+        NatsJSSkipValue(AReader);
+    end
+    else if AReader.ValueSpanEquals('name') then
+    begin
+      if AReader.Read and (AReader.TokenType = TJsonTokenType.StringValue) then
+        AInfo.Name := AReader.GetString
+      else
+        NatsJSSkipValue(AReader);
+    end
+    else if AReader.ValueSpanEquals('num_pending') then
+    begin
+      if AReader.Read and (AReader.TokenType = TJsonTokenType.Number) then
+        AInfo.NumPending := UInt64(AReader.GetInt64)
+      else
+        NatsJSSkipValue(AReader);
+    end
+    else if AReader.ValueSpanEquals('num_ack_pending') then
+    begin
+      if AReader.Read and (AReader.TokenType = TJsonTokenType.Number) then
+        AInfo.NumAckPending := AReader.GetInt32
+      else
+        NatsJSSkipValue(AReader);
+    end
+    else if AReader.ValueSpanEquals('num_redelivered') then
+    begin
+      if AReader.Read and (AReader.TokenType = TJsonTokenType.Number) then
+        AInfo.NumRedelivered := AReader.GetInt32
+      else
+        NatsJSSkipValue(AReader);
+    end
+    else if AReader.ValueSpanEquals('num_waiting') then
+    begin
+      if AReader.Read and (AReader.TokenType = TJsonTokenType.Number) then
+        AInfo.NumWaiting := AReader.GetInt32
+      else
+        NatsJSSkipValue(AReader);
+    end
+    else if AReader.ValueSpanEquals('config') then
+    begin
+      if AReader.Read then
+      begin
+        if AReader.TokenType = TJsonTokenType.StartObject then
+        begin
+          while AReader.Read do
+          begin
+            if AReader.TokenType = TJsonTokenType.EndObject then
+              Break;
+            if AReader.TokenType <> TJsonTokenType.PropertyName then
+              Continue;
+            if AReader.ValueSpanEquals('durable_name') then
+            begin
+              if AReader.Read and (AReader.TokenType = TJsonTokenType.StringValue) then
+                AInfo.DurableName := AReader.GetString
+              else
+                NatsJSSkipValue(AReader);
+            end
+            else if AReader.ValueSpanEquals('filter_subject') then
+            begin
+              if AReader.Read and (AReader.TokenType = TJsonTokenType.StringValue) then
+                AInfo.FilterSubject := AReader.GetString
+              else
+                NatsJSSkipValue(AReader);
+            end
+            else if AReader.ValueSpanEquals('deliver_subject') then
+            begin
+              if AReader.Read and (AReader.TokenType = TJsonTokenType.StringValue) then
+                AInfo.DeliverSubject := AReader.GetString
+              else
+                NatsJSSkipValue(AReader);
+            end
+            else if AReader.ValueSpanEquals('deliver_group') then
+            begin
+              if AReader.Read and (AReader.TokenType = TJsonTokenType.StringValue) then
+                AInfo.DeliverGroup := AReader.GetString
+              else
+                NatsJSSkipValue(AReader);
+            end
+            else
+              NatsJSHandlePropValue(AReader);
+          end;
+        end
+        else
+          NatsJSSkipValue(AReader);
+      end;
+    end
+    else
+      NatsJSHandlePropValue(AReader);
+  end;
+  if AInfo.Name = '' then
+    AInfo.Name := AInfo.DurableName;
+end;
+
+/// <summary>
+///   Parses one paged JetStream names response (STREAM.NAMES / CONSUMER.NAMES).
+///   Appends string items from AArrayProp ("streams" or "consumers"). Returns count added.
+/// </summary>
+function NatsJSAppendPagedNames(const AJson, AArrayProp: string; out ATotal, AOffset, ALimit: Integer;
+  const ANames: IList<string>): Integer;
+var
+  bytes: TBytes;
+  reader: TUtf8JsonReader;
+  pageCount: Integer;
+begin
+  ATotal := 0;
+  AOffset := 0;
+  ALimit := 0;
+  pageCount := 0;
+  try
+    reader := NatsJSOpenReader(AJson, 'Empty JetStream API response', bytes);
+    if (not reader.Read) or (reader.TokenType <> TJsonTokenType.StartObject) then
+      raise EDextNatsProtocolError.CreateFmt('Malformed JetStream API response: %s', [AJson]);
+
+    while reader.Read do
+    begin
+      if reader.TokenType = TJsonTokenType.EndObject then
+        Break;
+      if reader.TokenType <> TJsonTokenType.PropertyName then
+        Continue;
+
+      if reader.ValueSpanEquals('error') then
+      begin
+        if reader.Read then
+        begin
+          if reader.TokenType = TJsonTokenType.StartObject then
+            NatsJSRaiseFromErrorObject(reader)
+          else
+            NatsJSSkipValue(reader);
+        end;
+      end
+      else if reader.ValueSpanEquals('total') then
+      begin
+        if reader.Read and (reader.TokenType = TJsonTokenType.Number) then
+          ATotal := reader.GetInt32
+        else
+          NatsJSSkipValue(reader);
+      end
+      else if reader.ValueSpanEquals('offset') then
+      begin
+        if reader.Read and (reader.TokenType = TJsonTokenType.Number) then
+          AOffset := reader.GetInt32
+        else
+          NatsJSSkipValue(reader);
+      end
+      else if reader.ValueSpanEquals('limit') then
+      begin
+        if reader.Read and (reader.TokenType = TJsonTokenType.Number) then
+          ALimit := reader.GetInt32
+        else
+          NatsJSSkipValue(reader);
+      end
+      else if reader.ValueSpanEquals(AArrayProp) then
+      begin
+        if reader.Read then
+        begin
+          if reader.TokenType = TJsonTokenType.StartArray then
+          begin
+            while reader.Read do
+            begin
+              if reader.TokenType = TJsonTokenType.EndArray then
+                Break;
+              if reader.TokenType = TJsonTokenType.StringValue then
+              begin
+                ANames.Add(reader.GetString);
+                Inc(pageCount);
+              end
+              else
+                NatsJSSkipValue(reader);
+            end;
+          end
+          else
+            NatsJSSkipValue(reader);
+        end;
+      end
+      else
+        NatsJSHandlePropValue(reader);
+    end;
+  except
+    on E: EDextNatsProtocolError do
+      raise;
+    on E: EDextNatsJetStreamError do
+      raise;
+    on E: EJsonException do
+      raise EDextNatsProtocolError.CreateFmt('Malformed JetStream API response: %s', [AJson]);
+  end;
+  Result := pageCount;
+end;
+
+/// <summary>Parses one STREAM.LIST page; appends TNatsStreamInfo items. Returns count added.</summary>
+function NatsJSAppendPagedStreamInfos(const AJson: string; out ATotal, AOffset, ALimit: Integer;
+  const AInfos: IList<TNatsStreamInfo>): Integer;
+var
+  bytes: TBytes;
+  reader: TUtf8JsonReader;
+  pageCount: Integer;
+  info: TNatsStreamInfo;
+begin
+  ATotal := 0;
+  AOffset := 0;
+  ALimit := 0;
+  pageCount := 0;
+  try
+    reader := NatsJSOpenReader(AJson, 'Empty JetStream API response', bytes);
+    if (not reader.Read) or (reader.TokenType <> TJsonTokenType.StartObject) then
+      raise EDextNatsProtocolError.CreateFmt('Malformed JetStream API response: %s', [AJson]);
+
+    while reader.Read do
+    begin
+      if reader.TokenType = TJsonTokenType.EndObject then
+        Break;
+      if reader.TokenType <> TJsonTokenType.PropertyName then
+        Continue;
+
+      if reader.ValueSpanEquals('error') then
+      begin
+        if reader.Read then
+        begin
+          if reader.TokenType = TJsonTokenType.StartObject then
+            NatsJSRaiseFromErrorObject(reader)
+          else
+            NatsJSSkipValue(reader);
+        end;
+      end
+      else if reader.ValueSpanEquals('total') then
+      begin
+        if reader.Read and (reader.TokenType = TJsonTokenType.Number) then
+          ATotal := reader.GetInt32
+        else
+          NatsJSSkipValue(reader);
+      end
+      else if reader.ValueSpanEquals('offset') then
+      begin
+        if reader.Read and (reader.TokenType = TJsonTokenType.Number) then
+          AOffset := reader.GetInt32
+        else
+          NatsJSSkipValue(reader);
+      end
+      else if reader.ValueSpanEquals('limit') then
+      begin
+        if reader.Read and (reader.TokenType = TJsonTokenType.Number) then
+          ALimit := reader.GetInt32
+        else
+          NatsJSSkipValue(reader);
+      end
+      else if reader.ValueSpanEquals('streams') then
+      begin
+        if reader.Read then
+        begin
+          if reader.TokenType = TJsonTokenType.StartArray then
+          begin
+            while reader.Read do
+            begin
+              if reader.TokenType = TJsonTokenType.EndArray then
+                Break;
+              if reader.TokenType = TJsonTokenType.StartObject then
+              begin
+                NatsJSParseStreamInfoObject(reader, info);
+                AInfos.Add(info);
+                Inc(pageCount);
+              end
+              else
+                NatsJSSkipValue(reader);
+            end;
+          end
+          else
+            NatsJSSkipValue(reader);
+        end;
+      end
+      else
+        NatsJSHandlePropValue(reader);
+    end;
+  except
+    on E: EDextNatsProtocolError do
+      raise;
+    on E: EDextNatsJetStreamError do
+      raise;
+    on E: EJsonException do
+      raise EDextNatsProtocolError.CreateFmt('Malformed JetStream API response: %s', [AJson]);
+  end;
+  Result := pageCount;
+end;
+
+/// <summary>Parses one CONSUMER.LIST page; appends TNatsConsumerInfo items. Returns count added.</summary>
+function NatsJSAppendPagedConsumerInfos(const AJson: string; out ATotal, AOffset, ALimit: Integer;
+  const AInfos: IList<TNatsConsumerInfo>): Integer;
+var
+  bytes: TBytes;
+  reader: TUtf8JsonReader;
+  pageCount: Integer;
+  info: TNatsConsumerInfo;
+begin
+  ATotal := 0;
+  AOffset := 0;
+  ALimit := 0;
+  pageCount := 0;
+  try
+    reader := NatsJSOpenReader(AJson, 'Empty JetStream API response', bytes);
+    if (not reader.Read) or (reader.TokenType <> TJsonTokenType.StartObject) then
+      raise EDextNatsProtocolError.CreateFmt('Malformed JetStream API response: %s', [AJson]);
+
+    while reader.Read do
+    begin
+      if reader.TokenType = TJsonTokenType.EndObject then
+        Break;
+      if reader.TokenType <> TJsonTokenType.PropertyName then
+        Continue;
+
+      if reader.ValueSpanEquals('error') then
+      begin
+        if reader.Read then
+        begin
+          if reader.TokenType = TJsonTokenType.StartObject then
+            NatsJSRaiseFromErrorObject(reader)
+          else
+            NatsJSSkipValue(reader);
+        end;
+      end
+      else if reader.ValueSpanEquals('total') then
+      begin
+        if reader.Read and (reader.TokenType = TJsonTokenType.Number) then
+          ATotal := reader.GetInt32
+        else
+          NatsJSSkipValue(reader);
+      end
+      else if reader.ValueSpanEquals('offset') then
+      begin
+        if reader.Read and (reader.TokenType = TJsonTokenType.Number) then
+          AOffset := reader.GetInt32
+        else
+          NatsJSSkipValue(reader);
+      end
+      else if reader.ValueSpanEquals('limit') then
+      begin
+        if reader.Read and (reader.TokenType = TJsonTokenType.Number) then
+          ALimit := reader.GetInt32
+        else
+          NatsJSSkipValue(reader);
+      end
+      else if reader.ValueSpanEquals('consumers') then
+      begin
+        if reader.Read then
+        begin
+          if reader.TokenType = TJsonTokenType.StartArray then
+          begin
+            while reader.Read do
+            begin
+              if reader.TokenType = TJsonTokenType.EndArray then
+                Break;
+              if reader.TokenType = TJsonTokenType.StartObject then
+              begin
+                NatsJSParseConsumerInfoObject(reader, info);
+                AInfos.Add(info);
+                Inc(pageCount);
+              end
+              else
+                NatsJSSkipValue(reader);
+            end;
+          end
+          else
+            NatsJSSkipValue(reader);
+        end;
+      end
+      else
+        NatsJSHandlePropValue(reader);
+    end;
+  except
+    on E: EDextNatsProtocolError do
+      raise;
+    on E: EDextNatsJetStreamError do
+      raise;
+    on E: EJsonException do
+      raise EDextNatsProtocolError.CreateFmt('Malformed JetStream API response: %s', [AJson]);
+  end;
+  Result := pageCount;
 end;
 
 { EDextNatsJetStreamError }
@@ -903,96 +1436,7 @@ begin
     reader := NatsJSOpenReader(AJson, 'Empty JetStream API response', bytes);
     if (not reader.Read) or (reader.TokenType <> TJsonTokenType.StartObject) then
       raise EDextNatsProtocolError.CreateFmt('Malformed JetStream API response: %s', [AJson]);
-
-    while reader.Read do
-    begin
-      if reader.TokenType = TJsonTokenType.EndObject then
-        Break;
-      if reader.TokenType <> TJsonTokenType.PropertyName then
-        Continue;
-
-      if reader.ValueSpanEquals('error') then
-      begin
-        if reader.Read then
-        begin
-          if reader.TokenType = TJsonTokenType.StartObject then
-            NatsJSRaiseFromErrorObject(reader)
-          else
-            NatsJSSkipValue(reader);
-        end;
-      end
-      else if reader.ValueSpanEquals('config') then
-      begin
-        if reader.Read then
-        begin
-          if reader.TokenType = TJsonTokenType.StartObject then
-          begin
-            NatsJSParseStreamConfigObject(reader, Result.Config);
-            if Result.Name = '' then
-              Result.Name := Result.Config.Name;
-          end
-          else
-            NatsJSSkipValue(reader);
-        end;
-      end
-      else if reader.ValueSpanEquals('state') then
-      begin
-        if reader.Read then
-        begin
-          if reader.TokenType = TJsonTokenType.StartObject then
-          begin
-            while reader.Read do
-            begin
-              if reader.TokenType = TJsonTokenType.EndObject then
-                Break;
-              if reader.TokenType <> TJsonTokenType.PropertyName then
-                Continue;
-              if reader.ValueSpanEquals('messages') then
-              begin
-                if reader.Read and (reader.TokenType = TJsonTokenType.Number) then
-                  Result.Messages := UInt64(reader.GetInt64)
-                else
-                  NatsJSSkipValue(reader);
-              end
-              else if reader.ValueSpanEquals('bytes') then
-              begin
-                if reader.Read and (reader.TokenType = TJsonTokenType.Number) then
-                  Result.Bytes := UInt64(reader.GetInt64)
-                else
-                  NatsJSSkipValue(reader);
-              end
-              else if reader.ValueSpanEquals('first_seq') then
-              begin
-                if reader.Read and (reader.TokenType = TJsonTokenType.Number) then
-                  Result.FirstSeq := UInt64(reader.GetInt64)
-                else
-                  NatsJSSkipValue(reader);
-              end
-              else if reader.ValueSpanEquals('last_seq') then
-              begin
-                if reader.Read and (reader.TokenType = TJsonTokenType.Number) then
-                  Result.LastSeq := UInt64(reader.GetInt64)
-                else
-                  NatsJSSkipValue(reader);
-              end
-              else if reader.ValueSpanEquals('consumer_count') then
-              begin
-                if reader.Read and (reader.TokenType = TJsonTokenType.Number) then
-                  Result.ConsumerCount := reader.GetInt32
-                else
-                  NatsJSSkipValue(reader);
-              end
-              else
-                NatsJSHandlePropValue(reader);
-            end;
-          end
-          else
-            NatsJSSkipValue(reader);
-        end;
-      end
-      else
-        NatsJSHandlePropValue(reader);
-    end;
+    NatsJSParseStreamInfoObject(reader, Result);
   except
     on E: EDextNatsProtocolError do
       raise;
@@ -1131,124 +1575,12 @@ var
   bytes: TBytes;
   reader: TUtf8JsonReader;
 begin
-  FillChar(Result, SizeOf(Result), 0);
+  Result := Default(TNatsConsumerInfo);
   try
     reader := NatsJSOpenReader(AJson, 'Empty JetStream API response', bytes);
     if (not reader.Read) or (reader.TokenType <> TJsonTokenType.StartObject) then
       raise EDextNatsProtocolError.CreateFmt('Malformed JetStream API response: %s', [AJson]);
-
-    while reader.Read do
-    begin
-      if reader.TokenType = TJsonTokenType.EndObject then
-        Break;
-      if reader.TokenType <> TJsonTokenType.PropertyName then
-        Continue;
-
-      if reader.ValueSpanEquals('error') then
-      begin
-        if reader.Read then
-        begin
-          if reader.TokenType = TJsonTokenType.StartObject then
-            NatsJSRaiseFromErrorObject(reader)
-          else
-            NatsJSSkipValue(reader);
-        end;
-      end
-      else if reader.ValueSpanEquals('stream_name') then
-      begin
-        if reader.Read and (reader.TokenType = TJsonTokenType.StringValue) then
-          Result.StreamName := reader.GetString
-        else
-          NatsJSSkipValue(reader);
-      end
-      else if reader.ValueSpanEquals('name') then
-      begin
-        if reader.Read and (reader.TokenType = TJsonTokenType.StringValue) then
-          Result.Name := reader.GetString
-        else
-          NatsJSSkipValue(reader);
-      end
-      else if reader.ValueSpanEquals('num_pending') then
-      begin
-        if reader.Read and (reader.TokenType = TJsonTokenType.Number) then
-          Result.NumPending := UInt64(reader.GetInt64)
-        else
-          NatsJSSkipValue(reader);
-      end
-      else if reader.ValueSpanEquals('num_ack_pending') then
-      begin
-        if reader.Read and (reader.TokenType = TJsonTokenType.Number) then
-          Result.NumAckPending := reader.GetInt32
-        else
-          NatsJSSkipValue(reader);
-      end
-      else if reader.ValueSpanEquals('num_redelivered') then
-      begin
-        if reader.Read and (reader.TokenType = TJsonTokenType.Number) then
-          Result.NumRedelivered := reader.GetInt32
-        else
-          NatsJSSkipValue(reader);
-      end
-      else if reader.ValueSpanEquals('num_waiting') then
-      begin
-        if reader.Read and (reader.TokenType = TJsonTokenType.Number) then
-          Result.NumWaiting := reader.GetInt32
-        else
-          NatsJSSkipValue(reader);
-      end
-      else if reader.ValueSpanEquals('config') then
-      begin
-        if reader.Read then
-        begin
-          if reader.TokenType = TJsonTokenType.StartObject then
-          begin
-            while reader.Read do
-            begin
-              if reader.TokenType = TJsonTokenType.EndObject then
-                Break;
-              if reader.TokenType <> TJsonTokenType.PropertyName then
-                Continue;
-              if reader.ValueSpanEquals('durable_name') then
-              begin
-                if reader.Read and (reader.TokenType = TJsonTokenType.StringValue) then
-                  Result.DurableName := reader.GetString
-                else
-                  NatsJSSkipValue(reader);
-              end
-              else if reader.ValueSpanEquals('filter_subject') then
-              begin
-                if reader.Read and (reader.TokenType = TJsonTokenType.StringValue) then
-                  Result.FilterSubject := reader.GetString
-                else
-                  NatsJSSkipValue(reader);
-              end
-              else if reader.ValueSpanEquals('deliver_subject') then
-              begin
-                if reader.Read and (reader.TokenType = TJsonTokenType.StringValue) then
-                  Result.DeliverSubject := reader.GetString
-                else
-                  NatsJSSkipValue(reader);
-              end
-              else if reader.ValueSpanEquals('deliver_group') then
-              begin
-                if reader.Read and (reader.TokenType = TJsonTokenType.StringValue) then
-                  Result.DeliverGroup := reader.GetString
-                else
-                  NatsJSSkipValue(reader);
-              end
-              else
-                NatsJSHandlePropValue(reader);
-            end;
-          end
-          else
-            NatsJSSkipValue(reader);
-        end;
-      end
-      else
-        NatsJSHandlePropValue(reader);
-    end;
-    if Result.Name = '' then
-      Result.Name := Result.DurableName;
+    NatsJSParseConsumerInfoObject(reader, Result);
   except
     on E: EDextNatsProtocolError do
       raise;
@@ -1568,6 +1900,38 @@ begin
   Result := NatsJSParseSuccessResponse(ApiRequest('STREAM.DELETE.' + AStreamName, '{}'));
 end;
 
+function TDextNatsJetStreamContext.ListStreamNames(const ASubjectFilter: string): IList<string>;
+var
+  offset, total, pageOffset, limit, pageCount: Integer;
+begin
+  Result := TCollections.CreateList<string>;
+  offset := 0;
+  repeat
+    pageCount := NatsJSAppendPagedNames(
+      ApiRequest('STREAM.NAMES', NatsJSBuildPagedListRequest(offset, ASubjectFilter)),
+      'streams', total, pageOffset, limit, Result);
+    if pageCount <= 0 then
+      Break;
+    Inc(offset, pageCount);
+  until offset >= total;
+end;
+
+function TDextNatsJetStreamContext.ListStreams(const ASubjectFilter: string): IList<TNatsStreamInfo>;
+var
+  offset, total, pageOffset, limit, pageCount: Integer;
+begin
+  Result := TCollections.CreateList<TNatsStreamInfo>;
+  offset := 0;
+  repeat
+    pageCount := NatsJSAppendPagedStreamInfos(
+      ApiRequest('STREAM.LIST', NatsJSBuildPagedListRequest(offset, ASubjectFilter)),
+      total, pageOffset, limit, Result);
+    if pageCount <= 0 then
+      Break;
+    Inc(offset, pageCount);
+  until offset >= total;
+end;
+
 function TDextNatsJetStreamContext.GetLastMessage(const AStreamName, ASubject: string;
   ATimeoutMs: Integer): TNatsStoredMsg;
 var
@@ -1658,6 +2022,44 @@ begin
 
   Result := NatsJSParseSuccessResponse(
     ApiRequest(Format('CONSUMER.DELETE.%s.%s', [AStreamName, AConsumerName]), '{}'));
+end;
+
+function TDextNatsJetStreamContext.ListConsumerNames(const AStreamName: string): IList<string>;
+var
+  offset, total, pageOffset, limit, pageCount: Integer;
+begin
+  if AStreamName = '' then
+    raise EDextNatsException.Create('ListConsumerNames requires a stream name');
+  Result := TCollections.CreateList<string>;
+  offset := 0;
+  repeat
+    pageCount := NatsJSAppendPagedNames(
+      ApiRequest(Format('CONSUMER.NAMES.%s', [AStreamName]),
+        NatsJSBuildPagedListRequest(offset, '')),
+      'consumers', total, pageOffset, limit, Result);
+    if pageCount <= 0 then
+      Break;
+    Inc(offset, pageCount);
+  until offset >= total;
+end;
+
+function TDextNatsJetStreamContext.ListConsumers(const AStreamName: string): IList<TNatsConsumerInfo>;
+var
+  offset, total, pageOffset, limit, pageCount: Integer;
+begin
+  if AStreamName = '' then
+    raise EDextNatsException.Create('ListConsumers requires a stream name');
+  Result := TCollections.CreateList<TNatsConsumerInfo>;
+  offset := 0;
+  repeat
+    pageCount := NatsJSAppendPagedConsumerInfos(
+      ApiRequest(Format('CONSUMER.LIST.%s', [AStreamName]),
+        NatsJSBuildPagedListRequest(offset, '')),
+      total, pageOffset, limit, Result);
+    if pageCount <= 0 then
+      Break;
+    Inc(offset, pageCount);
+  until offset >= total;
 end;
 
 { TDextNatsJetStreamPushSubscription }

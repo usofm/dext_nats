@@ -34,9 +34,12 @@ Source/
                                 TNatsHealthCheck / AddNatsHealthCheck (Connected
                                 probe; Web-free — map to IHealthCheck in apps).
   Dext.Net.Nats.JetStream.pas   TDextNatsJetStreamContext: stream admin
-                                (create/update/info/delete), dedup'd publish,
-                                pull Fetch + push SubscribePush, Ack/Nak/Term/
-                                InProgress via $JS.API.*.
+                                (create/update/info/delete, ListStreams /
+                                ListStreamNames), consumer list
+                                (ListConsumers / ListConsumerNames),
+                                dedup'd publish, pull Fetch + push
+                                SubscribePush, Ack/Nak/Term/InProgress via
+                                $JS.API.*.
   Dext.Net.Nats.KeyValue.pas    TDextNatsKeyValue: JetStream KV buckets
                                 (CreateBucket/Put/Get/Delete/Purge, Keys/ListKeys,
                                 History, Watch/WatchAll (EndOfInitial marker,
@@ -207,9 +210,11 @@ parsing frames anywhere else.
 - [x] Client (`Dext.Net.Nats.pas`): connect, pub/sub, request/reply, reconnect,
       keepalive, Drain/DrainAsync/IsDraining — now using `Dext.Collections` throughout
 - [x] JetStream (`Dext.Net.Nats.JetStream.pas`): stream admin
- (create/update/info/delete), dedup'd publish with a `Nats-Msg-Id`
- header, pull-consumer admin, Fetch, Ack/Nak/Term/InProgress, and push
- `SubscribePush` on `deliver_subject`
+ (create/update/info/delete, `ListStreams` / `ListStreamNames` via
+ `$JS.API.STREAM.LIST` / `STREAM.NAMES`), consumer admin including
+ `ListConsumers` / `ListConsumerNames` (`CONSUMER.LIST` / `CONSUMER.NAMES`),
+ dedup'd publish with a `Nats-Msg-Id` header, Fetch, Ack/Nak/Term/InProgress,
+ and push `SubscribePush` on `deliver_subject`
 - [x] Object Store (`Dext.Net.Nats.ObjectStore.pas`): CreateStore / OpenStore /
       UpdateStore / UpdateObjectStore (STREAM.UPDATE on OBJ_*; description /
       max_bytes / MaxAge TTL / storage / replicas; compression/placement deferred —
