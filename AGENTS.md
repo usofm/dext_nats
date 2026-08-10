@@ -37,6 +37,8 @@ Source/
                                 pull Fetch + push SubscribePush, Ack/Nak/Term/
                                 InProgress via $JS.API.*.
 Demo/
+  PubSubE2E/                    One-way core pub/sub E2E console smoke test
+                                against a plain local `nats-server` (no JetStream).
   JetStreamSmokeTest/           Interactive console program that manually verifies
                                 stream/consumer paths and dedup'd publish
                                 against a local `nats-server -js`. Not a
@@ -154,8 +156,8 @@ parsing frames anywhere else.
  header, pull-consumer admin, Fetch, Ack/Nak/Term/InProgress, and push
  `SubscribePush` on `deliver_subject`
 - [x] Unit/integration tests in `Tests/Dext.Net.Nats.Tests.pas` (use `Dext.Testing`)
-- [x] Console demo project (`.dpr`/`.dproj`): `Demo/JetStreamSmokeTest/` is the
-      first one, covering the new JetStream layer; more demos may follow
+- [x] Console demo projects (`.dpr`/`.dproj`): `Demo/PubSubE2E/` (core one-way
+  pub/sub) and `Demo/JetStreamSmokeTest/` (JetStream admin / pull / dedup)
 - [x] TLS on `TDextNatsClient` via `TDextTLSOptions` / `IDextTLSEngine`
       (upgrade after cleartext INFO when `tls_required` or `Options.TLS.Enabled`)
 - [x] `README.md` with usage examples
