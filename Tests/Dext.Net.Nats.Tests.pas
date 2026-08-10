@@ -143,6 +143,8 @@ type
     [Test, Category('Unit')]
     procedure ConsumerConfig_ShouldSerializeEnumVariants;
     [Test, Category('Unit')]
+    procedure ConsumerConfig_ShouldSerializeHeadersOnly;
+    [Test, Category('Unit')]
     procedure JsMsg_ShouldParseAckSubjectMetadata;
     [Test, Category('Unit')]
     procedure StreamConfig_ShouldSerializeDefaults;
@@ -1244,6 +1246,21 @@ begin
   Should(json.Contains('"deliver_policy":"last"')).BeTrue;
   Should(json.Contains('"ack_policy":"all"')).BeTrue;
   Should(json.Contains('"replay_policy":"original"')).BeTrue;
+end;
+
+procedure TDextNatsProtocolTests.ConsumerConfig_ShouldSerializeHeadersOnly;
+var
+  cfg: TNatsConsumerConfig;
+  json: string;
+begin
+  cfg := TNatsConsumerConfig.CreateDefault('C2', 's.*');
+  cfg.HeadersOnly := True;
+  json := cfg.ToJson;
+  Should(json.Contains('"headers_only":true')).BeTrue;
+
+  cfg := TNatsConsumerConfig.CreateDefault('C3', 's.*');
+  json := cfg.ToJson;
+  Should(json.Contains('headers_only')).BeFalse;
 end;
 
 procedure TDextNatsProtocolTests.JsMsg_ShouldParseAckSubjectMetadata;
