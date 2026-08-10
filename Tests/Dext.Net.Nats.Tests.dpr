@@ -4,7 +4,7 @@
 {                                                                           }
 {           A native NATS client library for the Dext Framework            }
 {                                                                           }
-{           Licensed under the Apache License, Version 2.0 (the "License");}
+{           Licensed under the Apache License, Version 2.0 (the "License"); }
 {           you may not use this file except in compliance with the License.}
 {           You may obtain a copy of the License at                         }
 {                                                                           }
@@ -15,6 +15,7 @@
 {           "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,    }
 {           either express or implied. See the License for the specific     }
 {           language governing permissions and limitations under the        }
+{           License.                                                        }
 {                                                                           }
 {***************************************************************************}
 program DextNetNatsTests;
@@ -33,22 +34,34 @@ uses
   Dext.Net.Nats.JetStream in '..\Source\Dext.Net.Nats.JetStream.pas',
   Dext.Net.Nats.Tests in 'Dext.Net.Nats.Tests.pas';
 
+var
+  Config: TTestConfigurator;
+  RunStress: Boolean;
 begin
   SetConsoleCharSet;
   try
     SafeWriteLn;
     SafeWriteLn('Dext.Net.Nats Tests');
     SafeWriteLn('===================');
+    if Trim(GetEnvironmentVariable('DEXT_NATS_TLS_PORT')) = '' then
+      SafeWriteLn('TLS: soft-skip (set DEXT_NATS_TLS_PORT to enable live TLS tests)');
+    RunStress := SameText(Trim(GetEnvironmentVariable('DEXT_NATS_RUN_STRESS')), '1')
+      or SameText(Trim(GetEnvironmentVariable('DEXT_NATS_RUN_STRESS')), 'true');
+    if not RunStress then
+      SafeWriteLn('Stress: explicit tests omitted (set DEXT_NATS_RUN_STRESS=1 to include)');
     SafeWriteLn;
 
-    RunTests(ConfigureTests
-      .Verbose
-      .RegisterFixtures([
-        TDextNatsProtocolTests,
-        TDextNatsIntegrationTests,
-        TDextNatsJetStreamTests,
-        TDextNatsTlsIntegrationTests
-      ]));
+    Config := ConfigureTests.Verbose;
+    if RunStress then
+      Config := Config.IncludeExplicitTests;
+
+    RunTests(Config.RegisterFixtures([
+      TDextNatsProtocolTests,
+      TDextNatsIntegrationTests,
+      TDextNatsJetStreamTests,
+      TDextNatsTlsIntegrationTests,
+      TDextNatsStressTests
+    ]));
   except
     on E: Exception do
     begin

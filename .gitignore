@@ -49,3 +49,8 @@ osx64/
 
 # Boss dependency manager vendor folder
 modules/
+
+# Local build/output tree
+Output/
+*.log
+
