@@ -22,7 +22,8 @@
 {  JetStream Object Store (ADR-20). Buckets are OBJ_<bucket> streams with   }
 {  chunk subjects $O.<bucket>.C.> and metadata $O.<bucket>.M.>.             }
 {  CreateStore / DeleteStore / Put / Get / Delete / List / Keys,            }
-{  Watch / WatchAll, UpdateMeta, Seal. Deferred: links.                     }
+{  Watch / WatchAll, UpdateMeta, Seal, AddLink / AddBucketLink.             }
+{  Get follows object links (same or other bucket); bucket links raise.     }
 {  TDextNatsObjectStoreContext wraps a TDextNatsJetStreamContext (or        }
 {  creates one from TDextNatsClient); it does not own the client.           }
 {                                                                           }
@@ -80,6 +81,17 @@ type
     class function Create(const AName: string): TNatsObjectMeta; static;
   end;
 
+  /// <summary>
+  ///   Embedded link target in ObjectInfo <c>options.link</c> (ADR-20 / nats.go).
+  ///   Empty <see cref="Name"/> means a bucket link (whole store), not a gettable object.
+  /// </summary>
+  TNatsObjectLink = record
+    Bucket: string;
+    Name: string;
+    class function Create(const ABucket, AName: string): TNatsObjectLink; static;
+    class function CreateBucket(const ABucket: string): TNatsObjectLink; static;
+  end;
+
   /// <summary>Object metadata + instance fields stored on $O.&lt;bucket&gt;.M.&lt;b64url(name)&gt;.</summary>
   TNatsObjectInfo = record
     Name: string;
@@ -93,6 +105,12 @@ type
     Digest: string;
     Deleted: Boolean;
     ChunkSize: Integer;
+    /// <summary>When set (<see cref="IsLink"/>), meta is a link; see <c>options.link</c>.</summary>
+    Link: TNatsObjectLink;
+    /// <summary>True when <c>options.link</c> is present (object or bucket link).</summary>
+    function IsLink: Boolean;
+    /// <summary>True when this is a bucket link (<see cref="IsLink"/> and empty link name).</summary>
+    function IsBucketLink: Boolean;
     /// <summary>Parses ObjectInfo JSON (mtime is ignored / never stored).</summary>
     class function Parse(const AJson: string): TNatsObjectInfo; static;
     /// <summary>Serializes ObjectInfo for metadata publish (omits mtime).</summary>
@@ -153,12 +171,32 @@ type
 
     /// <summary>Stores AData under AName (chunked). Overwrites prior object of the same name.</summary>
     function Put(const AName: string; const AData: TBytes): TNatsObjectInfo;
-    /// <summary>Reassembles chunks for AName. Raises if missing, deleted, or digest mismatch.</summary>
+    /// <summary>
+    ///   Reassembles chunks for AName. Object links are followed (same or other
+    ///   bucket via OpenStore) like nats.go; the returned / out info is the
+    ///   resolved target. Bucket links raise (cannot get a whole bucket).
+    ///   Raises if missing, deleted, or digest mismatch.
+    /// </summary>
     function Get(const AName: string): TBytes; overload;
-    /// <summary>Same as Get, also returns the metadata used for the read.</summary>
+    /// <summary>Same as Get; AInfo is the resolved target metadata after link follow.</summary>
     function Get(const AName: string; out AInfo: TNatsObjectInfo): TBytes; overload;
-    /// <summary>Current metadata for a live (non-deleted) object.</summary>
+    /// <summary>
+    ///   Current metadata for a live (non-deleted) object. Does not follow links —
+    ///   link entries surface their own meta (<see cref="TNatsObjectInfo.Link"/>).
+    /// </summary>
     function GetInfo(const AName: string): TNatsObjectInfo;
+    /// <summary>
+    ///   Creates (or replaces an existing link named AName with) an object link to
+    ///   ATarget. Meta JSON: <c>options.link = {bucket, name}</c>. Target must not
+    ///   be deleted or itself a link. A non-link object at AName raises.
+    /// </summary>
+    function AddLink(const AName: string; const ATarget: TNatsObjectInfo): TNatsObjectInfo;
+    /// <summary>
+    ///   Creates (or replaces an existing link named AName with) a bucket link to
+    ///   AStore. Meta JSON: <c>options.link = {bucket}</c> (empty name). Get on a
+    ///   bucket link raises; read GetInfo to learn the target bucket.
+    /// </summary>
+    function AddBucketLink(const AName: string; AStore: TDextNatsObjectStore): TNatsObjectInfo;
     /// <summary>Soft-deletes AName (rollup tombstone) and purges its chunk subject.</summary>
     procedure Delete(const AName: string);
     /// <summary>
@@ -469,6 +507,58 @@ begin
   Result.Metadata := nil;
 end;
 
+{ TNatsObjectLink }
+
+class function TNatsObjectLink.Create(const ABucket, AName: string): TNatsObjectLink;
+begin
+  Result.Bucket := ABucket;
+  Result.Name := AName;
+end;
+
+class function TNatsObjectLink.CreateBucket(const ABucket: string): TNatsObjectLink;
+begin
+  Result.Bucket := ABucket;
+  Result.Name := '';
+end;
+
+function TNatsObjectInfo.IsLink: Boolean;
+begin
+  Result := Link.Bucket <> '';
+end;
+
+function TNatsObjectInfo.IsBucketLink: Boolean;
+begin
+  Result := IsLink and (Link.Name = '');
+end;
+
+procedure ObjParseLinkObject(var AReader: TUtf8JsonReader; out ALink: TNatsObjectLink);
+begin
+  ALink := Default(TNatsObjectLink);
+  while AReader.Read do
+  begin
+    if AReader.TokenType = TJsonTokenType.EndObject then
+      Break;
+    if AReader.TokenType <> TJsonTokenType.PropertyName then
+      Continue;
+    if AReader.ValueSpanEquals('bucket') then
+    begin
+      if AReader.Read and (AReader.TokenType = TJsonTokenType.StringValue) then
+        ALink.Bucket := AReader.GetString
+      else
+        ObjSkipValue(AReader);
+    end
+    else if AReader.ValueSpanEquals('name') then
+    begin
+      if AReader.Read and (AReader.TokenType = TJsonTokenType.StringValue) then
+        ALink.Name := AReader.GetString
+      else
+        ObjSkipValue(AReader);
+    end
+    else if AReader.Read then
+      ObjSkipValue(AReader);
+  end;
+end;
+
 procedure ObjParseHeadersObject(var AReader: TUtf8JsonReader; out AHeaders: TNatsHeaders);
 var
   key: string;
@@ -688,6 +778,16 @@ begin
                 else
                   ObjSkipValue(reader);
               end
+              else if reader.ValueSpanEquals('link') then
+              begin
+                if reader.Read then
+                begin
+                  if reader.TokenType = TJsonTokenType.StartObject then
+                    ObjParseLinkObject(reader, Result.Link)
+                  else
+                    ObjSkipValue(reader);
+                end;
+              end
               else if reader.Read then
                 ObjSkipValue(reader);
             end;
@@ -726,12 +826,28 @@ begin
   end;
   ObjWriteHeaders(jw, Headers);
   ObjWriteMetadata(jw, Metadata);
-  if ChunkSize > 0 then
+  if (ChunkSize > 0) or IsLink then
   begin
     jw.WritePropertyName('options');
     jw.WriteStartObject;
-    jw.WritePropertyName('max_chunk_size');
-    jw.WriteNumber(ChunkSize);
+    if IsLink then
+    begin
+      jw.WritePropertyName('link');
+      jw.WriteStartObject;
+      jw.WritePropertyName('bucket');
+      jw.WriteString(Link.Bucket);
+      if Link.Name <> '' then
+      begin
+        jw.WritePropertyName('name');
+        jw.WriteString(Link.Name);
+      end;
+      jw.WriteEndObject;
+    end;
+    if ChunkSize > 0 then
+    begin
+      jw.WritePropertyName('max_chunk_size');
+      jw.WriteNumber(ChunkSize);
+    end;
     jw.WriteEndObject;
   end;
   jw.WritePropertyName('bucket');
@@ -1051,12 +1167,98 @@ begin
     raise EDextNatsObjectStoreError.CreateFmt('Object Store object not found: %s', [AName]);
 end;
 
+function TDextNatsObjectStore.AddLink(const AName: string;
+  const ATarget: TNatsObjectInfo): TNatsObjectInfo;
+var
+  existing: TNatsObjectInfo;
+begin
+  if AName = '' then
+    raise EDextNatsObjectStoreError.Create('Object name is required');
+  if ATarget.Name = '' then
+    raise EDextNatsObjectStoreError.Create('Object Store AddLink requires a target object');
+  if ATarget.Bucket = '' then
+    raise EDextNatsObjectStoreError.Create('Object Store AddLink target bucket is required');
+  if ATarget.Deleted then
+    raise EDextNatsObjectStoreError.Create('Object Store cannot link to a deleted object');
+  if ATarget.IsLink then
+    raise EDextNatsObjectStoreError.Create('Object Store cannot link to another link');
+
+  if TryGetInfo(AName, existing) then
+  begin
+    if not existing.IsLink then
+      raise EDextNatsObjectStoreError.CreateFmt(
+        'Object Store object already exists: %s', [AName]);
+  end;
+
+  Result := Default(TNatsObjectInfo);
+  Result.Name := AName;
+  Result.Bucket := FBucket;
+  Result.Nuid := ObjNewNuid;
+  Result.Size := 0;
+  Result.Chunks := 0;
+  Result.Deleted := False;
+  Result.Link := TNatsObjectLink.Create(ATarget.Bucket, ATarget.Name);
+  PublishMeta(Result);
+end;
+
+function TDextNatsObjectStore.AddBucketLink(const AName: string;
+  AStore: TDextNatsObjectStore): TNatsObjectInfo;
+var
+  existing: TNatsObjectInfo;
+begin
+  if AName = '' then
+    raise EDextNatsObjectStoreError.Create('Object name is required');
+  if AStore = nil then
+    raise EDextNatsObjectStoreError.Create('Object Store AddBucketLink requires a target store');
+  if AStore.Bucket = '' then
+    raise EDextNatsObjectStoreError.Create('Object Store AddBucketLink target bucket is required');
+
+  if TryGetInfo(AName, existing) then
+  begin
+    if not existing.IsLink then
+      raise EDextNatsObjectStoreError.CreateFmt(
+        'Object Store object already exists: %s', [AName]);
+  end;
+
+  Result := Default(TNatsObjectInfo);
+  Result.Name := AName;
+  Result.Bucket := FBucket;
+  Result.Nuid := ObjNewNuid;
+  Result.Size := 0;
+  Result.Chunks := 0;
+  Result.Deleted := False;
+  Result.Link := TNatsObjectLink.CreateBucket(AStore.Bucket);
+  PublishMeta(Result);
+end;
+
 function TDextNatsObjectStore.Get(const AName: string; out AInfo: TNatsObjectInfo): TBytes;
 var
   hash: THashSHA2;
   digest: string;
+  targetStore: TDextNatsObjectStore;
+  linkBucket, linkName: string;
 begin
   AInfo := GetInfo(AName);
+
+  { Follow object links (nats.go Get); bucket links cannot be retrieved as bytes. }
+  if AInfo.IsLink then
+  begin
+    if AInfo.IsBucketLink then
+      raise EDextNatsObjectStoreError.CreateFmt(
+        'Object Store cannot get bucket link: %s', [AName]);
+    linkBucket := AInfo.Link.Bucket;
+    linkName := AInfo.Link.Name;
+    if linkBucket = FBucket then
+      Exit(Get(linkName, AInfo));
+    targetStore := FContext.OpenStore(linkBucket);
+    try
+      Result := targetStore.Get(linkName, AInfo);
+    finally
+      targetStore.Free;
+    end;
+    Exit;
+  end;
+
   if AInfo.Chunks = 0 then
   begin
     SetLength(Result, 0);

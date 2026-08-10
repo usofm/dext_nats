@@ -444,6 +444,8 @@ type
 
     [Test, Category('Unit'), Category('ObjectStore')]
     procedure ObjectInfo_ParseToJson_ShouldRoundTrip;
+    [Test, Category('Unit'), Category('ObjectStore')]
+    procedure ObjectInfo_Link_ParseToJson_ShouldRoundTrip;
     [Test, Category('JetStream'), Category('ObjectStore')]
     procedure Store_CreatePutGetDelete_ShouldRoundTrip;
     [Test, Category('JetStream'), Category('ObjectStore')]
@@ -462,6 +464,14 @@ type
     procedure UpdateMeta_DeletedOrConflict_ShouldRaise;
     [Test, Category('JetStream'), Category('ObjectStore')]
     procedure Seal_ShouldRejectFurtherMutations;
+    [Test, Category('JetStream'), Category('ObjectStore')]
+    procedure AddLink_Get_ShouldFollowSameBucket;
+    [Test, Category('JetStream'), Category('ObjectStore')]
+    procedure AddLink_CrossBucket_Get_ShouldFollow;
+    [Test, Category('JetStream'), Category('ObjectStore'), Category('Negative')]
+    procedure AddBucketLink_Get_ShouldRaise;
+    [Test, Category('JetStream'), Category('ObjectStore'), Category('Negative')]
+    procedure AddLink_DeletedOrLinkTarget_ShouldRaise;
   end;
 
 implementation
@@ -4001,6 +4011,45 @@ begin
   Should(parsed.Digest).Be(info.Digest);
   Should(parsed.ChunkSize).Be(info.ChunkSize);
   Should(parsed.Deleted).BeFalse;
+  Should(parsed.IsLink).BeFalse;
+end;
+
+procedure TDextNatsObjectStoreTests.ObjectInfo_Link_ParseToJson_ShouldRoundTrip;
+var
+  info, parsed: TNatsObjectInfo;
+  bucketLink: TNatsObjectInfo;
+  json: string;
+begin
+  info := Default(TNatsObjectInfo);
+  info.Name := 'label.png';
+  info.Bucket := 'LABELS';
+  info.Nuid := 'LINKNUID0123456789012';
+  info.Link := TNatsObjectLink.Create('INVOICES', 'invoice.pdf');
+  json := info.ToJson;
+  Should(json.Contains('"options"')).BeTrue;
+  Should(json.Contains('"link"')).BeTrue;
+  Should(json.Contains('"INVOICES"')).BeTrue;
+  Should(json.Contains('"invoice.pdf"')).BeTrue;
+  parsed := TNatsObjectInfo.Parse(json);
+  Should(parsed.IsLink).BeTrue;
+  Should(parsed.IsBucketLink).BeFalse;
+  Should(parsed.Link.Bucket).Be('INVOICES');
+  Should(parsed.Link.Name).Be('invoice.pdf');
+  Should(parsed.Name).Be('label.png');
+  Should(parsed.Nuid).Be(info.Nuid);
+
+  bucketLink := Default(TNatsObjectInfo);
+  bucketLink.Name := 'cfg';
+  bucketLink.Bucket := 'LABELS';
+  bucketLink.Nuid := 'BUCKNUID0123456789012';
+  bucketLink.Link := TNatsObjectLink.CreateBucket('CONFIG');
+  json := bucketLink.ToJson;
+  Should(json.Contains('"CONFIG"')).BeTrue;
+  parsed := TNatsObjectInfo.Parse(json);
+  Should(parsed.IsLink).BeTrue;
+  Should(parsed.IsBucketLink).BeTrue;
+  Should(parsed.Link.Bucket).Be('CONFIG');
+  Should(parsed.Link.Name).Be('');
 end;
 
 procedure TDextNatsObjectStoreTests.Store_CreatePutGetDelete_ShouldRoundTrip;
@@ -4406,6 +4455,158 @@ begin
       begin
         store.Delete('keep.bin');
       end).Throw(EDextNatsJetStreamError);
+  finally
+    store.Free;
+    FOs.DeleteStore(bucket);
+  end;
+end;
+
+procedure TDextNatsObjectStoreTests.AddLink_Get_ShouldFollowSameBucket;
+var
+  cfg: TNatsObjectStoreConfig;
+  store: TDextNatsObjectStore;
+  bucket: string;
+  target, linkInfo, gotInfo: TNatsObjectInfo;
+  payload, got: TBytes;
+begin
+  if not EnsureJetStreamOrFail then
+    Exit;
+
+  bucket := UniqueBucket('DEXTOBJS');
+  cfg := TNatsObjectStoreConfig.CreateDefault(bucket);
+  store := FOs.CreateStore(cfg);
+  try
+    payload := TEncoding.UTF8.GetBytes('invoice-bytes');
+    target := store.Put('invoice.pdf', payload);
+    linkInfo := store.AddLink('label.png', target);
+    Should(linkInfo.IsLink).BeTrue;
+    Should(linkInfo.Link.Bucket).Be(bucket);
+    Should(linkInfo.Link.Name).Be('invoice.pdf');
+
+    gotInfo := store.GetInfo('label.png');
+    Should(gotInfo.IsLink).BeTrue;
+    Should(gotInfo.Name).Be('label.png');
+
+    got := store.Get('label.png', gotInfo);
+    Should(TEncoding.UTF8.GetString(got)).Be('invoice-bytes');
+    Should(gotInfo.IsLink).BeFalse;
+    Should(gotInfo.Name).Be('invoice.pdf');
+    Should(gotInfo.Digest).Be(target.Digest);
+  finally
+    store.Free;
+    FOs.DeleteStore(bucket);
+  end;
+end;
+
+procedure TDextNatsObjectStoreTests.AddLink_CrossBucket_Get_ShouldFollow;
+var
+  cfgA, cfgB: TNatsObjectStoreConfig;
+  storeA, storeB: TDextNatsObjectStore;
+  bucketA, bucketB: string;
+  target, linkInfo, gotInfo: TNatsObjectInfo;
+  got: TBytes;
+begin
+  if not EnsureJetStreamOrFail then
+    Exit;
+
+  bucketA := UniqueBucket('DEXTOBJA');
+  bucketB := UniqueBucket('DEXTOBJB');
+  cfgA := TNatsObjectStoreConfig.CreateDefault(bucketA);
+  cfgB := TNatsObjectStoreConfig.CreateDefault(bucketB);
+  storeA := FOs.CreateStore(cfgA);
+  storeB := FOs.CreateStore(cfgB);
+  try
+    target := storeA.Put('shared.json', TEncoding.UTF8.GetBytes('{"ok":true}'));
+    linkInfo := storeB.AddLink('alias.json', target);
+    Should(linkInfo.Link.Bucket).Be(bucketA);
+    Should(linkInfo.Link.Name).Be('shared.json');
+
+    got := storeB.Get('alias.json', gotInfo);
+    Should(TEncoding.UTF8.GetString(got)).Be('{"ok":true}');
+    Should(gotInfo.Bucket).Be(bucketA);
+    Should(gotInfo.Name).Be('shared.json');
+  finally
+    storeB.Free;
+    storeA.Free;
+    FOs.DeleteStore(bucketB);
+    FOs.DeleteStore(bucketA);
+  end;
+end;
+
+procedure TDextNatsObjectStoreTests.AddBucketLink_Get_ShouldRaise;
+var
+  cfgA, cfgB: TNatsObjectStoreConfig;
+  storeA, storeB: TDextNatsObjectStore;
+  bucketA, bucketB: string;
+  linkInfo: TNatsObjectInfo;
+begin
+  if not EnsureJetStreamOrFail then
+    Exit;
+
+  bucketA := UniqueBucket('DEXTOBJA');
+  bucketB := UniqueBucket('DEXTOBJB');
+  cfgA := TNatsObjectStoreConfig.CreateDefault(bucketA);
+  cfgB := TNatsObjectStoreConfig.CreateDefault(bucketB);
+  storeA := FOs.CreateStore(cfgA);
+  storeB := FOs.CreateStore(cfgB);
+  try
+    linkInfo := storeB.AddBucketLink('other-store', storeA);
+    Should(linkInfo.IsBucketLink).BeTrue;
+    Should(linkInfo.Link.Bucket).Be(bucketA);
+    Should(linkInfo.Link.Name).Be('');
+
+    Should(
+      procedure
+      begin
+        storeB.Get('other-store');
+      end).Throw(EDextNatsObjectStoreError);
+  finally
+    storeB.Free;
+    storeA.Free;
+    FOs.DeleteStore(bucketB);
+    FOs.DeleteStore(bucketA);
+  end;
+end;
+
+procedure TDextNatsObjectStoreTests.AddLink_DeletedOrLinkTarget_ShouldRaise;
+var
+  cfg: TNatsObjectStoreConfig;
+  store: TDextNatsObjectStore;
+  bucket: string;
+  target, linkInfo, deletedTarget: TNatsObjectInfo;
+begin
+  if not EnsureJetStreamOrFail then
+    Exit;
+
+  bucket := UniqueBucket('DEXTOBJS');
+  cfg := TNatsObjectStoreConfig.CreateDefault(bucket);
+  store := FOs.CreateStore(cfg);
+  try
+    target := store.Put('real.bin', TEncoding.UTF8.GetBytes('data'));
+    linkInfo := store.AddLink('alias.bin', target);
+
+    Should(
+      procedure
+      begin
+        store.AddLink('alias2.bin', linkInfo);
+      end).Throw(EDextNatsObjectStoreError);
+
+    deletedTarget := Default(TNatsObjectInfo);
+    deletedTarget.Name := 'real.bin';
+    deletedTarget.Bucket := bucket;
+    deletedTarget.Deleted := True;
+    Should(
+      procedure
+      begin
+        store.AddLink('gone.bin', deletedTarget);
+      end).Throw(EDextNatsObjectStoreError);
+
+    store.Put('occupied.bin', TEncoding.UTF8.GetBytes('taken'));
+    Should(
+      procedure
+      begin
+        store.AddLink('occupied.bin', target);
+      end).Throw(EDextNatsObjectStoreError);
   finally
     store.Free;
     FOs.DeleteStore(bucket);
