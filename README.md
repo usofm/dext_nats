@@ -214,7 +214,7 @@ end;
 
 ## Tests
 
-Requires **Delphi 12 / Studio 23.0** (`dcc32`). Framework: `Dext.Testing`.
+Requires **Delphi 12 / Studio 23.0** (`dcc32`). Framework: `Dext.Testing`. Open `Dext.Nats.groupproj` for the tests project and all demos.
 
 ```bat
 set BDS=C:\Program Files (x86)\Embarcadero\Studio\23.0

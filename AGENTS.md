@@ -85,6 +85,7 @@ Demo/
                                 Demos/VCLDemo. Plain `nats-server`; use
                                 `-js` for the JetStream form.
 Tests/                          Dext.Testing-based unit + integration tests.
+Dext.Nats.groupproj             Delphi project group: Tests + all Demo/*.dproj.
 LICENSE                         Apache 2.0.
 ```
 

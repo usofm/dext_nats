@@ -1,0 +1,156 @@
+﻿<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+    <PropertyGroup>
+        <ProjectGuid>{9A4C46D7-FC7D-4451-96A5-90D72C775D89}</ProjectGuid>
+    </PropertyGroup>
+    <ItemGroup>
+        <Projects Include="Tests\Dext.Net.Nats.Tests.dproj">
+            <Dependencies/>
+        </Projects>
+        <Projects Include="Demo\PubSubE2E\PubSubE2E.dproj">
+            <Dependencies/>
+        </Projects>
+        <Projects Include="Demo\RequestReplyE2E\RequestReplyE2E.dproj">
+            <Dependencies/>
+        </Projects>
+        <Projects Include="Demo\QueueGroupE2E\QueueGroupE2E.dproj">
+            <Dependencies/>
+        </Projects>
+        <Projects Include="Demo\HeadersE2E\HeadersE2E.dproj">
+            <Dependencies/>
+        </Projects>
+        <Projects Include="Demo\TlsE2E\TlsE2E.dproj">
+            <Dependencies/>
+        </Projects>
+        <Projects Include="Demo\NKeyE2E\NKeyE2E.dproj">
+            <Dependencies/>
+        </Projects>
+        <Projects Include="Demo\JetStreamSmokeTest\JetStreamSmokeTest.dproj">
+            <Dependencies/>
+        </Projects>
+        <Projects Include="Demo\KeyValueE2E\KeyValueE2E.dproj">
+            <Dependencies/>
+        </Projects>
+        <Projects Include="Demo\ObjectStoreE2E\ObjectStoreE2E.dproj">
+            <Dependencies/>
+        </Projects>
+        <Projects Include="Demo\VCLDemo\VCLDemo.dproj">
+            <Dependencies/>
+        </Projects>
+    </ItemGroup>
+    <ProjectExtensions>
+        <Borland.Personality>Default.Personality.12</Borland.Personality>
+        <Borland.ProjectType/>
+        <BorlandProject>
+            <Default.Personality/>
+        </BorlandProject>
+    </ProjectExtensions>
+    <Target Name="Dext_Net_Nats_Tests">
+        <MSBuild Projects="Tests\Dext.Net.Nats.Tests.dproj"/>
+    </Target>
+    <Target Name="Dext_Net_Nats_Tests:Clean">
+        <MSBuild Projects="Tests\Dext.Net.Nats.Tests.dproj" Targets="Clean"/>
+    </Target>
+    <Target Name="Dext_Net_Nats_Tests:Make">
+        <MSBuild Projects="Tests\Dext.Net.Nats.Tests.dproj" Targets="Make"/>
+    </Target>
+    <Target Name="PubSubE2E">
+        <MSBuild Projects="Demo\PubSubE2E\PubSubE2E.dproj"/>
+    </Target>
+    <Target Name="PubSubE2E:Clean">
+        <MSBuild Projects="Demo\PubSubE2E\PubSubE2E.dproj" Targets="Clean"/>
+    </Target>
+    <Target Name="PubSubE2E:Make">
+        <MSBuild Projects="Demo\PubSubE2E\PubSubE2E.dproj" Targets="Make"/>
+    </Target>
+    <Target Name="RequestReplyE2E">
+        <MSBuild Projects="Demo\RequestReplyE2E\RequestReplyE2E.dproj"/>
+    </Target>
+    <Target Name="RequestReplyE2E:Clean">
+        <MSBuild Projects="Demo\RequestReplyE2E\RequestReplyE2E.dproj" Targets="Clean"/>
+    </Target>
+    <Target Name="RequestReplyE2E:Make">
+        <MSBuild Projects="Demo\RequestReplyE2E\RequestReplyE2E.dproj" Targets="Make"/>
+    </Target>
+    <Target Name="QueueGroupE2E">
+        <MSBuild Projects="Demo\QueueGroupE2E\QueueGroupE2E.dproj"/>
+    </Target>
+    <Target Name="QueueGroupE2E:Clean">
+        <MSBuild Projects="Demo\QueueGroupE2E\QueueGroupE2E.dproj" Targets="Clean"/>
+    </Target>
+    <Target Name="QueueGroupE2E:Make">
+        <MSBuild Projects="Demo\QueueGroupE2E\QueueGroupE2E.dproj" Targets="Make"/>
+    </Target>
+    <Target Name="HeadersE2E">
+        <MSBuild Projects="Demo\HeadersE2E\HeadersE2E.dproj"/>
+    </Target>
+    <Target Name="HeadersE2E:Clean">
+        <MSBuild Projects="Demo\HeadersE2E\HeadersE2E.dproj" Targets="Clean"/>
+    </Target>
+    <Target Name="HeadersE2E:Make">
+        <MSBuild Projects="Demo\HeadersE2E\HeadersE2E.dproj" Targets="Make"/>
+    </Target>
+    <Target Name="TlsE2E">
+        <MSBuild Projects="Demo\TlsE2E\TlsE2E.dproj"/>
+    </Target>
+    <Target Name="TlsE2E:Clean">
+        <MSBuild Projects="Demo\TlsE2E\TlsE2E.dproj" Targets="Clean"/>
+    </Target>
+    <Target Name="TlsE2E:Make">
+        <MSBuild Projects="Demo\TlsE2E\TlsE2E.dproj" Targets="Make"/>
+    </Target>
+    <Target Name="NKeyE2E">
+        <MSBuild Projects="Demo\NKeyE2E\NKeyE2E.dproj"/>
+    </Target>
+    <Target Name="NKeyE2E:Clean">
+        <MSBuild Projects="Demo\NKeyE2E\NKeyE2E.dproj" Targets="Clean"/>
+    </Target>
+    <Target Name="NKeyE2E:Make">
+        <MSBuild Projects="Demo\NKeyE2E\NKeyE2E.dproj" Targets="Make"/>
+    </Target>
+    <Target Name="JetStreamSmokeTest">
+        <MSBuild Projects="Demo\JetStreamSmokeTest\JetStreamSmokeTest.dproj"/>
+    </Target>
+    <Target Name="JetStreamSmokeTest:Clean">
+        <MSBuild Projects="Demo\JetStreamSmokeTest\JetStreamSmokeTest.dproj" Targets="Clean"/>
+    </Target>
+    <Target Name="JetStreamSmokeTest:Make">
+        <MSBuild Projects="Demo\JetStreamSmokeTest\JetStreamSmokeTest.dproj" Targets="Make"/>
+    </Target>
+    <Target Name="KeyValueE2E">
+        <MSBuild Projects="Demo\KeyValueE2E\KeyValueE2E.dproj"/>
+    </Target>
+    <Target Name="KeyValueE2E:Clean">
+        <MSBuild Projects="Demo\KeyValueE2E\KeyValueE2E.dproj" Targets="Clean"/>
+    </Target>
+    <Target Name="KeyValueE2E:Make">
+        <MSBuild Projects="Demo\KeyValueE2E\KeyValueE2E.dproj" Targets="Make"/>
+    </Target>
+    <Target Name="ObjectStoreE2E">
+        <MSBuild Projects="Demo\ObjectStoreE2E\ObjectStoreE2E.dproj"/>
+    </Target>
+    <Target Name="ObjectStoreE2E:Clean">
+        <MSBuild Projects="Demo\ObjectStoreE2E\ObjectStoreE2E.dproj" Targets="Clean"/>
+    </Target>
+    <Target Name="ObjectStoreE2E:Make">
+        <MSBuild Projects="Demo\ObjectStoreE2E\ObjectStoreE2E.dproj" Targets="Make"/>
+    </Target>
+    <Target Name="VCLDemo">
+        <MSBuild Projects="Demo\VCLDemo\VCLDemo.dproj"/>
+    </Target>
+    <Target Name="VCLDemo:Clean">
+        <MSBuild Projects="Demo\VCLDemo\VCLDemo.dproj" Targets="Clean"/>
+    </Target>
+    <Target Name="VCLDemo:Make">
+        <MSBuild Projects="Demo\VCLDemo\VCLDemo.dproj" Targets="Make"/>
+    </Target>
+    <Target Name="Build">
+        <CallTarget Targets="Dext_Net_Nats_Tests;PubSubE2E;RequestReplyE2E;QueueGroupE2E;HeadersE2E;TlsE2E;NKeyE2E;JetStreamSmokeTest;KeyValueE2E;ObjectStoreE2E;VCLDemo"/>
+    </Target>
+    <Target Name="Clean">
+        <CallTarget Targets="Dext_Net_Nats_Tests:Clean;PubSubE2E:Clean;RequestReplyE2E:Clean;QueueGroupE2E:Clean;HeadersE2E:Clean;TlsE2E:Clean;NKeyE2E:Clean;JetStreamSmokeTest:Clean;KeyValueE2E:Clean;ObjectStoreE2E:Clean;VCLDemo:Clean"/>
+    </Target>
+    <Target Name="Make">
+        <CallTarget Targets="Dext_Net_Nats_Tests:Make;PubSubE2E:Make;RequestReplyE2E:Make;QueueGroupE2E:Make;HeadersE2E:Make;TlsE2E:Make;NKeyE2E:Make;JetStreamSmokeTest:Make;KeyValueE2E:Make;ObjectStoreE2E:Make;VCLDemo:Make"/>
+    </Target>
+    <Import Project="$(BDS)\Bin\CodeGear.Group.Targets" Condition="Exists('$(BDS)\Bin\CodeGear.Group.Targets')"/>
+</Project>
