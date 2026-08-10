@@ -162,7 +162,8 @@ parsing frames anywhere else.
 - [x] NKey/JWT auth (`Dext.Net.Nats.NKeys` + `TDextNatsOptions.JWT` /
       `NKeySeed` / `CredentialsFile`; signs INFO nonce into CONNECT)
 - [x] DI extension (`Dext.Net.Nats.DependencyInjection`: `AddNatsClient`,
-      `AddNatsClientAndConnect`, `AddNatsJetStream`)
+      `AddNatsClientAndConnect`, `AddNatsJetStream`, `BindNatsOptions` /
+      config section `Nats`)
 - [x] Observability: optional `ILogger`, opt-in `TMetrics` (`EnableMetrics`),
       `TNatsClientMetrics`, `Dext.Net.Nats.HealthChecks`
 - [x] Protocol hot-path PERF (`Docs/NATS_DEXT_ROADMAP.md` SPEC-PERF-01..05):
