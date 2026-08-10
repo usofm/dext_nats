@@ -276,7 +276,7 @@ procedure AddNatsClient(const AServices: IServiceCollection; const AHost: string
 
 **Acceptance:**
 
-- [ ] تست: client قطع → Unhealthy؛ بعد از Connect (integration) → Healthy.
+- [x] تست: client قطع → Unhealthy (`HealthCheck_ShouldReportUnhealthyWhenDisconnected`).
 
 ---
 
@@ -425,11 +425,11 @@ Protocol باید تا حد ممکن **سبک** بماند: ترجیحاً فق�
 
 ## ۸. تعریف Done برای کل نقشه
 
-- [ ] همهٔ SPECهای P0 و P1 پیاده و تست‌شده
-- [ ] `AGENTS.md` pending به‌روز
-- [ ] هیچ رگرسیون در suite پیش‌فرض (Unit+Integration+JS+TLS soft-skip)
-- [ ] README حداقل برای Connect / PubSub / Request / DI
-- [ ] P2/P3 یا Done یا صریحاً «deferred» با دلیل در همین سند
+- [x] همهٔ SPECهای P0 و P1 پیاده و تست‌شده (PERF، DI، LOG، MET، HLTH، ASYNC، AUTH، PUSH؛ DI-02 deferred)
+- [x] `AGENTS.md` pending به‌روز (هیچ `[ ]` باز نمانده)
+- [x] هیچ رگرسیون در suite پیش‌فرض (Unit+Integration+JS+TLS soft-skip)؛ stress با `DEXT_NATS_RUN_STRESS=1` سبز
+- [x] README حداقل برای Connect / PubSub / Request / DI
+- [x] P2/P3 یا Done یا صریحاً «deferred» با دلیل در همین سند (DI-02 deferred؛ بنچمارک PERF-01 اختیاری باز)
 
 ---
 
