@@ -213,13 +213,33 @@
     end
     object btnJetStream: TButton
       Left = 12
-      Top = 356
+      Top = 284
       Width = 200
       Height = 28
       Anchors = [akLeft, akRight, akBottom]
       Caption = 'JetStream'
       TabOrder = 4
       OnClick = btnJetStreamClick
+    end
+    object btnKeyValue: TButton
+      Left = 12
+      Top = 320
+      Width = 200
+      Height = 28
+      Anchors = [akLeft, akRight, akBottom]
+      Caption = 'Key-Value'
+      TabOrder = 5
+      OnClick = btnKeyValueClick
+    end
+    object btnObjectStore: TButton
+      Left = 12
+      Top = 356
+      Width = 200
+      Height = 28
+      Anchors = [akLeft, akRight, akBottom]
+      Caption = 'Object Store'
+      TabOrder = 6
+      OnClick = btnObjectStoreClick
     end
   end
 end.

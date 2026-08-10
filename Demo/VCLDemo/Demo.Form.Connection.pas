@@ -43,7 +43,11 @@ type
     btnSimpleRequest: TButton;
     btnSimpleUnsubscribe: TButton;
     btnJetStream: TButton;
+    btnKeyValue: TButton;
+    btnObjectStore: TButton;
     procedure btnJetStreamClick(Sender: TObject);
+    procedure btnKeyValueClick(Sender: TObject);
+    procedure btnObjectStoreClick(Sender: TObject);
     procedure btnSimplePublishClick(Sender: TObject);
     procedure btnSendClick(Sender: TObject);
     procedure btnSimpleRequestClick(Sender: TObject);
@@ -82,7 +86,9 @@ implementation
 {$R *.dfm}
 
 uses
-  Demo.Form.JetStream;
+  Demo.Form.JetStream,
+  Demo.Form.KeyValue,
+  Demo.Form.ObjectStore;
 
 procedure TfrmConnection.FormCreate(Sender: TObject);
 begin
@@ -473,6 +479,34 @@ begin
   JF := TfrmJetStream.Create(Application);
   JF.SetExternalClient(FClient, FConnectionName);
   JF.Show;
+end;
+
+procedure TfrmConnection.btnKeyValueClick(Sender: TObject);
+var
+  KF: TfrmKeyValue;
+begin
+  if not Assigned(FClient) or not FClient.Connected then
+  begin
+    Log('Connect before opening Key-Value');
+    Exit;
+  end;
+  KF := TfrmKeyValue.Create(Application);
+  KF.SetExternalClient(FClient, FConnectionName);
+  KF.Show;
+end;
+
+procedure TfrmConnection.btnObjectStoreClick(Sender: TObject);
+var
+  OSF: TfrmObjectStore;
+begin
+  if not Assigned(FClient) or not FClient.Connected then
+  begin
+    Log('Connect before opening Object Store');
+    Exit;
+  end;
+  OSF := TfrmObjectStore.Create(Application);
+  OSF.SetExternalClient(FClient, FConnectionName);
+  OSF.Show;
 end;
 
 procedure TfrmConnection.switchConnectionClick(Sender: TObject);

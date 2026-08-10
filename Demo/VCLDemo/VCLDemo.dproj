@@ -90,9 +90,19 @@
             <Form>frmJetStream</Form>
             <FormType>dfm</FormType>
         </DCCReference>
+        <DCCReference Include="Demo.Form.KeyValue.pas">
+            <Form>frmKeyValue</Form>
+            <FormType>dfm</FormType>
+        </DCCReference>
+        <DCCReference Include="Demo.Form.ObjectStore.pas">
+            <Form>frmObjectStore</Form>
+            <FormType>dfm</FormType>
+        </DCCReference>
         <DCCReference Include="..\..\Source\Dext.Net.Nats.Protocol.pas"/>
         <DCCReference Include="..\..\Source\Dext.Net.Nats.pas"/>
         <DCCReference Include="..\..\Source\Dext.Net.Nats.JetStream.pas"/>
+        <DCCReference Include="..\..\Source\Dext.Net.Nats.KeyValue.pas"/>
+        <DCCReference Include="..\..\Source\Dext.Net.Nats.ObjectStore.pas"/>
         <BuildConfiguration Include="Base">
             <Key>Base</Key>
         </BuildConfiguration>

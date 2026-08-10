@@ -19,15 +19,15 @@
 {***************************************************************************}
 {                                                                           }
 {  VCL desktop demo for TDextNatsClient: multi-connection tabs,            }
-{  publish / subscribe / request-reply, shared log, and a JetStream        }
-{  helper form (stream/consumer admin, publish, Fetch/Ack).                }
+{  publish / subscribe / request-reply, shared log, JetStream helper,      }
+{  Key-Value and Object Store forms.                                       }
 {                                                                           }
 {  Modeled after nats.delphi.marmot Demos/VCLDemo.                         }
 {                                                                           }
 {  REQUIRES a running NATS server, e.g.:                                   }
 {                                                                           }
 {      nats-server                                                         }
-{      nats-server -js          (for the JetStream form)                   }
+{      nats-server -js   (JetStream / KV / Object Store forms)             }
 {                                                                           }
 {  Build (Delphi 12 / Studio 23.0):                                        }
 {                                                                           }
@@ -44,7 +44,9 @@ uses
   Vcl.Forms,
   Demo.Form.Main in 'Demo.Form.Main.pas' {frmMain},
   Demo.Form.Connection in 'Demo.Form.Connection.pas' {frmConnection},
-  Demo.Form.JetStream in 'Demo.Form.JetStream.pas' {frmJetStream};
+  Demo.Form.JetStream in 'Demo.Form.JetStream.pas' {frmJetStream},
+  Demo.Form.KeyValue in 'Demo.Form.KeyValue.pas' {frmKeyValue},
+  Demo.Form.ObjectStore in 'Demo.Form.ObjectStore.pas' {frmObjectStore};
 
 {$R *.res}
 
