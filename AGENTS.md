@@ -51,6 +51,10 @@ Demo/
   TlsE2E/                       TLS upgrade E2E console smoke test (Options.TLS
                                 + Tests/tls fixtures / Demo/TlsE2E/nats-tls.conf
                                 on port 4223).
+  NKeyE2E/                      NKey (bare seed) auth handshake E2E console
+                                smoke test (Options.NKeySeed + Tests/nkey
+                                fixtures / Demo/NKeyE2E/nats-nkey.conf on
+                                port 4224).
   JetStreamSmokeTest/           Interactive console program that manually verifies
                                 stream/consumer paths and dedup'd publish
                                 against a local `nats-server -js`. Not a
@@ -172,7 +176,8 @@ parsing frames anywhere else.
   pub/sub), `Demo/RequestReplyE2E/` (request/reply + no-responders),
   `Demo/QueueGroupE2E/` (queue-group load balancing), `Demo/HeadersE2E/`
   (message headers HPUB/HMSG + RequestWithHeaders), `Demo/TlsE2E/` (TLS
-  upgrade with `Tests/tls` fixtures on 4223), and
+  upgrade with `Tests/tls` fixtures on 4223), `Demo/NKeyE2E/` (NKey seed
+  auth with `Tests/nkey` fixtures on 4224), and
   `Demo/JetStreamSmokeTest/` (JetStream admin / pull / dedup)
 - [x] TLS on `TDextNatsClient` via `TDextTLSOptions` / `IDextTLSEngine`
       (upgrade after cleartext INFO when `tls_required` or `Options.TLS.Enabled`)
