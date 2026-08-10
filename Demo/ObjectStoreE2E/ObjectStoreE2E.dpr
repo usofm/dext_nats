@@ -40,6 +40,8 @@
 {      Output\Win32\Debug\ObjectStoreE2E.exe -no-wait                       }
 {                                                                           }
 {  Optional: DEXT_NATS_HOST / DEXT_NATS_PORT. Pass -no-wait to skip pause.  }
+{  Step 5: PutFile/GetFile round-trip under the system temp dir, then delete  }
+{  the object so Keys/List still expect the original three names.            }
 {                                                                           }
 {***************************************************************************}
 program ObjectStoreE2E;
