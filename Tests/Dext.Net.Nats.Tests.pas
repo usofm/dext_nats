@@ -28,11 +28,14 @@ uses
   System.SyncObjs,
   System.Diagnostics,
   Dext.Collections,
+  Dext.Collections.Dict,
   Dext.Testing,
   Dext.Testing.Attributes,
   Dext.Testing.Fluent,
   Dext.DI.Interfaces,
   Dext.DI.Core,
+  Dext.Configuration.Core,
+  Dext.Configuration.Interfaces,
   Dext.Logging,
   Dext.Telemetry.Metrics,
   Dext.Net.Security,
@@ -344,6 +347,8 @@ type
     procedure ClientOptions_ShouldDefaultHostAndPort;
     [Test, Category('DI')]
     procedure AddNatsClient_ConfigureCallback_ShouldApplyOptions;
+    [Test, Category('DI')]
+    procedure BindNatsOptions_FromConfiguration_ShouldMapHostPortTls;
     [Test, Category('DI')]
     procedure HealthCheck_ShouldReportUnhealthyWhenDisconnected;
   end;
@@ -3042,6 +3047,41 @@ begin
   Should(Client.Options.Port).Be(4229);
   Should(Client.Options.Name).Be('di-test');
   Should(Client.Options.EnableMetrics).BeTrue;
+end;
+
+procedure TDextNatsDiTests.BindNatsOptions_FromConfiguration_ShouldMapHostPortTls;
+var
+  Config: IConfigurationRoot;
+  Opts: TDextNatsOptions;
+  Services: TDextServices;
+  Provider: IServiceProvider;
+  Client: TDextNatsClient;
+begin
+  Config := TDextConfiguration.New
+    .AddValues([
+      TPair<string, string>.Create('Nats:Host', 'cfg.nats.local'),
+      TPair<string, string>.Create('Nats:Port', '4333'),
+      TPair<string, string>.Create('Nats:Name', 'from-config'),
+      TPair<string, string>.Create('Nats:EnableMetrics', 'true'),
+      TPair<string, string>.Create('Nats:TLS:Enabled', 'true'),
+      TPair<string, string>.Create('Nats:TLS:VerifyServerCertificate', 'false')
+    ])
+    .Build;
+
+  Opts := BindNatsOptions(Config);
+  Should(Opts.Host).Be('cfg.nats.local');
+  Should(Opts.Port).Be(4333);
+  Should(Opts.Name).Be('from-config');
+  Should(Opts.EnableMetrics).BeTrue;
+  Should(Opts.TLS.Enabled).BeTrue;
+  Should(Opts.TLS.VerifyServerCertificate).BeFalse;
+
+  Services := TDextServices.New;
+  AddNatsClient(Services.Unwrap, Config);
+  Provider := Services.BuildServiceProvider;
+  Client := TDextServices.GetRequiredServiceObject<TDextNatsClient>(Provider);
+  Should(Client.Options.Host).Be('cfg.nats.local');
+  Should(Client.Options.Port).Be(4333);
 end;
 
 procedure TDextNatsDiTests.HealthCheck_ShouldReportUnhealthyWhenDisconnected;

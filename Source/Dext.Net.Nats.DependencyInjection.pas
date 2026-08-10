@@ -22,6 +22,7 @@
 {  TDextNatsJetStreamContext (transient, does not own the client).          }
 {  Factories do not connect unless AddNatsClientAndConnect is used.         }
 {  Optional ILogger is resolved from ILoggerFactory when present.           }
+{  SPEC-DI-02: bind section "Nats" via TDextNatsClientSettings.             }
 {                                                                           }
 {***************************************************************************}
 unit Dext.Net.Nats.DependencyInjection;
@@ -30,7 +31,9 @@ interface
 
 uses
   System.SysUtils,
+  System.Classes,
   Dext.DI.Interfaces,
+  Dext.Configuration.Interfaces,
   Dext.Net.Nats.Protocol,
   Dext.Net.Nats,
   Dext.Net.Nats.JetStream;
@@ -38,6 +41,87 @@ uses
 type
   /// <summary>Callback used to mutate options before the singleton client is created.</summary>
   TConfigureNatsOptions = reference to procedure(var AOptions: TDextNatsOptions);
+
+  /// <summary>
+  ///   Bindable TLS subset for configuration section <c>Nats:TLS</c>
+  ///   (Dext.Options binder requires a class, not <see cref="TDextTLSOptions"/>).
+  /// </summary>
+  TDextNatsTlsSettings = class
+  private
+    FEnabled: Boolean;
+    FVerifyServerCertificate: Boolean;
+  public
+    constructor Create;
+  published
+    property Enabled: Boolean read FEnabled write FEnabled;
+    property VerifyServerCertificate: Boolean read FVerifyServerCertificate write FVerifyServerCertificate;
+  end;
+
+  /// <summary>
+  ///   Bindable NATS client settings for section <c>Nats</c> (or a custom section name).
+  ///   Use <see cref="ToOptions"/> / <see cref="BindNatsOptions"/> to obtain <see cref="TDextNatsOptions"/>.
+  /// </summary>
+  TDextNatsClientSettings = class
+  private
+    FHost: string;
+    FPort: Integer;
+    FName: string;
+    FUser: string;
+    FPassword: string;
+    FAuthToken: string;
+    FJWT: string;
+    FNKeySeed: string;
+    FCredentialsFile: string;
+    FVerbose: Boolean;
+    FPedantic: Boolean;
+    FEcho: Boolean;
+    FConnectTimeoutMs: Integer;
+    FRequestTimeoutMs: Integer;
+    FPingIntervalMs: Integer;
+    FMaxPingsOutstanding: Integer;
+    FAllowReconnect: Boolean;
+    FMaxReconnectAttempts: Integer;
+    FReconnectWaitMs: Integer;
+    FMaxPendingBufferBytes: Int64;
+    FEnableMetrics: Boolean;
+    FTLS: TDextNatsTlsSettings;
+    procedure SetTLS(AValue: TDextNatsTlsSettings);
+  public
+    constructor Create;
+    destructor Destroy; override;
+    /// <summary>Maps published fields onto a <see cref="TDextNatsOptions"/> record (with CreateDefault baseline).</summary>
+    function ToOptions: TDextNatsOptions;
+  published
+    property Host: string read FHost write FHost;
+    property Port: Integer read FPort write FPort;
+    property Name: string read FName write FName;
+    property User: string read FUser write FUser;
+    property Password: string read FPassword write FPassword;
+    property AuthToken: string read FAuthToken write FAuthToken;
+    property JWT: string read FJWT write FJWT;
+    property NKeySeed: string read FNKeySeed write FNKeySeed;
+    property CredentialsFile: string read FCredentialsFile write FCredentialsFile;
+    property Verbose: Boolean read FVerbose write FVerbose;
+    property Pedantic: Boolean read FPedantic write FPedantic;
+    property Echo: Boolean read FEcho write FEcho;
+    property ConnectTimeoutMs: Integer read FConnectTimeoutMs write FConnectTimeoutMs;
+    property RequestTimeoutMs: Integer read FRequestTimeoutMs write FRequestTimeoutMs;
+    property PingIntervalMs: Integer read FPingIntervalMs write FPingIntervalMs;
+    property MaxPingsOutstanding: Integer read FMaxPingsOutstanding write FMaxPingsOutstanding;
+    property AllowReconnect: Boolean read FAllowReconnect write FAllowReconnect;
+    property MaxReconnectAttempts: Integer read FMaxReconnectAttempts write FMaxReconnectAttempts;
+    property ReconnectWaitMs: Integer read FReconnectWaitMs write FReconnectWaitMs;
+    property MaxPendingBufferBytes: Int64 read FMaxPendingBufferBytes write FMaxPendingBufferBytes;
+    property EnableMetrics: Boolean read FEnableMetrics write FEnableMetrics;
+    property TLS: TDextNatsTlsSettings read FTLS write SetTLS;
+  end;
+
+/// <summary>
+///   Binds configuration section <c>ASectionName</c> (default <c>Nats</c>) to options.
+///   Missing keys keep <see cref="TDextNatsOptions.CreateDefault"/> values.
+/// </summary>
+function BindNatsOptions(const AConfiguration: IConfiguration;
+  const ASectionName: string = 'Nats'): TDextNatsOptions;
 
 /// <summary>
 ///   Registers <see cref="TDextNatsClient"/> as a singleton with default options
@@ -64,6 +148,13 @@ procedure AddNatsClient(const AServices: IServiceCollection; const AHost: string
 /// </summary>
 procedure AddNatsClient(const AServices: IServiceCollection;
   const AConfigure: TConfigureNatsOptions); overload;
+
+/// <summary>
+///   Registers a singleton client by binding section <c>ASectionName</c> from <c>AConfiguration</c>
+///   (SPEC-DI-02). Does not call Connect.
+/// </summary>
+procedure AddNatsClient(const AServices: IServiceCollection; const AConfiguration: IConfiguration;
+  const ASectionName: string = 'Nats'); overload;
 
 /// <summary>
 ///   Like <see cref="AddNatsClient"/> with Host/Port, then connects inside the factory
@@ -96,7 +187,128 @@ implementation
 
 uses
   System.TypInfo,
-  Dext.Logging;
+  Dext.Logging,
+  Dext.Configuration.Binder,
+  Dext.Net.Security;
+
+{ TDextNatsTlsSettings }
+
+constructor TDextNatsTlsSettings.Create;
+begin
+  inherited Create;
+  FEnabled := False;
+  FVerifyServerCertificate := True;
+end;
+
+{ TDextNatsClientSettings }
+
+constructor TDextNatsClientSettings.Create;
+var
+  Def: TDextNatsOptions;
+begin
+  inherited Create;
+  Def := TDextNatsOptions.CreateDefault;
+  FHost := Def.Host;
+  FPort := Def.Port;
+  FName := Def.Name;
+  FUser := Def.User;
+  FPassword := Def.Password;
+  FAuthToken := Def.AuthToken;
+  FJWT := Def.JWT;
+  FNKeySeed := Def.NKeySeed;
+  FCredentialsFile := Def.CredentialsFile;
+  FVerbose := Def.Verbose;
+  FPedantic := Def.Pedantic;
+  FEcho := Def.Echo;
+  FConnectTimeoutMs := Def.ConnectTimeoutMs;
+  FRequestTimeoutMs := Def.RequestTimeoutMs;
+  FPingIntervalMs := Def.PingIntervalMs;
+  FMaxPingsOutstanding := Def.MaxPingsOutstanding;
+  FAllowReconnect := Def.AllowReconnect;
+  FMaxReconnectAttempts := Def.MaxReconnectAttempts;
+  FReconnectWaitMs := Def.ReconnectWaitMs;
+  FMaxPendingBufferBytes := Def.MaxPendingBufferBytes;
+  FEnableMetrics := Def.EnableMetrics;
+  FTLS := TDextNatsTlsSettings.Create;
+  FTLS.Enabled := Def.TLS.Enabled;
+  FTLS.VerifyServerCertificate := Def.TLS.VerifyServerCertificate;
+end;
+
+destructor TDextNatsClientSettings.Destroy;
+begin
+  FTLS.Free;
+  inherited;
+end;
+
+procedure TDextNatsClientSettings.SetTLS(AValue: TDextNatsTlsSettings);
+begin
+  if FTLS = AValue then
+    Exit;
+  FTLS.Free;
+  FTLS := AValue;
+  if FTLS = nil then
+    FTLS := TDextNatsTlsSettings.Create;
+end;
+
+function TDextNatsClientSettings.ToOptions: TDextNatsOptions;
+begin
+  Result := TDextNatsOptions.CreateDefault;
+  if FHost <> '' then
+    Result.Host := FHost;
+  if FPort > 0 then
+    Result.Port := Word(FPort);
+  Result.Name := FName;
+  Result.User := FUser;
+  Result.Password := FPassword;
+  Result.AuthToken := FAuthToken;
+  Result.JWT := FJWT;
+  Result.NKeySeed := FNKeySeed;
+  Result.CredentialsFile := FCredentialsFile;
+  Result.Verbose := FVerbose;
+  Result.Pedantic := FPedantic;
+  Result.Echo := FEcho;
+  if FConnectTimeoutMs > 0 then
+    Result.ConnectTimeoutMs := FConnectTimeoutMs;
+  if FRequestTimeoutMs > 0 then
+    Result.RequestTimeoutMs := FRequestTimeoutMs;
+  if FPingIntervalMs > 0 then
+    Result.PingIntervalMs := FPingIntervalMs;
+  Result.MaxPingsOutstanding := FMaxPingsOutstanding;
+  Result.AllowReconnect := FAllowReconnect;
+  Result.MaxReconnectAttempts := FMaxReconnectAttempts;
+  if FReconnectWaitMs > 0 then
+    Result.ReconnectWaitMs := FReconnectWaitMs;
+  if FMaxPendingBufferBytes > 0 then
+    Result.MaxPendingBufferBytes := FMaxPendingBufferBytes;
+  Result.EnableMetrics := FEnableMetrics;
+  if Assigned(FTLS) then
+  begin
+    Result.TLS.Enabled := FTLS.Enabled;
+    Result.TLS.VerifyServerCertificate := FTLS.VerifyServerCertificate;
+  end;
+end;
+
+function BindNatsOptions(const AConfiguration: IConfiguration;
+  const ASectionName: string): TDextNatsOptions;
+var
+  Section: IConfigurationSection;
+  Settings: TDextNatsClientSettings;
+begin
+  if AConfiguration = nil then
+    Exit(TDextNatsOptions.CreateDefault);
+
+  if ASectionName <> '' then
+    Section := AConfiguration.GetSection(ASectionName)
+  else
+    Section := AConfiguration.GetSection('');
+
+  Settings := TConfigurationBinder.Bind<TDextNatsClientSettings>(Section);
+  try
+    Result := Settings.ToOptions;
+  finally
+    Settings.Free;
+  end;
+end;
 
 function TryAttachLogger(AProvider: IServiceProvider; AClient: TDextNatsClient): Boolean;
 var
@@ -155,6 +367,12 @@ begin
   if Assigned(AConfigure) then
     AConfigure(Opts);
   AddNatsClient(AServices, Opts);
+end;
+
+procedure AddNatsClient(const AServices: IServiceCollection; const AConfiguration: IConfiguration;
+  const ASectionName: string);
+begin
+  AddNatsClient(AServices, BindNatsOptions(AConfiguration, ASectionName));
 end;
 
 procedure AddNatsClientAndConnect(const AServices: IServiceCollection; const AHost: string;

@@ -200,7 +200,8 @@ procedure AddNatsClient(const AServices: IServiceCollection; const AHost: string
 
 **Acceptance:**
 
-- [x] **Deferred:** binder/`Dext.Options` section bind عمداً انجام نشد؛ `AddNatsClient(options)` / configure callback کافی است تا binder پایدار در Dext آماده شود.
+- [x] `TDextNatsClientSettings` + `BindNatsOptions` / `AddNatsClient(services, configuration, 'Nats')` با `TConfigurationBinder` (binder فقط `class` می‌پذیرد؛ record options از `ToOptions` ساخته می‌شود).
+- [x] تست: `BindNatsOptions_FromConfiguration_ShouldMapHostPortTls`.
 
 ---
 
@@ -425,11 +426,11 @@ Protocol باید تا حد ممکن **سبک** بماند: ترجیحاً فق�
 
 ## ۸. تعریف Done برای کل نقشه
 
-- [x] همهٔ SPECهای P0 و P1 پیاده و تست‌شده (PERF، DI، LOG، MET، HLTH، ASYNC، AUTH، PUSH؛ DI-02 deferred)
+- [x] همهٔ SPECهای P0 و P1 پیاده و تست‌شده (PERF، DI incl. DI-02، LOG، MET، HLTH، ASYNC، AUTH، PUSH)
 - [x] `AGENTS.md` pending به‌روز (هیچ `[ ]` باز نمانده)
 - [x] هیچ رگرسیون در suite پیش‌فرض (Unit+Integration+JS+TLS soft-skip)؛ stress با `DEXT_NATS_RUN_STRESS=1` سبز
 - [x] README حداقل برای Connect / PubSub / Request / DI
-- [x] P2/P3 یا Done یا صریحاً «deferred» با دلیل در همین سند (DI-02 deferred؛ بنچمارک PERF-01 اختیاری باز)
+- [x] P2/P3 یا Done یا صریحاً «deferred» با دلیل در همین سند (بنچمارک PERF-01 اختیاری باز)
 
 ---
 

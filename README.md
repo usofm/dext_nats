@@ -9,7 +9,7 @@ Native [NATS](https://nats.io) client for the [Dext Framework](https://github.co
 | `Source/Dext.Net.Nats.Protocol.pas` | Wire protocol (parser, INFO/CONNECT, PUB/SUB, headers) — no sockets |
 | `Source/Dext.Net.Nats.NKeys.pas` | NKey seed / `.creds` parse, Ed25519 nonce signing, CONNECT `jwt`/`nkey`/`sig` |
 | `Source/Dext.Net.Nats.pas` | `TDextNatsClient` — connect, pub/sub, request/reply, reconnect, TLS, NKey/JWT, optional `ILogger` / metrics |
-| `Source/Dext.Net.Nats.DependencyInjection.pas` | `AddNatsClient` / configure callback / `AddNatsJetStream` for Dext.DI |
+| `Source/Dext.Net.Nats.DependencyInjection.pas` | `AddNatsClient` / configure / config bind (`Nats` section) / `AddNatsJetStream` |
 | `Source/Dext.Net.Nats.HealthChecks.pas` | `TNatsHealthCheck` / `AddNatsHealthCheck` (Connected probe) |
 | `Source/Dext.Net.Nats.JetStream.pas` | `TDextNatsJetStreamContext` — streams, pull/push consumers, Fetch, SubscribePush, Ack/Nak/Term |
 
@@ -116,7 +116,18 @@ begin
 end;
 ```
 
-`AddNatsClientAndConnect` connects inside the factory on first resolve (prefer explicit `Connect` when you need startup error handling). Configure via callback:
+`AddNatsClientAndConnect` connects inside the factory on first resolve (prefer explicit `Connect` when you need startup error handling). Configure via callback or configuration section:
+
+```delphi
+AddNatsClient(Services.Unwrap,
+  procedure(var AOptions: TDextNatsOptions)
+  begin
+    AOptions.Host := '127.0.0.1';
+  end);
+
+// Or bind section "Nats" (Host, Port, Name, TLS:Enabled, …):
+// AddNatsClient(Services.Unwrap, Configuration);
+```
 
 ```delphi
 AddNatsClient(Services.Unwrap,
