@@ -79,6 +79,11 @@ Demo/
                                 (CreateStore / Put / Get / List / Keys /
                                 Delete / DeleteStore) against a local
                                 `nats-server -js`.
+  VCLDemo/                      VCL desktop demo (multi-connection tabs,
+                                pub/sub, request/reply, log view, JetStream
+                                helper form) modeled on nats.delphi.marmot
+                                Demos/VCLDemo. Plain `nats-server`; use
+                                `-js` for the JetStream form.
 Tests/                          Dext.Testing-based unit + integration tests.
 LICENSE                         Apache 2.0.
 ```
@@ -209,6 +214,9 @@ parsing frames anywhere else.
   History / Delete / Purge / DeleteBucket), and
   `Demo/ObjectStoreE2E/` (JetStream Object Store CreateStore / Put / Get /
   List / Keys / Delete / DeleteStore)
+- [x] VCL demo (`Demo/VCLDemo/`): multi-connection tabs, connect toggle,
+  Publish/Subscribe/Request/Unsubscribe, shared log, JetStream helper form
+  (stream/consumer admin, publish, Fetch/Ack)
 - [x] TLS on `TDextNatsClient` via `TDextTLSOptions` / `IDextTLSEngine`
       (upgrade after cleartext INFO when `tls_required` or `Options.TLS.Enabled`)
 - [x] `README.md` with usage examples

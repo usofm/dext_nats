@@ -244,7 +244,7 @@ Full matrix and IDs: [`Docs/TEST_PLAN.md`](Docs/TEST_PLAN.md).
 
 ## Manual E2E demos
 
-Interactive console programs under `Demo/` (not a `Dext.Testing` suite). Requires **Delphi 12 / Studio 23.0** (`msbuild` / `dcc32`). Set `BDS` and `PATH` as in [Tests](#tests) if needed. Most demos accept `[host] [port]` and `-no-wait`; optional `DEXT_NATS_HOST` / `DEXT_NATS_PORT` where noted in each `.dpr` header.
+Interactive programs under `Demo/` (not a `Dext.Testing` suite). Requires **Delphi 12 / Studio 23.0** (`msbuild` / `dcc32`). Set `BDS` and `PATH` as in [Tests](#tests) if needed. Most console demos accept `[host] [port]` and `-no-wait`; optional `DEXT_NATS_HOST` / `DEXT_NATS_PORT` where noted in each `.dpr` header.
 
 | Demo | What it covers | `nats-server` | Build | Run |
 |------|----------------|---------------|-------|-----|
@@ -257,6 +257,7 @@ Interactive console programs under `Demo/` (not a `Dext.Testing` suite). Require
 | `Demo/JetStreamSmokeTest/` | Stream admin, dedup publish, pull Fetch/Ack | `nats-server -js` | `msbuild Demo\JetStreamSmokeTest\JetStreamSmokeTest.dproj /p:Config=Debug /p:Platform=Win32` | `Output\Win32\Debug\JetStreamSmokeTest.exe` |
 | `Demo/KeyValueE2E/` | JetStream KV (CreateBucket / Put / Get / Keys / History / Delete / Purge / DeleteBucket) | `nats-server -js` | `msbuild Demo\KeyValueE2E\KeyValueE2E.dproj /p:Config=Debug /p:Platform=Win32` | `Output\Win32\Debug\KeyValueE2E.exe` |
 | `Demo/ObjectStoreE2E/` | JetStream Object Store (CreateStore / Put / Get / List / Keys / Delete / DeleteStore) | `nats-server -js` | `msbuild Demo\ObjectStoreE2E\ObjectStoreE2E.dproj /p:Config=Debug /p:Platform=Win32` | `Output\Win32\Debug\ObjectStoreE2E.exe` |
+| `Demo/VCLDemo/` | VCL UI: multi-connection tabs, pub/sub, request/reply, log, JetStream helper | `nats-server` (use `-js` for JetStream form) | `msbuild Demo\VCLDemo\VCLDemo.dproj /p:Config=Debug /p:Platform=Win32` | `Output\Win32\Debug\VCLDemo.exe` |
 
 Plain-core demos default to `127.0.0.1:4222`. TlsE2E / NKeyE2E need OpenSSL `libssl-3.dll` / `libcrypto-3.dll` beside the exe (same as other TLS/NKey paths). Equivalent TLS config: `cd Tests\tls` then `nats-server -c nats-tls.conf`. Equivalent NKey config: `nats-server -c Tests\nkey\nats-nkey.conf`.
 
