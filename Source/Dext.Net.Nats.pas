@@ -1,4 +1,4 @@
-{***************************************************************************}
+﻿{***************************************************************************}
 {                                                                           }
 {           Dext.Nats                                                     }
 {                                                                           }
@@ -22,10 +22,12 @@
 {  Client for the NATS messaging system, built on top of Dext.Net.Tcp.      }
 {  Supports publish/subscribe (with optional queue groups and message       }
 {  headers), synchronous and asynchronous request/reply, automatic          }
-{  reconnection with subscription replay, and keepalive PING/PONG.          }
+{  reconnection with subscription replay (rotating INFO connect_urls),      }
+{  keepalive PING/PONG, and optional TLS (upgrade after INFO when the       }
+{  server sets tls_required or Options.TLS.Enabled is True).                }
 {                                                                           }
-{  Not yet implemented: TLS ("tls_required" servers are rejected with a     }
-{  clear error) and JetStream.                                              }
+{  JetStream API lives in Dext.Net.Nats.JetStream. NKey/JWT auth is         }
+{  deferred.                                                                }
 {                                                                           }
 {***************************************************************************}
 unit Dext.Net.Nats;
@@ -37,9 +39,11 @@ uses
   System.Classes,
   System.SyncObjs,
   System.Diagnostics,
+  Dext.Collections.Dict,
   Dext.Collections,
   Dext.Core.Span,
   Dext.Net.Tcp,
+  Dext.Net.Security,
   Dext.Net.Nats.Protocol;
 
 type
@@ -50,10 +54,14 @@ type
     Payload: TBytes;
     Headers: TNatsHeaders;
     Sid: Integer;
+    /// <summary>Inline status from an HMSG header block (e.g. 503), or 0 when absent.</summary>
+    StatusCode: Integer;
     /// <summary>Decodes the payload as a UTF-8 string.</summary>
     function AsString: string;
     /// <summary>True when the message carries a reply subject the handler can publish to.</summary>
     function HasReplyTo: Boolean;
+    /// <summary>True when the server reported no responders for a request (status 503).</summary>
+    function IsNoResponders: Boolean;
   end;
 
   TNatsMsgHandler = reference to procedure(const AMsg: TNatsMsg);
@@ -89,7 +97,13 @@ type
     ReconnectWaitMs: Integer;
     /// <summary>Upper bound, in bytes, for outgoing data buffered while a reconnect is in progress.</summary>
     MaxPendingBufferBytes: Int64;
-    /// <summary>Sensible defaults: 5s handshake/request timeouts, 2 minute keepalive, unlimited reconnects.</summary>
+    /// <summary>
+    ///   Optional TLS settings (same record as Redis/Security). When Enabled is True the client
+    ///   upgrades the TCP socket after the cleartext INFO frame. A server that advertises
+    ///   <c>tls_required</c> also triggers an upgrade even if Enabled is False.
+    /// </summary>
+    TLS: TDextTLSOptions;
+    /// <summary>Sensible defaults: 5s handshake/request timeouts, 2 minute keepalive, unlimited reconnects, TLS off.</summary>
     class function CreateDefault: TDextNatsOptions; static;
   end;
 
@@ -121,6 +135,11 @@ type
 
     FLock: TCriticalSection;
     FSendLock: TCriticalSection;
+    /// <summary>Serializes OpenSSL engine use across SendRaw and RecvLoop (SSL is not thread-safe).</summary>
+    FTlsIoLock: TCriticalSection;
+    FTLSEngine: IDextTLSEngine;
+    FTLSNetworkBuffer: TBytes;
+    FTlsActive: Boolean;
 
     FSubscriptions: IDictionary<Integer, TDextNatsSubscription>;
     FNextSid: Integer;
@@ -159,9 +178,18 @@ type
     procedure HandleConnectionLost(const AReason: string);
 
     procedure DoHandshake;
+    procedure UpgradeToTlsIfNeeded;
+    procedure PerformTlsHandshake;
+    procedure DrainTlsOutput;
+    procedure FeedTlsInput(ATimeoutMs: Integer);
+    procedure WriteTlsPlaintext(const AData: TBytes);
+    function ReceiveBytes(var ABuffer: TBytes; ATimeoutMs: Integer): Integer;
+    procedure ResetTls;
+
     function TryReconnect: Boolean;
     procedure ResendSubscriptions;
     procedure FlushOutbox;
+    procedure EnsurePayloadAllowed(const APayload: TBytes);
 
     function ReceiveFrameBlocking(ATimeoutMs: Integer): TNatsFrame;
     procedure SendRaw(const ABytes: TBytes);
@@ -239,6 +267,9 @@ type
 
 implementation
 
+uses
+  Dext.Net.Security.OpenSSL;
+
 { TNatsMsg }
 
 function TNatsMsg.AsString: string;
@@ -252,6 +283,11 @@ end;
 function TNatsMsg.HasReplyTo: Boolean;
 begin
   Result := ReplyTo <> '';
+end;
+
+function TNatsMsg.IsNoResponders: Boolean;
+begin
+  Result := StatusCode = 503;
 end;
 
 { TDextNatsOptions }
@@ -270,6 +306,12 @@ begin
   Result.MaxReconnectAttempts := -1;
   Result.ReconnectWaitMs := 2000;
   Result.MaxPendingBufferBytes := 8 * 1024 * 1024;
+  FillChar(Result.TLS, SizeOf(Result.TLS), 0);
+  Result.TLS.Enabled := False;
+  Result.TLS.Mode := tlsmClient;
+  Result.TLS.Protocols := [tls1_2, tls1_3];
+  Result.TLS.VerifyServerCertificate := True;
+  Result.TLS.Provider := 'Auto';
 end;
 
 { TDextNatsSubscription }
@@ -323,7 +365,7 @@ begin
     Result := not FClaimed;
     FClaimed := True;
   finally
-    TMonitor.Leave(FGateLock);
+    TMonitor.Exit(FGateLock);
   end;
 end;
 
@@ -344,6 +386,8 @@ begin
   FParser := TDextNatsFrameParser.Create;
   FLock := TCriticalSection.Create;
   FSendLock := TCriticalSection.Create;
+  FTlsIoLock := TCriticalSection.Create;
+  SetLength(FTLSNetworkBuffer, 16 * 1024);
   FSubscriptions := TCollections.CreateDictionary<Integer, TDextNatsSubscription>(True);
   FPongWaiters := TCollections.CreateQueue<TEvent>;
   FPendingOutbox := TCollections.CreateQueue<TBytes>;
@@ -352,6 +396,8 @@ end;
 destructor TDextNatsClient.Destroy;
 begin
   Disconnect;
+  ResetTls;
+  FTlsIoLock.Free;
   FSendLock.Free;
   FLock.Free;
   FParser.Free;
@@ -395,13 +441,182 @@ begin
   Result := NatsNewInbox;
 end;
 
+procedure TDextNatsClient.ResetTls;
+begin
+  FTlsIoLock.Enter;
+  try
+    FTlsActive := False;
+    FTLSEngine := nil;
+  finally
+    FTlsIoLock.Leave;
+  end;
+end;
+
+procedure TDextNatsClient.DrainTlsOutput;
+var
+  BytesWritten: Integer;
+begin
+  repeat
+    BytesWritten := FTLSEngine.EncryptedOutgoing(
+      @FTLSNetworkBuffer[0], Length(FTLSNetworkBuffer));
+    if BytesWritten > 0 then
+      FTcpClient.Send(TByteSpan.Create(@FTLSNetworkBuffer[0], BytesWritten));
+  until BytesWritten = 0;
+end;
+
+procedure TDextNatsClient.FeedTlsInput(ATimeoutMs: Integer);
+var
+  BytesRead: Integer;
+begin
+  BytesRead := FTcpClient.Receive(
+    TByteSpan.Create(@FTLSNetworkBuffer[0], Length(FTLSNetworkBuffer)), ATimeoutMs);
+  if BytesRead <= 0 then
+    raise EDextNatsException.Create(
+      'NATS server closed the TLS connection unexpectedly');
+  if FTLSEngine.EncryptedIncoming(
+    @FTLSNetworkBuffer[0], BytesRead) <> BytesRead then
+    raise EDextNatsException.Create(
+      'OpenSSL input BIO did not accept all encrypted bytes');
+end;
+
+procedure TDextNatsClient.PerformTlsHandshake;
+var
+  Provider: IDextTLSContextProvider;
+  Status: TDextTLSEngineStatus;
+  LoopCount: Integer;
+  tlsOpts: TDextTLSOptions;
+begin
+  tlsOpts := FOptions.TLS;
+  tlsOpts.Enabled := True;
+  tlsOpts.Mode := tlsmClient;
+  if tlsOpts.Host = '' then
+    tlsOpts.Host := FHost;
+  if tlsOpts.Protocols = [] then
+    tlsOpts.Protocols := [tls1_2, tls1_3];
+  if tlsOpts.Provider = '' then
+    tlsOpts.Provider := 'Auto';
+
+  Provider := TDextOpenSSLContextProvider.Create(tlsOpts);
+  FTLSEngine := Provider.CreateEngine(tlsmClient);
+
+  LoopCount := 0;
+  while not FTLSEngine.IsHandshakeCompleted do
+  begin
+    Inc(LoopCount);
+    if LoopCount > 50 then
+      raise EDextNatsException.Create('TLS handshake timeout: exceeded 50 iterations');
+
+    Status := FTLSEngine.DoHandshake;
+    DrainTlsOutput;
+
+    if FTLSEngine.IsHandshakeCompleted or (Status = tlsHandshakeCompleted) then
+      Break;
+
+    if Status = tlsHandshakeNeedRead then
+      FeedTlsInput(FOptions.ConnectTimeoutMs)
+    else if Status = tlsError then
+      raise EDextNatsException.CreateFmt(
+        'TLS handshake failed at loop %d (OpenSSL error %d).',
+        [LoopCount, FTLSEngine.GetLastErrorCode]);
+  end;
+
+  FTlsActive := True;
+end;
+
+procedure TDextNatsClient.UpgradeToTlsIfNeeded;
+begin
+  if FTlsActive then
+    Exit;
+  if FOptions.TLS.Enabled or FServerInfo.TlsRequired then
+    PerformTlsHandshake;
+end;
+
+procedure TDextNatsClient.WriteTlsPlaintext(const AData: TBytes);
+var
+  Offset: Integer;
+  Written: Integer;
+begin
+  Offset := 0;
+  while Offset < Length(AData) do
+  begin
+    Written := FTLSEngine.PlaintextWrite(
+      @AData[Offset], Length(AData) - Offset);
+    DrainTlsOutput;
+    if Written > 0 then
+      Inc(Offset, Written)
+    else
+      case FTLSEngine.GetLastIOStatus of
+        tlsIONeedRead:
+          FeedTlsInput(FOptions.ConnectTimeoutMs);
+        tlsIONeedWrite:
+          Continue;
+        tlsIOClosed:
+          raise EDextNatsException.Create(
+            'TLS connection closed while writing to the NATS server');
+      else
+        raise EDextNatsException.CreateFmt(
+          'TLS write failed (OpenSSL error %d)',
+          [FTLSEngine.GetLastErrorCode]);
+      end;
+  end;
+  DrainTlsOutput;
+end;
+
+function TDextNatsClient.ReceiveBytes(var ABuffer: TBytes; ATimeoutMs: Integer): Integer;
+var
+  BytesRead: Integer;
+begin
+  if Length(ABuffer) = 0 then
+    Exit(0);
+
+  if not FTlsActive then
+    Exit(FTcpClient.Receive(ABuffer, ATimeoutMs));
+
+  FTlsIoLock.Enter;
+  try
+    Result := FTLSEngine.PlaintextRead(@ABuffer[0], Length(ABuffer));
+    if Result > 0 then
+      Exit;
+
+    BytesRead := FTcpClient.Receive(
+      TByteSpan.Create(@FTLSNetworkBuffer[0], Length(FTLSNetworkBuffer)), ATimeoutMs);
+    if BytesRead <= 0 then
+      Exit(0);
+
+    if FTLSEngine.EncryptedIncoming(
+      @FTLSNetworkBuffer[0], BytesRead) <> BytesRead then
+      raise EDextNatsException.Create(
+        'OpenSSL input BIO did not accept all encrypted bytes');
+
+    Result := FTLSEngine.PlaintextRead(@ABuffer[0], Length(ABuffer));
+    if (Result = 0) and (FTLSEngine.GetLastIOStatus = tlsIOError) then
+      raise EDextNatsException.CreateFmt(
+        'TLS read failed (OpenSSL error %d)',
+        [FTLSEngine.GetLastErrorCode]);
+  finally
+    FTlsIoLock.Leave;
+  end;
+end;
+
 procedure TDextNatsClient.SendRaw(const ABytes: TBytes);
 begin
-  FSendLock.Enter;
-  try
-    FTcpClient.Send(ABytes);
-  finally
-    FSendLock.Leave;
+  if FTlsActive then
+  begin
+    FTlsIoLock.Enter;
+    try
+      WriteTlsPlaintext(ABytes);
+    finally
+      FTlsIoLock.Leave;
+    end;
+  end
+  else
+  begin
+    FSendLock.Enter;
+    try
+      FTcpClient.Send(ABytes);
+    finally
+      FSendLock.Leave;
+    end;
   end;
 end;
 
@@ -455,7 +670,7 @@ begin
     if sliceTimeout > 250 then
       sliceTimeout := 250;
 
-    n := FTcpClient.Receive(buf, sliceTimeout);
+    n := ReceiveBytes(buf, sliceTimeout);
     if n > 0 then
       FParser.Append(buf, n);
   end;
@@ -469,17 +684,16 @@ var
   remaining: Integer;
   gotPong: Boolean;
 begin
+  ResetTls;
   FParser.Clear;
 
+  // NATS always speaks cleartext INFO first; TLS (if any) upgrades the same TCP socket next.
   frame := ReceiveFrameBlocking(FOptions.ConnectTimeoutMs);
   if frame.Kind <> nfInfo then
     raise EDextNatsProtocolError.Create('Expected an INFO message as the first reply from the NATS server');
 
   FServerInfo := TNatsServerInfo.Parse(frame.InfoJson);
-
-  if FServerInfo.TlsRequired then
-    raise EDextNatsNotSupported.Create(
-      'The NATS server requires a TLS connection; Dext.Net.Nats does not implement TLS yet');
+  UpgradeToTlsIfNeeded;
 
   connOpts := TNatsConnectOptions.CreateDefault;
   connOpts.Verbose := FOptions.Verbose;
@@ -523,10 +737,12 @@ begin
   FPort := APort;
   FClosing := False;
 
+  ResetTls;
   FTcpClient.Connect(AHost, APort);
   try
     DoHandshake;
   except
+    ResetTls;
     FTcpClient.Disconnect;
     raise;
   end;
@@ -579,6 +795,8 @@ begin
     FPingThread.WaitFor;
     FreeAndNil(FPingThread);
   end;
+
+  ResetTls;
 
   FLock.Enter;
   try
@@ -637,9 +855,97 @@ begin
   end;
 end;
 
-function TDextNatsClient.TryReconnect: Boolean;
+function TryParseNatsEndpoint(const AUrl: string; out AHost: string; out APort: Word): Boolean;
 var
-  attempt: Integer;
+  s, portStr: string;
+  slashPos, atPos, colonPos, bracketEnd: Integer;
+begin
+  Result := False;
+  AHost := '';
+  APort := 0;
+  s := Trim(AUrl);
+  if s = '' then
+    Exit;
+
+  if s.StartsWith('nats://', True) then
+    Delete(s, 1, 7)
+  else if s.StartsWith('tls://', True) then
+    Delete(s, 1, 6);
+
+  slashPos := Pos('/', s);
+  if slashPos > 0 then
+    s := Copy(s, 1, slashPos - 1);
+
+  atPos := Pos('@', s);
+  if atPos > 0 then
+    s := Copy(s, atPos + 1, MaxInt);
+
+  if (s <> '') and (s[1] = '[') then
+  begin
+    bracketEnd := Pos(']', s);
+    if bracketEnd <= 1 then
+      Exit;
+    AHost := Copy(s, 2, bracketEnd - 2);
+    if (bracketEnd < Length(s)) and (s[bracketEnd + 1] = ':') then
+      portStr := Copy(s, bracketEnd + 2, MaxInt)
+    else
+      portStr := IntToStr(NATS_DEFAULT_PORT);
+  end
+  else
+  begin
+    colonPos := LastDelimiter(':', s);
+    if colonPos = 0 then
+    begin
+      AHost := s;
+      APort := NATS_DEFAULT_PORT;
+      Exit(AHost <> '');
+    end;
+    AHost := Copy(s, 1, colonPos - 1);
+    portStr := Copy(s, colonPos + 1, MaxInt);
+  end;
+
+  APort := Word(StrToIntDef(portStr, 0));
+  Result := (AHost <> '') and (APort > 0);
+end;
+
+function TDextNatsClient.TryReconnect: Boolean;
+type
+  TNatsEndpoint = record
+    Host: string;
+    Port: Word;
+  end;
+var
+  attempt, endpointIndex: Integer;
+  endpoints: TArray<TNatsEndpoint>;
+  target: TNatsEndpoint;
+
+  procedure AddEndpoint(const AHost: string; APort: Word);
+  var
+    j: Integer;
+    ep: TNatsEndpoint;
+  begin
+    if (AHost = '') or (APort = 0) then
+      Exit;
+    for j := 0 to High(endpoints) do
+      if SameText(endpoints[j].Host, AHost) and (endpoints[j].Port = APort) then
+        Exit;
+    ep.Host := AHost;
+    ep.Port := APort;
+    endpoints := endpoints + [ep];
+  end;
+
+  procedure RebuildEndpoints;
+  var
+    u: string;
+    h: string;
+    p: Word;
+  begin
+    endpoints := nil;
+    AddEndpoint(FHost, FPort);
+    for u in FServerInfo.ConnectUrls do
+      if TryParseNatsEndpoint(u, h, p) then
+        AddEndpoint(h, p);
+  end;
 begin
   Result := False;
   attempt := 0;
@@ -654,15 +960,33 @@ begin
     if not FRunning or FClosing then
       Exit(False);
 
+    // Rebuild each attempt so an INFO refresh can advertise new connect_urls.
+    RebuildEndpoints;
+    if Length(endpoints) = 0 then
+    begin
+      target.Host := FHost;
+      target.Port := FPort;
+    end
+    else
+    begin
+      endpointIndex := (attempt - 1) mod Length(endpoints);
+      target := endpoints[endpointIndex];
+    end;
+
     try
       FParser.Clear;
-      FTcpClient.Connect(FHost, FPort);
+      ResetTls;
+      FTcpClient.Connect(target.Host, target.Port);
       try
         DoHandshake;
       except
+        ResetTls;
         FTcpClient.Disconnect;
         raise;
       end;
+
+      FHost := target.Host;
+      FPort := target.Port;
 
       FLock.Enter;
       try
@@ -677,7 +1001,8 @@ begin
       Exit(True);
     except
       on E: Exception do
-        FireError('NATS reconnect attempt ' + attempt.ToString + ' failed: ' + E.Message);
+        FireError(Format('NATS reconnect attempt %d to %s:%d failed: %s',
+          [attempt, target.Host, target.Port, E.Message]));
     end;
   end;
 end;
@@ -697,6 +1022,7 @@ begin
     FTcpClient.Disconnect;
   except
   end;
+  ResetTls;
 
   FireDisconnected;
 
@@ -719,8 +1045,9 @@ begin
   SetLength(buf, 65536);
   while FRunning do
   begin
+    n := 0;
     try
-      n := FTcpClient.Receive(buf, 200);
+      n := ReceiveBytes(buf, 200);
     except
       on E: Exception do
       begin
@@ -854,6 +1181,7 @@ begin
   msg.Payload := AFrame.Payload;
   msg.Headers := AFrame.Headers;
   msg.Sid := AFrame.Sid;
+  msg.StatusCode := AFrame.StatusCode;
 
   if Assigned(handler) then
   try
@@ -908,10 +1236,19 @@ begin
   end;
 end;
 
+procedure TDextNatsClient.EnsurePayloadAllowed(const APayload: TBytes);
+begin
+  if (FServerInfo.MaxPayload > 0) and (Length(APayload) > FServerInfo.MaxPayload) then
+    raise EDextNatsException.CreateFmt(
+      'Payload size %d exceeds server max_payload of %d bytes',
+      [Length(APayload), FServerInfo.MaxPayload]);
+end;
+
 procedure TDextNatsClient.Publish(const ASubject: string; const APayload: TBytes; const AReplyTo: string);
 begin
   if ASubject = '' then
     raise EDextNatsException.Create('Publish requires a non-empty subject');
+  EnsurePayloadAllowed(APayload);
   DispatchOutgoing(NatsEncodePub(ASubject, AReplyTo, APayload));
 end;
 
@@ -928,6 +1265,7 @@ begin
   if not FServerInfo.HeadersSupported then
     raise EDextNatsNotSupported.Create(
       'The NATS server does not advertise message header support (or the client is not connected yet)');
+  EnsurePayloadAllowed(APayload);
 
   DispatchOutgoing(NatsEncodeHPub(ASubject, AReplyTo, AHeaders, APayload));
 end;
@@ -1065,6 +1403,9 @@ begin
   finally
     evt.Free;
   end;
+
+  if reply.IsNoResponders then
+    raise EDextNatsNoResponders.CreateFmt('No responders available for subject "%s"', [ASubject]);
 
   Result := reply;
 end;

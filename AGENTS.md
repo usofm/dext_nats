@@ -1,4 +1,4 @@
-# AGENTS.md — Guide for AI Coding Agents
+﻿# AGENTS.md — Guide for AI Coding Agents
 
 This file orients AI agents (and humans) working on **Dext.Nats**, a native Delphi
 client for the [NATS](https://nats.io) messaging system, built on the **Dext
@@ -21,16 +21,16 @@ Source/
                                 (incremental parser), frame encoders. NO socket I/O.
   Dext.Net.Nats.pas             TDextNatsClient: the public API. Socket I/O,
                                 threading, reconnection, pub/sub, request/reply.
-  Dext.Net.Nats.JetStream.pas   TDextNatsJetStreamContext: producer-side JetStream
-                                only — stream admin (create/info/delete) and
-                                dedup'd publish via $JS.API.* request/reply. No
-                                consumer/Ack API.
+  Dext.Net.Nats.JetStream.pas   TDextNatsJetStreamContext: stream admin
+                                (create/update/info/delete), dedup'd publish,
+                                pull-consumer admin, Fetch, Ack/Nak/Term/
+                                InProgress via $JS.API.*.
 Demo/
   JetStreamSmokeTest/           Interactive console program that manually verifies
-                                stream create/info/delete and dedup'd publish
+                                stream/consumer paths and dedup'd publish
                                 against a local `nats-server -js`. Not a
                                 Dext.Testing suite — see its own header comment.
-Tests/                          (planned) Dext.Testing-based unit tests.
+Tests/                          Dext.Testing-based unit + integration tests.
 LICENSE                         Apache 2.0.
 ```
 
@@ -85,14 +85,13 @@ above** instead of assuming RTL-equivalent behavior.
   from `EDextNatsException`), `TNats*` for plain protocol data records.
 - Options/config are plain records with a `class function CreateDefault: T;
   static;` factory (see `TDextNatsOptions`, `TNatsConnectOptions`), not classes.
-- **Collections: use `Dext.Collections`, not `System.Generics.Collections`.**
+- **Collections: use `Dext.Collections` only — never `System.Generics.Collections`.**
   Prefer interface types (`IDictionary<K,V>`, `IQueue<T>`, `IList<T>`)
   constructed via `TCollections.CreateDictionary<K,V>(...)` /
   `.CreateQueue<T>` / `.CreateList<T>` so cleanup is automatic (no manual
-  `.Free`). `System.Generics.Collections.TPair<K,V>` may still be used
-  privately inside a unit that never also pulls in `Dext.Collections`
-  (e.g. `Dext.Net.Nats.Protocol.pas`'s `TNatsHeader`), but never mix both
-  `TPair<K,V>` generics unqualified in the same unit — it's ambiguous.
+  `.Free`). For `TPair<K,V>` (including `TNatsHeader`), `uses
+  Dext.Collections.Dict` (where `TPair` is declared) alongside
+  `Dext.Collections`; do not mix in the RTL `TPair`.
 - Byte buffers: use `TBytes`/`TByteSpan`, not `TMemoryStream`, on hot paths.
 
 ## Threading model — read carefully before touching `Dext.Net.Nats.pas`
@@ -139,19 +138,18 @@ parsing frames anywhere else.
 - [x] Protocol layer (`Dext.Net.Nats.Protocol.pas`)
 - [x] Client (`Dext.Net.Nats.pas`): connect, pub/sub, request/reply, reconnect,
       keepalive — now using `Dext.Collections` throughout
-- [x] JetStream, producer-side only (`Dext.Net.Nats.JetStream.pas`): stream
-      admin (create/info/delete) and dedup'd publish with a `Nats-Msg-Id`
-      header; consumer-side JetStream (pull/push consumers, Ack/Nak/Term) is
-      not implemented
-- [ ] Unit tests in `Tests/Dext.Net.Nats.Tests.pas` (use `Dext.Testing`)
+- [x] JetStream (`Dext.Net.Nats.JetStream.pas`): stream admin
+ (create/update/info/delete), dedup'd publish with a `Nats-Msg-Id`
+ header, pull-consumer admin, Fetch, and Ack/Nak/Term/InProgress;
+ push consumers are not implemented
+- [x] Unit/integration tests in `Tests/Dext.Net.Nats.Tests.pas` (use `Dext.Testing`)
 - [x] Console demo project (`.dpr`/`.dproj`): `Demo/JetStreamSmokeTest/` is the
       first one, covering the new JetStream layer; more demos may follow
+- [x] TLS on `TDextNatsClient` via `TDextTLSOptions` / `IDextTLSEngine`
+      (upgrade after cleartext INFO when `tls_required` or `Options.TLS.Enabled`)
 - [ ] `README.md` with usage examples
-- [ ] TLS support (currently `EDextNatsNotSupported` is raised for
-      `tls_required` servers), NKey/JWT auth, a DI extension, observability
-      (health checks/metrics/structured logging), JetStream consumer-side, and
-      the formal `Dext.Testing`-based integration-test suite are all
-      explicitly deferred to a later pass
+- [ ] NKey/JWT auth, a DI extension, observability (health checks/metrics/
+      structured logging), and push consumers are deferred to a later pass
 
 ## Working style expected of an agent here
 

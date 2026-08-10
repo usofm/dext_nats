@@ -1,4 +1,4 @@
-{***************************************************************************}
+﻿{***************************************************************************}
 {                                                                           }
 {           Dext.Nats                                                     }
 {                                                                           }
@@ -33,6 +33,7 @@ uses
   System.SysUtils,
   System.Classes,
   System.JSON,
+  Dext.Collections.Dict,
   Dext.Collections,
   Dext.Core.Span;
 
@@ -58,6 +59,8 @@ type
   EDextNatsServerError = class(EDextNatsException);
   /// <summary>Raised when the requested operation needs a TLS handshake, which is not yet implemented.</summary>
   EDextNatsNotSupported = class(EDextNatsException);
+  /// <summary>Raised when a request/reply gets an inline 503 "no responders" status from the server.</summary>
+  EDextNatsNoResponders = class(EDextNatsException);
 
   /// <summary>A single NATS message header (name/value pair).</summary>
   TNatsHeader = TPair<string, string>;
@@ -121,7 +124,7 @@ type
     NoResponders: Boolean;
     JWT: string;
     Sig: string;
-    /// <summary>Returns sensible defaults: Delphi client identity, protocol 1, headers and echo enabled.</summary>
+    /// <summary>Returns sensible defaults: Delphi client identity, protocol 1, headers, echo and no_responders enabled.</summary>
     class function CreateDefault: TNatsConnectOptions; static;
     /// <summary>Serializes the record to the JSON payload expected after the CONNECT keyword.</summary>
     function ToJson: string;
@@ -481,6 +484,7 @@ begin
   Result.Protocol := 1;
   Result.Echo := True;
   Result.Headers := True;
+  Result.NoResponders := True;
 end;
 
 function TNatsConnectOptions.ToJson: string;
