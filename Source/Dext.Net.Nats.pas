@@ -45,6 +45,7 @@ uses
   Dext.Collections,
   Dext.Core.Span,
   Dext.Logging,
+  Dext.Threading.Async,
   Dext.Net.Tcp,
   Dext.Net.Security,
   Dext.Net.Nats.Protocol,
@@ -292,13 +293,22 @@ type
     /// <summary>Non-blocking request/reply: AOnReply fires on the receive thread when a reply arrives;
     /// AOnTimeout (optional) fires from a helper thread if no reply arrives within ATimeoutMs.</summary>
     procedure RequestAsync(const ASubject: string; const APayload: TBytes; const AOnReply: TNatsMsgHandler;
-      const AOnTimeout: TNatsRequestTimeoutHandler = nil; ATimeoutMs: Integer = 0);
+      const AOnTimeout: TNatsRequestTimeoutHandler = nil; ATimeoutMs: Integer = 0); overload;
+    /// <summary>
+    ///   Fluent async request/reply via <see cref="TAsyncBuilder{T}"/> (same claim-gate as
+    ///   <see cref="Request"/>). Use <c>.Await</c> on the calling thread or <c>.Start</c> on the pool.
+    ///   The client must outlive the operation.
+    /// </summary>
+    function RequestAsync(const ASubject: string; const APayload: TBytes;
+      ATimeoutMs: Integer = 0): TAsyncBuilder<TNatsMsg>; overload;
 
     /// <summary>Generates a new process-unique inbox subject, suitable as a reply-to for request/reply patterns.</summary>
     function NewInbox: string;
     /// <summary>Round-trips a PING/PONG with the server, guaranteeing every command sent before this call
     /// has reached and been processed by the server. Raises EDextNatsTimeoutError on timeout.</summary>
     procedure Flush(ATimeoutMs: Integer = 0);
+    /// <summary>Fluent async <see cref="Flush"/> via <see cref="TAsyncBuilder{T}"/> (result is always True on success).</summary>
+    function FlushAsync(ATimeoutMs: Integer = 0): TAsyncBuilder<Boolean>;
     /// <summary>Sends a bare PING without waiting for the PONG.</summary>
     procedure Ping;
     /// <summary>
@@ -1647,6 +1657,23 @@ begin
   end;
 end;
 
+function TDextNatsClient.RequestAsync(const ASubject: string; const APayload: TBytes;
+  ATimeoutMs: Integer): TAsyncBuilder<TNatsMsg>;
+var
+  subject: string;
+  payload: TBytes;
+  timeoutMs: Integer;
+begin
+  subject := ASubject;
+  payload := APayload;
+  timeoutMs := ATimeoutMs;
+  Result := TAsyncTask.Run<TNatsMsg>(
+    function: TNatsMsg
+    begin
+      Result := Self.Request(subject, payload, timeoutMs);
+    end);
+end;
+
 procedure TDextNatsClient.Ping;
 begin
   SendRaw(NatsEncodePing);
@@ -1699,6 +1726,19 @@ begin
   finally
     evt.Free;
   end;
+end;
+
+function TDextNatsClient.FlushAsync(ATimeoutMs: Integer): TAsyncBuilder<Boolean>;
+var
+  timeoutMs: Integer;
+begin
+  timeoutMs := ATimeoutMs;
+  Result := TAsyncTask.Run<Boolean>(
+    function: Boolean
+    begin
+      Self.Flush(timeoutMs);
+      Result := True;
+    end);
 end;
 
 end.

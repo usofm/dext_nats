@@ -192,6 +192,12 @@ type
     [Test, Category('Integration')]
     procedure RequestAsync_ShouldReplyAndTimeout;
     [Test, Category('Integration')]
+    procedure RequestAsyncBuilder_ShouldAwaitReply;
+    [Test, Category('Integration')]
+    procedure RequestAsyncBuilder_Timeout_ShouldRaise;
+    [Test, Category('Integration')]
+    procedure FlushAsync_ShouldAwait;
+    [Test, Category('Integration')]
     procedure Events_OnConnected_ShouldFire;
     [Test, Category('Integration')]
     procedure WildcardSubscribe_ShouldMatch;
@@ -1581,6 +1587,52 @@ begin
     replied.Free;
     timedOut.Free;
   end;
+end;
+
+procedure TDextNatsIntegrationTests.RequestAsyncBuilder_ShouldAwaitReply;
+var
+  subject: string;
+  reply: TNatsMsg;
+begin
+  if not EnsureServerOrFail then
+    Exit;
+  subject := UniqueSubject('dext.nats.test.reqasync.await');
+  FClient.Subscribe(subject,
+    procedure(const AMsg: TNatsMsg)
+    begin
+      if AMsg.HasReplyTo then
+        FClient.Publish(AMsg.ReplyTo, 'builder-ok');
+    end);
+
+  reply := FClient.RequestAsync(subject, BytesOfUtf8('q'), 3000).Await;
+  Should(reply.AsString).Be('builder-ok');
+end;
+
+procedure TDextNatsIntegrationTests.RequestAsyncBuilder_Timeout_ShouldRaise;
+var
+  subject: string;
+begin
+  if not EnsureServerOrFail then
+    Exit;
+  subject := UniqueSubject('dext.nats.test.reqasync.await.timeout');
+  // Silent subscriber avoids 503 no-responders so Request's timeout path runs.
+  FClient.Subscribe(subject,
+    procedure(const AMsg: TNatsMsg)
+    begin
+    end);
+
+  Should(
+    procedure
+    begin
+      FClient.RequestAsync(subject, BytesOfUtf8('q'), 300).Await;
+    end).Throw(EDextNatsTimeoutError);
+end;
+
+procedure TDextNatsIntegrationTests.FlushAsync_ShouldAwait;
+begin
+  if not EnsureServerOrFail then
+    Exit;
+  Should(FClient.FlushAsync(3000).Await).BeTrue;
 end;
 
 procedure TDextNatsIntegrationTests.Events_OnConnected_ShouldFire;

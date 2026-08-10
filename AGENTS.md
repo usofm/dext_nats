@@ -169,7 +169,8 @@ parsing frames anywhere else.
   `TNatsByteWriter` encode path, byte `ParseControlLine`, INFO/CONNECT via
   `Dext.Json.Utf8` (`TUtf8JsonReader`/`TUtf8JsonWriter`); JetStream admin JSON
   migrated the same way (PERF-03b); `System.JSON` removed from Protocol + JetStream
-- [ ] Async `Request`/`Flush` via `TAsyncBuilder` (roadmap SPEC-ASYNC)
+- [x] Async `RequestAsync`/`FlushAsync` via `TAsyncBuilder` (roadmap SPEC-ASYNC-01);
+      callback `RequestAsync` overload retained
 
 ## Working style expected of an agent here
 

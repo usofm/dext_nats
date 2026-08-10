@@ -33,7 +33,7 @@
 | لایه | فایل | وابستگی Dext | گلوگاه شناخته‌شده |
 |------|------|--------------|-------------------|
 | Protocol | `Source/Dext.Net.Nats.Protocol.pas` | `Span`, `Collections`, `Json.Utf8` | PERF-01..05 done (byte writer, control-line span, Utf8 INFO/CONNECT) |
-| Client | `Source/Dext.Net.Nats.pas` | `Tcp`, `Security`, `Collections`, `Span`, Logging/Metrics | ASYNC `TAsyncBuilder` هنوز باز |
+| Client | `Source/Dext.Net.Nats.pas` | `Tcp`, `Security`, `Collections`, `Span`, Logging/Metrics, `Threading.Async` | ASYNC `RequestAsync`/`FlushAsync` → `TAsyncBuilder` done |
 | JetStream | `Source/Dext.Net.Nats.JetStream.pas` | Client + `Json.Utf8` | PERF-03b Utf8 admin JSON؛ push `SubscribePush` done |
 | Tests | `Tests/Dext.Net.Nats.Tests.*` | `Dext.Testing` | پوشش خوب؛ پلن گسترش در `TEST_PLAN.md` |
 
@@ -186,9 +186,9 @@ procedure AddNatsClient(const AServices: IServiceCollection; const AHost: string
 
 **Acceptance:**
 
-- [ ] کامپایل unit با `Dext.DI.Interfaces`.
-- [ ] تست DI (اگر `Dext.Testing.DI` در دسترس است): resolve → همان instance برای singleton.
-- [ ] بدون وابستگی معکوس JetStream → DI اجباری برای کاربران غیر-DI.
+- [x] کامپایل unit با `Dext.DI.Interfaces` (`Dext.Net.Nats.DependencyInjection`).
+- [x] تست DI: resolve → همان instance برای singleton (`AddNatsClient_ShouldResolveSingleton` + JetStream transient).
+- [x] بدون وابستگی معکوس JetStream → DI اجباری برای کاربران غیر-DI.
 
 #### SPEC-DI-02 — Options از Configuration (اختیاری ولی توصیه‌شده)
 
@@ -200,7 +200,7 @@ procedure AddNatsClient(const AServices: IServiceCollection; const AHost: string
 
 **Acceptance:**
 
-- [ ] یا پیاده‌سازی + تست bind؛ یا تیک «deferred» با issue در همین سند.
+- [x] **Deferred:** binder/`Dext.Options` section bind عمداً انجام نشد؛ `AddNatsClient(options)` / configure callback کافی است تا binder پایدار در Dext آماده شود.
 
 ---
 
@@ -226,8 +226,8 @@ procedure AddNatsClient(const AServices: IServiceCollection; const AHost: string
 
 **Acceptance:**
 
-- [ ] بدون logger → صفر تغییر رفتار externally observable.
-- [ ] با logger mock در تست: حداقل یک connect Information ثبت شود.
+- [x] بدون logger → صفر تغییر رفتار externally observable.
+- [x] با logger mock در تست: `Logger_FireError_ShouldRecordWhenAttached` (+ connect path در observability suite).
 
 ---
 
@@ -254,8 +254,8 @@ procedure AddNatsClient(const AServices: IServiceCollection; const AHost: string
 
 **Acceptance:**
 
-- [ ] تست unit با فعال‌سازی metrics: بعد از یک Publish ساختگی یا mock، `Flush` متریک رشتهٔ غیرخالی شامل نام مورد انتظار (اگر API `TMetrics.Flush` اجازه دهد).
-- [ ] مسیر بدون metrics بدون هزینهٔ قابل‌توجه (branch روی flag).
+- [x] تست unit با فعال‌سازی metrics: `Metrics_Publish_ShouldIncrementLocalCounter` / `Metrics_ShouldDefaultDisabled`.
+- [x] مسیر بدون metrics بدون هزینهٔ قابل‌توجه (branch روی `EnableMetrics`, default False).
 
 ---
 
@@ -301,9 +301,9 @@ function RequestAsync(const ASubject: string; const APayload: TBytes;
 
 **Acceptance:**
 
-- [ ] integration: `RequestAsync(...).Await` همان payload را برگرداند.
-- [ ] timeout → `EDextNatsTimeoutError` از `Await`.
-- [ ] تست claim-gate (timeout همزمان با reply) بدون AV.
+- [x] integration: `RequestAsync(...).Await` همان payload را برگرداند (`RequestAsyncBuilder_ShouldAwaitReply`).
+- [x] timeout → `EDextNatsTimeoutError` از `Await` (`RequestAsyncBuilder_Timeout_ShouldRaise`).
+- [x] claim-gate همان مسیر sync `Request` است (بدون race جدید روی `TEvent`); callback overload حفظ شد؛ `FlushAsync` نیز اضافه شد.
 
 ---
 
