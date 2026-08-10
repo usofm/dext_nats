@@ -187,7 +187,20 @@ Output\Win32\Debug\Dext.Net.Nats.Tests.exe
 
 Full matrix and IDs: [`Docs/TEST_PLAN.md`](Docs/TEST_PLAN.md).
 
-Interactive JetStream smoke: `Demo/JetStreamSmokeTest/` against `nats-server -js`.
+## Manual E2E demos
+
+Interactive console programs under `Demo/` (not a `Dext.Testing` suite). Requires **Delphi 12 / Studio 23.0** (`msbuild` / `dcc32`). Set `BDS` and `PATH` as in [Tests](#tests) if needed. Most demos accept `[host] [port]` and `-no-wait`; optional `DEXT_NATS_HOST` / `DEXT_NATS_PORT` where noted in each `.dpr` header.
+
+| Demo | What it covers | `nats-server` | Build | Run |
+|------|----------------|---------------|-------|-----|
+| `Demo/PubSubE2E/` | Core one-way pub/sub | `nats-server` (plain; `-js` unused) | `msbuild Demo\PubSubE2E\PubSubE2E.dproj /p:Config=Debug /p:Platform=Win32` | `Output\Win32\Debug\PubSubE2E.exe` |
+| `Demo/RequestReplyE2E/` | Request/reply + no-responders | `nats-server` | `msbuild Demo\RequestReplyE2E\RequestReplyE2E.dproj /p:Config=Debug /p:Platform=Win32` | `Output\Win32\Debug\RequestReplyE2E.exe` |
+| `Demo/QueueGroupE2E/` | Queue-group load balancing | `nats-server` | `msbuild Demo\QueueGroupE2E\QueueGroupE2E.dproj /p:Config=Debug /p:Platform=Win32` | `Output\Win32\Debug\QueueGroupE2E.exe` |
+| `Demo/HeadersE2E/` | Headers round-trip (HPUB/HMSG + `RequestWithHeaders`) | `nats-server` (needs `headers` in INFO) | `msbuild Demo\HeadersE2E\HeadersE2E.dproj /p:Config=Debug /p:Platform=Win32` | `Output\Win32\Debug\HeadersE2E.exe` |
+| `Demo/JetStreamSmokeTest/` | Stream admin, dedup publish, pull Fetch/Ack | `nats-server -js` | `msbuild Demo\JetStreamSmokeTest\JetStreamSmokeTest.dproj /p:Config=Debug /p:Platform=Win32` | `Output\Win32\Debug\JetStreamSmokeTest.exe` |
+| `Demo/TlsE2E/` | TLS upgrade after cleartext INFO | `nats-server -c Demo\TlsE2E\nats-tls.conf` (port **4223**; certs from `Tests/tls/`) | `msbuild Demo\TlsE2E\TlsE2E.dproj /p:Config=Debug /p:Platform=Win32` | `Output\Win32\Debug\TlsE2E.exe` (default `127.0.0.1:4223`) |
+
+Plain-core demos default to `127.0.0.1:4222`. TlsE2E needs OpenSSL `libssl-3.dll` / `libcrypto-3.dll` beside the exe (same as other TLS paths). Equivalent TLS config: `cd Tests\tls` then `nats-server -c nats-tls.conf`.
 
 ## License
 
