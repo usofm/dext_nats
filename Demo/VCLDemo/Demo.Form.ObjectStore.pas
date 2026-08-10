@@ -42,6 +42,8 @@ type
     btnGet: TButton;
     btnGetInfo: TButton;
     btnDelete: TButton;
+    btnPutFile: TButton;
+    btnGetFile: TButton;
     mmInfo: TMemo;
     grpList: TGroupBox;
     lstNames: TListBox;
@@ -56,6 +58,8 @@ type
     edtTargetBucket: TEdit;
     btnAddLink: TButton;
     btnAddBucketLink: TButton;
+    dlgOpenFile: TOpenDialog;
+    dlgSaveFile: TSaveDialog;
     procedure FormCreate(Sender: TObject);
     procedure FormDestroy(Sender: TObject);
     procedure FormClose(Sender: TObject; var Action: TCloseAction);
@@ -68,6 +72,8 @@ type
     procedure btnGetClick(Sender: TObject);
     procedure btnGetInfoClick(Sender: TObject);
     procedure btnDeleteClick(Sender: TObject);
+    procedure btnPutFileClick(Sender: TObject);
+    procedure btnGetFileClick(Sender: TObject);
     procedure btnListClick(Sender: TObject);
     procedure btnKeysClick(Sender: TObject);
     procedure btnAddLinkClick(Sender: TObject);
@@ -470,6 +476,73 @@ begin
   except
     on E: Exception do
       Log('Delete failed: ' + E.Message);
+  end;
+end;
+
+procedure TfrmObjectStore.btnPutFileClick(Sender: TObject);
+var
+  name, fileName: string;
+  info, streamInfo: TNatsObjectInfo;
+  ms: TMemoryStream;
+begin
+  try
+    EnsureStore;
+    if not dlgOpenFile.Execute then
+      Exit;
+    fileName := dlgOpenFile.FileName;
+    name := Trim(edtName.Text);
+    if name = '' then
+    begin
+      info := FStore.PutFile(fileName);
+      edtName.Text := info.Name;
+    end
+    else
+      info := FStore.PutFile(name, fileName);
+    ShowInfo(info);
+    Log(Format('PutFile "%s" <- %s size=%s chunks=%d',
+      [info.Name, fileName, info.Size.ToString, info.Chunks]));
+
+    { Optional stream round-trip: Get(name, TStream) without loading full TBytes. }
+    ms := TMemoryStream.Create;
+    try
+      streamInfo := FStore.Get(info.Name, ms);
+      Log(Format('Stream Get("%s", TMemoryStream) wrote %d byte(s); digest=%s match=%s',
+        [streamInfo.Name, ms.Size, streamInfo.Digest,
+         BoolToStr(SameText(streamInfo.Digest, info.Digest), True)]));
+    finally
+      ms.Free;
+    end;
+
+    FillNamesFromKeys;
+  except
+    on E: Exception do
+      Log('PutFile failed: ' + E.Message);
+  end;
+end;
+
+procedure TfrmObjectStore.btnGetFileClick(Sender: TObject);
+var
+  name: string;
+  info: TNatsObjectInfo;
+begin
+  try
+    EnsureStore;
+    name := Trim(edtName.Text);
+    if name = '' then
+    begin
+      Log('Object name is required.');
+      Exit;
+    end;
+    dlgSaveFile.FileName := ExtractFileName(name);
+    if not dlgSaveFile.Execute then
+      Exit;
+    info := FStore.GetFile(name, dlgSaveFile.FileName);
+    ShowInfo(info);
+    Log(Format('GetFile "%s" -> %s size=%s chunks=%d (streamed via Get to TFileStream)',
+      [name, dlgSaveFile.FileName, info.Size.ToString, info.Chunks]));
+  except
+    on E: Exception do
+      Log('GetFile failed: ' + E.Message);
   end;
 end;
 

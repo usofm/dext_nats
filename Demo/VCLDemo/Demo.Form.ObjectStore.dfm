@@ -86,7 +86,7 @@
     Left = 12
     Top = 112
     Width = 520
-    Height = 248
+    Height = 284
     Caption = ' Object '
     TabOrder = 1
     object lblName: TLabel
@@ -154,35 +154,53 @@
       TabOrder = 5
       OnClick = btnDeleteClick
     end
-    object mmInfo: TMemo
+    object btnPutFile: TButton
       Left = 12
       Top = 184
+      Width = 90
+      Height = 28
+      Caption = 'Put File'
+      TabOrder = 6
+      OnClick = btnPutFileClick
+    end
+    object btnGetFile: TButton
+      Left = 110
+      Top = 184
+      Width = 90
+      Height = 28
+      Caption = 'Get File'
+      TabOrder = 7
+      OnClick = btnGetFileClick
+    end
+    object mmInfo: TMemo
+      Left = 12
+      Top = 220
       Width = 490
       Height = 52
       ReadOnly = True
       ScrollBars = ssVertical
-      TabOrder = 6
+      TabOrder = 8
     end
   end
   object grpList: TGroupBox
     Left = 548
     Top = 112
     Width = 260
-    Height = 248
+    Height = 284
     Caption = ' Names '
     TabOrder = 2
     object lstNames: TListBox
       Left = 12
       Top = 24
       Width = 236
-      Height = 176
+      Height = 212
       ItemHeight = 15
       TabOrder = 0
       OnClick = lstNamesClick
     end
     object btnList: TButton
       Left = 12
-      Top = 208
+      Top = 244
       Width = 112
       Height = 28
       Caption = 'List'
@@ -191,7 +209,7 @@
     end
     object btnKeys: TButton
       Left = 136
-      Top = 208
+      Top = 244
       Width = 112
       Height = 28
       Caption = 'Keys'
@@ -201,7 +219,7 @@
   end
   object grpLink: TGroupBox
     Left = 12
-    Top = 368
+    Top = 404
     Width = 796
     Height = 88
     Caption = ' Links '
@@ -272,9 +290,9 @@
   end
   object mmLog: TMemo
     Left = 0
-    Top = 468
+    Top = 504
     Width = 820
-    Height = 152
+    Height = 116
     Align = alBottom
     Font.Charset = ANSI_CHARSET
     Font.Color = clWindowText
@@ -294,5 +312,19 @@
     Height = 20
     Panels = <>
     SimplePanel = True
+  end
+  object dlgOpenFile: TOpenDialog
+    Filter = 'All files (*.*)|*.*'
+    Options = [ofHideReadOnly, ofFileMustExist, ofEnableSizing]
+    Title = 'Put File into Object Store'
+    Left = 760
+    Top = 160
+  end
+  object dlgSaveFile: TSaveDialog
+    Filter = 'All files (*.*)|*.*'
+    Options = [ofOverwritePrompt, ofHideReadOnly, ofEnableSizing]
+    Title = 'Get File from Object Store'
+    Left = 760
+    Top = 208
   end
 end.
