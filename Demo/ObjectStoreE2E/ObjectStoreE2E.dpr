@@ -47,6 +47,8 @@ program ObjectStoreE2E;
 
 uses
   System.SysUtils,
+  System.SyncObjs,
+  System.Classes,
   Dext.Collections,
   Dext.Utils,
   Dext.Net.Nats.Protocol in '..\..\Source\Dext.Net.Nats.Protocol.pas',
@@ -62,6 +64,9 @@ const
   OBJ_INVOICE = 'invoice.pdf';
   OBJ_README = 'readme.txt';
   OBJ_SCRATCH = 'scratch.bin';
+  OBJ_LINK = 'invoice-link';
+
+  WATCH_TIMEOUT_MS = 5000;
 
 var
   GFailureCount: Integer = 0;
@@ -183,10 +188,16 @@ var
   cfg: TNatsObjectStoreConfig;
   bucket: string;
   invoiceBytes, readmeBytes, scratchBytes, got: TBytes;
-  info: TNatsObjectInfo;
+  info, targetInfo, linkInfo: TNatsObjectInfo;
+  meta: TNatsObjectMeta;
   keys: IList<string>;
   listed: IList<TNatsObjectInfo>;
-  getRaised: Boolean;
+  getRaised, putRaised: Boolean;
+  watcher: TDextNatsObjectStoreWatcher;
+  watchLock: TCriticalSection;
+  watchNames: IList<string>;
+  watchReady: TEvent;
+  watchCount: Integer;
 begin
   host := ResolveHost;
   port := ResolvePort;
@@ -358,7 +369,152 @@ begin
           PrintFail('Delete failed: ' + E.Message);
       end;
 
-      { Step 7: DeleteStore. }
+      { Step 7: UpdateMeta (description + headers; before Seal). }
+      try
+        meta := TNatsObjectMeta.Create(OBJ_INVOICE);
+        meta.Description := 'ObjectStoreE2E invoice';
+        meta.Headers := nil;
+        meta.Headers.Add('content-type', 'application/pdf');
+        info := store.UpdateMeta(OBJ_INVOICE, meta);
+        if (info.Name = OBJ_INVOICE) and (info.Description = 'ObjectStoreE2E invoice') and
+           (info.Headers.GetValue('content-type') = 'application/pdf') then
+          PrintPass(Format('UpdateMeta("%s"): description/headers OK.', [OBJ_INVOICE]))
+        else
+          PrintFail(Format('UpdateMeta("%s"): unexpected desc=%s content-type=%s.',
+            [OBJ_INVOICE, info.Description, info.Headers.GetValue('content-type')]));
+
+        info := store.GetInfo(OBJ_INVOICE);
+        if (info.Description = 'ObjectStoreE2E invoice') and
+           (info.Headers.GetValue('content-type') = 'application/pdf') then
+          PrintPass('GetInfo after UpdateMeta reflects new description/headers.')
+        else
+          PrintFail('GetInfo after UpdateMeta did not reflect changes.');
+      except
+        on E: Exception do
+          PrintFail('UpdateMeta failed: ' + E.Message);
+      end;
+
+      { Step 8: WatchAll — brief receive then Stop (before Seal). }
+      watcher := nil;
+      watchLock := TCriticalSection.Create;
+      watchNames := TCollections.CreateList<string>;
+      watchReady := TEvent.Create(nil, True, False, '');
+      try
+        try
+          watcher := store.WatchAll(
+            procedure(const AInfo: TNatsObjectInfo)
+            begin
+              if AInfo.Deleted then
+                Exit;
+              watchLock.Enter;
+              try
+                if not KeysContain(watchNames, AInfo.Name) then
+                  watchNames.Add(AInfo.Name);
+                if watchNames.Count >= 2 then
+                  watchReady.SetEvent;
+              finally
+                watchLock.Leave;
+              end;
+            end);
+
+          if watchReady.WaitFor(WATCH_TIMEOUT_MS) = wrSignaled then
+          begin
+            watchLock.Enter;
+            try
+              watchCount := watchNames.Count;
+              if (watchCount >= 2) and KeysContain(watchNames, OBJ_INVOICE) and
+                 KeysContain(watchNames, OBJ_README) then
+                PrintPass(Format('WatchAll delivered initial snapshot (%d names); Stop.',
+                  [watchCount]))
+              else
+                PrintFail(Format('WatchAll names unexpected: Count=%d.', [watchCount]));
+            finally
+              watchLock.Leave;
+            end;
+          end
+          else
+            PrintFail(Format('WatchAll timed out waiting for initial deliveries (%d ms).',
+              [WATCH_TIMEOUT_MS]));
+
+          watcher.Stop;
+          if not watcher.Active then
+            PrintPass('WatchAll Stop: Active=False.')
+          else
+            PrintFail('WatchAll Stop: Active still True.');
+        except
+          on E: Exception do
+            PrintFail('WatchAll failed: ' + E.Message);
+        end;
+      finally
+        FreeAndNil(watcher);
+        watchReady.Free;
+        watchLock.Free;
+      end;
+
+      { Step 9 (optional): AddLink + Get through link (before Seal). }
+      try
+        targetInfo := store.GetInfo(OBJ_INVOICE);
+        linkInfo := store.AddLink(OBJ_LINK, targetInfo);
+        if linkInfo.IsLink and (linkInfo.Link.Name = OBJ_INVOICE) and
+           (linkInfo.Link.Bucket = bucket) then
+          PrintPass(Format('AddLink("%s" -> %s/%s).',
+            [OBJ_LINK, linkInfo.Link.Bucket, linkInfo.Link.Name]))
+        else
+          PrintFail(Format('AddLink("%s"): unexpected IsLink=%s target=%s/%s.',
+            [OBJ_LINK, BoolToStr(linkInfo.IsLink, True), linkInfo.Link.Bucket,
+             linkInfo.Link.Name]));
+
+        got := store.Get(OBJ_LINK, info);
+        if BytesEqual(got, invoiceBytes) and (info.Name = OBJ_INVOICE) then
+          PrintPass(Format('Get("%s") follows link to "%s" (%d bytes).',
+            [OBJ_LINK, OBJ_INVOICE, Length(got)]))
+        else
+          PrintFail(Format('Get("%s") via link: got name=%s size=%d.',
+            [OBJ_LINK, info.Name, Length(got)]));
+      except
+        on E: Exception do
+          PrintFail('AddLink/Get-via-link failed: ' + E.Message);
+      end;
+
+      { Step 10: Seal + verify further Put fails / IsSealed (after Watch/UpdateMeta/AddLink). }
+      try
+        if store.IsSealed then
+          PrintFail('IsSealed was True before Seal.')
+        else
+          PrintPass('IsSealed=False before Seal.');
+
+        store.Seal;
+        if store.IsSealed then
+          PrintPass('Seal: IsSealed=True.')
+        else
+          PrintFail('Seal: IsSealed still False.');
+
+        putRaised := False;
+        try
+          store.Put('after-seal.bin', Utf8Bytes('should-fail'));
+        except
+          on E: EDextNatsJetStreamError do
+            putRaised := True;
+          on E: EDextNatsObjectStoreError do
+            putRaised := True;
+        end;
+        if putRaised then
+          PrintPass('Put after Seal raises (store sealed).')
+        else
+          PrintFail('Put after Seal unexpectedly succeeded.');
+
+        { Reads still work on a sealed store. }
+        got := store.Get(OBJ_INVOICE);
+        if BytesEqual(got, invoiceBytes) then
+          PrintPass(Format('Get("%s") still works after Seal.', [OBJ_INVOICE]))
+        else
+          PrintFail('Get after Seal payload mismatch.');
+      except
+        on E: Exception do
+          PrintFail('Seal failed: ' + E.Message);
+      end;
+
+      { Step 11: DeleteStore (works even when sealed). }
       try
         FreeAndNil(store);
         osCtx.DeleteStore(bucket);
@@ -375,7 +531,7 @@ begin
       FreeAndNil(osCtx);
     end;
 
-    { Step 8: disconnect. }
+    { Step 12: disconnect. }
     try
       client.Disconnect;
       PrintPass('Disconnected cleanly.');

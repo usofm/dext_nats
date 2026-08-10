@@ -47,8 +47,9 @@ Source/
   Dext.Net.Nats.ObjectStore.pas TDextNatsObjectStoreContext / TDextNatsObjectStore:
                                 JetStream Object Store (CreateStore /
                                 DeleteStore / Put / Get / Delete / List / Keys,
-                                Watch/WatchAll, UpdateMeta, Seal on OBJ_ /
-                                $O.<bucket>.{C,M}.*). Deferred: links.
+                                Watch/WatchAll, UpdateMeta, Seal, AddLink /
+                                AddBucketLink on OBJ_ / $O.<bucket>.{C,M}.*).
+                                Get follows object links; bucket links raise.
                                 Composition over JetStream; does not own the client.
 Demo/
   PubSubE2E/                    One-way core pub/sub E2E console smoke test
@@ -80,7 +81,8 @@ Demo/
                                 `nats-server -js`.
   ObjectStoreE2E/               JetStream Object Store E2E console smoke test
                                 (CreateStore / Put / Get / List / Keys /
-                                Delete / DeleteStore) against a local
+                                Delete / UpdateMeta / WatchAll / AddLink /
+                                Seal / DeleteStore) against a local
                                 `nats-server -js`.
   VCLDemo/                      VCL desktop demo (multi-connection tabs,
                                 pub/sub, request/reply, log view, JetStream /
@@ -207,8 +209,9 @@ parsing frames anywhere else.
       DeleteStore, Put / Get / Delete, List / ListObjects / Keys (meta filter
       `$O.<bucket>.M.>`, `last_per_subject`), Watch / WatchAll (push
       `last_per_subject` MVP on meta subjects), UpdateMeta (name / description /
-      headers / metadata; no chunk rewrite), Seal (`config.sealed` on OBJ_ stream);
-      deferred: links
+      headers / metadata; no chunk rewrite), Seal (`config.sealed` on OBJ_ stream),
+      AddLink / AddBucketLink (`options.link`; Get follows object links like
+      nats.go, bucket links raise; GetInfo surfaces link meta without following)
 - [x] Unit/integration tests in `Tests/Dext.Net.Nats.Tests.pas` (use `Dext.Testing`)
 - [x] Console demo projects (`.dpr`/`.dproj`): `Demo/PubSubE2E/` (core one-way
   pub/sub), `Demo/RequestReplyE2E/` (request/reply + no-responders),
@@ -221,7 +224,8 @@ parsing frames anywhere else.
   History / Delete / Purge, CAS Create/Update, optional per-key TTL,
   DeleteBucket), and
   `Demo/ObjectStoreE2E/` (JetStream Object Store CreateStore / Put / Get /
-  List / Keys / Delete / DeleteStore)
+  List / Keys / Delete / UpdateMeta / WatchAll / AddLink / Seal /
+  DeleteStore)
 - [x] VCL demo (`Demo/VCLDemo/`): multi-connection tabs, connect toggle,
   Publish/Subscribe/Request/Unsubscribe, shared log, JetStream helper form
   (stream/consumer admin, publish, Fetch/Ack), Key-Value and Object Store forms
