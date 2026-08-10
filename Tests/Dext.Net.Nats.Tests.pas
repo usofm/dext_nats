@@ -341,6 +341,14 @@ type
   [TestFixture('NATS DI')]
   TDextNatsDiTests = class
   public
+    /// <summary>
+    ///   <c>TDextServices.BuildServiceProvider</c> assigns the first provider to
+    ///   <c>DefaultProvider</c>. Clear it after each test so owned singletons
+    ///   (e.g. <c>TDextNatsClient</c>) are not destroyed during RTL unit finalization
+    ///   (Windows runtime error 216 / AV after the suite summary).
+    /// </summary>
+    [TearDown]
+    procedure TearDown;
     [Test, Category('DI')]
     procedure AddNatsClient_ShouldResolveSingleton;
     [Test, Category('DI')]
@@ -3001,6 +3009,11 @@ begin
 end;
 
 { TDextNatsDiTests }
+
+procedure TDextNatsDiTests.TearDown;
+begin
+  TDextServices.DefaultProvider := nil;
+end;
 
 procedure TDextNatsDiTests.ClientOptions_ShouldDefaultHostAndPort;
 var
