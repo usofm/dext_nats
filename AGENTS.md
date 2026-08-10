@@ -254,7 +254,8 @@ parsing frames anywhere else.
 - [x] JetStream Key-Value (`Dext.Net.Nats.KeyValue.pas` / SPEC-KV-01):
       CreateBucket / DeleteBucket / BucketExists / Put / Get / Delete / Purge,
       Keys / ListKeys, History, Watch / WatchAll (push last_per_subject +
-      EndOfInitial marker via NumPending; MetaOnly / UpdatesOnly options),
+      EndOfInitial marker via NumPending; MetaOnly / UpdatesOnly /
+      IncludeHistory / IgnoreDeletes / ResumeFromRevision options),
       CAS Create / Update (`Nats-Expected-Last-Subject-Sequence`),
       per-key TTL (`LimitMarkerTTL` + `Create`/`Purge` with `Nats-TTL`; NATS 2.11+)
 

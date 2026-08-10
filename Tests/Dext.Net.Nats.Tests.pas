@@ -1,4 +1,4 @@
-﻿{***************************************************************************}
+{***************************************************************************}
 {                                                                           }
 {           Dext.Nats                                                     }
 {                                                                           }
@@ -316,6 +316,8 @@ type
     procedure Entry_EndOfInitialMarker_ShouldNotBePut;
     [Test, Category('Unit'), Category('KeyValue')]
     procedure WatchOptions_ShouldDefaultFalse;
+    [Test, Category('Unit'), Category('KeyValue'), Category('Negative')]
+    procedure WatchOptions_IncludeHistoryWithUpdatesOnly_ShouldRaise;
     [Test, Category('JetStream'), Category('KeyValue')]
     procedure WatchAll_ShouldDeliverCurrentAndUpdates;
     [Test, Category('JetStream'), Category('KeyValue')]
@@ -326,6 +328,12 @@ type
     procedure WatchAll_UpdatesOnly_ShouldSkipInitialAndMarker;
     [Test, Category('JetStream'), Category('KeyValue')]
     procedure WatchAll_MetaOnly_ShouldOmitValues;
+    [Test, Category('JetStream'), Category('KeyValue')]
+    procedure WatchAll_IncludeHistory_ShouldReplayRevisions;
+    [Test, Category('JetStream'), Category('KeyValue')]
+    procedure WatchAll_IgnoreDeletes_ShouldSkipDeleteMarkers;
+    [Test, Category('JetStream'), Category('KeyValue')]
+    procedure Watch_ResumeFromRevision_ShouldSkipEarlierRevisions;
     [Test, Category('JetStream'), Category('KeyValue')]
     procedure Create_ShouldPutOnlyIfAbsent;
     [Test, Category('JetStream'), Category('KeyValue'), Category('Negative')]
@@ -2963,6 +2971,27 @@ begin
   opts := TNatsKeyValueWatchOptions.CreateDefault;
   Should(opts.MetaOnly).BeFalse;
   Should(opts.UpdatesOnly).BeFalse;
+  Should(opts.IncludeHistory).BeFalse;
+  Should(opts.IgnoreDeletes).BeFalse;
+  Should(Int64(opts.ResumeFromRevision)).Be(0);
+end;
+
+procedure TDextNatsKeyValueTests.WatchOptions_IncludeHistoryWithUpdatesOnly_ShouldRaise;
+var
+  opts: TNatsKeyValueWatchOptions;
+  raised: Boolean;
+begin
+  opts := TNatsKeyValueWatchOptions.CreateDefault;
+  opts.IncludeHistory := True;
+  opts.UpdatesOnly := True;
+  raised := False;
+  try
+    opts.Validate;
+  except
+    on E: EDextNatsKeyValueError do
+      raised := True;
+  end;
+  Should(raised).BeTrue;
 end;
 
 procedure TDextNatsKeyValueTests.WatchAll_ShouldDeliverCurrentAndUpdates;
@@ -3303,6 +3332,249 @@ begin
     finally
       lock.Leave;
     end;
+  finally
+    if watcher <> nil then
+      watcher.Free;
+    gotMarker.Free;
+    lock.Free;
+    kv.Free;
+    TDextNatsKeyValue.DeleteBucket(FJs, bucket);
+  end;
+end;
+
+procedure TDextNatsKeyValueTests.WatchAll_IncludeHistory_ShouldReplayRevisions;
+var
+  bucket: string;
+  cfg: TNatsKeyValueConfig;
+  kv: TDextNatsKeyValue;
+  watcher: TDextNatsKeyValueWatcher;
+  opts: TNatsKeyValueWatchOptions;
+  lock: TCriticalSection;
+  got: IList<string>;
+  gotMarker: TEvent;
+  i: Integer;
+  saw1, saw2, saw3: Boolean;
+begin
+  if not EnsureJetStreamOrFail then
+    Exit;
+
+  bucket := UniqueBucket('DEXTKVIH');
+  cfg := TNatsKeyValueConfig.CreateDefault(bucket);
+  cfg.Storage := ssMemory;
+  cfg.History := 10;
+  kv := TDextNatsKeyValue.CreateBucket(FJs, cfg);
+  lock := TCriticalSection.Create;
+  got := TCollections.CreateList<string>;
+  gotMarker := TEvent.Create(nil, True, False, '');
+  watcher := nil;
+  try
+    kv.Put('k', 'v1');
+    kv.Put('k', 'v2');
+    kv.Put('k', 'v3');
+    opts := TNatsKeyValueWatchOptions.CreateDefault;
+    opts.IncludeHistory := True;
+
+    watcher := kv.Watch('k',
+      procedure(const AEntry: TNatsKeyValueEntry)
+      begin
+        lock.Enter;
+        try
+          if AEntry.IsEndOfInitial then
+            gotMarker.SetEvent
+          else if AEntry.IsPut then
+            got.Add(AEntry.AsString);
+        finally
+          lock.Leave;
+        end;
+      end,
+      opts);
+
+    Should(gotMarker.WaitFor(5000) = wrSignaled).BeTrue;
+    saw1 := False;
+    saw2 := False;
+    saw3 := False;
+    lock.Enter;
+    try
+      Should(got.Count >= 3).BeTrue;
+      for i := 0 to got.Count - 1 do
+      begin
+        if got[i] = 'v1' then
+          saw1 := True;
+        if got[i] = 'v2' then
+          saw2 := True;
+        if got[i] = 'v3' then
+          saw3 := True;
+      end;
+    finally
+      lock.Leave;
+    end;
+    Should(saw1).BeTrue;
+    Should(saw2).BeTrue;
+    Should(saw3).BeTrue;
+  finally
+    if watcher <> nil then
+      watcher.Free;
+    gotMarker.Free;
+    lock.Free;
+    kv.Free;
+    TDextNatsKeyValue.DeleteBucket(FJs, bucket);
+  end;
+end;
+
+procedure TDextNatsKeyValueTests.WatchAll_IgnoreDeletes_ShouldSkipDeleteMarkers;
+var
+  bucket: string;
+  cfg: TNatsKeyValueConfig;
+  kv: TDextNatsKeyValue;
+  watcher: TDextNatsKeyValueWatcher;
+  opts: TNatsKeyValueWatchOptions;
+  lock: TCriticalSection;
+  gotOps: IList<string>;
+  gotMarker, gotLiveDel: TEvent;
+  i: Integer;
+  sawDel: Boolean;
+begin
+  if not EnsureJetStreamOrFail then
+    Exit;
+
+  bucket := UniqueBucket('DEXTKVID');
+  cfg := TNatsKeyValueConfig.CreateDefault(bucket);
+  cfg.Storage := ssMemory;
+  cfg.History := 1;
+  kv := TDextNatsKeyValue.CreateBucket(FJs, cfg);
+  lock := TCriticalSection.Create;
+  gotOps := TCollections.CreateList<string>;
+  gotMarker := TEvent.Create(nil, True, False, '');
+  gotLiveDel := TEvent.Create(nil, True, False, '');
+  watcher := nil;
+  try
+    kv.Put('keep', '1');
+    kv.Put('gone', '2');
+    kv.Delete('gone');
+    opts := TNatsKeyValueWatchOptions.CreateDefault;
+    opts.IgnoreDeletes := True;
+
+    watcher := kv.WatchAll(
+      procedure(const AEntry: TNatsKeyValueEntry)
+      begin
+        lock.Enter;
+        try
+          if AEntry.IsEndOfInitial then
+            gotMarker.SetEvent
+          else if AEntry.Operation = kvoDelete then
+          begin
+            gotOps.Add('DEL:' + AEntry.Key);
+            gotLiveDel.SetEvent;
+          end
+          else if AEntry.IsPut then
+            gotOps.Add('PUT:' + AEntry.Key);
+        finally
+          lock.Leave;
+        end;
+      end,
+      opts);
+
+    Should(gotMarker.WaitFor(5000) = wrSignaled).BeTrue;
+    Should(watcher.InitialDone).BeTrue;
+    kv.Delete('keep');
+    { With IgnoreDeletes, the live delete must not reach the handler. }
+    Should(gotLiveDel.WaitFor(800) = wrTimeout).BeTrue;
+
+    sawDel := False;
+    lock.Enter;
+    try
+      for i := 0 to gotOps.Count - 1 do
+        if gotOps[i].StartsWith('DEL:') then
+          sawDel := True;
+    finally
+      lock.Leave;
+    end;
+    Should(sawDel).BeFalse;
+  finally
+    if watcher <> nil then
+      watcher.Free;
+    gotMarker.Free;
+    gotLiveDel.Free;
+    lock.Free;
+    kv.Free;
+    TDextNatsKeyValue.DeleteBucket(FJs, bucket);
+  end;
+end;
+
+procedure TDextNatsKeyValueTests.Watch_ResumeFromRevision_ShouldSkipEarlierRevisions;
+var
+  bucket: string;
+  cfg: TNatsKeyValueConfig;
+  kv: TDextNatsKeyValue;
+  watcher: TDextNatsKeyValueWatcher;
+  opts: TNatsKeyValueWatchOptions;
+  lock: TCriticalSection;
+  got: IList<string>;
+  gotMarker: TEvent;
+  rev1, rev2, rev3: UInt64;
+  i: Integer;
+  sawV1, sawV2, sawV3: Boolean;
+begin
+  if not EnsureJetStreamOrFail then
+    Exit;
+
+  bucket := UniqueBucket('DEXTKVRF');
+  cfg := TNatsKeyValueConfig.CreateDefault(bucket);
+  cfg.Storage := ssMemory;
+  cfg.History := 10;
+  kv := TDextNatsKeyValue.CreateBucket(FJs, cfg);
+  lock := TCriticalSection.Create;
+  got := TCollections.CreateList<string>;
+  gotMarker := TEvent.Create(nil, True, False, '');
+  watcher := nil;
+  try
+    rev1 := kv.Put('k', 'v1');
+    rev2 := kv.Put('k', 'v2');
+    rev3 := kv.Put('k', 'v3');
+    Should(Int64(rev2) > Int64(rev1)).BeTrue;
+    Should(Int64(rev3) > Int64(rev2)).BeTrue;
+
+    opts := TNatsKeyValueWatchOptions.CreateDefault;
+    opts.ResumeFromRevision := rev2;
+
+    watcher := kv.Watch('k',
+      procedure(const AEntry: TNatsKeyValueEntry)
+      begin
+        lock.Enter;
+        try
+          if AEntry.IsEndOfInitial then
+            gotMarker.SetEvent
+          else if AEntry.IsPut then
+            got.Add(AEntry.AsString);
+        finally
+          lock.Leave;
+        end;
+      end,
+      opts);
+
+    Should(gotMarker.WaitFor(5000) = wrSignaled).BeTrue;
+    sawV1 := False;
+    sawV2 := False;
+    sawV3 := False;
+    lock.Enter;
+    try
+      Should(got.Count >= 2).BeTrue;
+      for i := 0 to got.Count - 1 do
+      begin
+        if got[i] = 'v1' then
+          sawV1 := True;
+        if got[i] = 'v2' then
+          sawV2 := True;
+        if got[i] = 'v3' then
+          sawV3 := True;
+      end;
+    finally
+      lock.Leave;
+    end;
+    { Resume at rev2 must not replay v1. }
+    Should(sawV1).BeFalse;
+    Should(sawV2).BeTrue;
+    Should(sawV3).BeTrue;
   finally
     if watcher <> nil then
       watcher.Free;

@@ -27,8 +27,9 @@
 {  Per-key TTL (NATS 2.11+, ADR-48): bucket LimitMarkerTTL enables          }
 {  allow_msg_ttl + subject_delete_marker_ttl; Create/Purge accept Nats-TTL. }
 {  Watch delivers an EndOfInitial marker (nats.go nil-entry equivalent)     }
-{  when the last_per_subject snapshot is done; MetaOnly / UpdatesOnly via   }
-{  consumer headers_only / deliver_policy=new.                              }
+{  when the initial consumer backlog is done; MetaOnly / UpdatesOnly /      }
+{  IncludeHistory / ResumeFromRevision via consumer headers_only /          }
+{  deliver_policy; IgnoreDeletes filters DEL/PURGE client-side (nats.go).   }
 {                                                                           }
 {***************************************************************************}
 unit Dext.Net.Nats.KeyValue;
@@ -144,7 +145,7 @@ type
   /// <summary>Callback for <see cref="TDextNatsKeyValue.Watch"/> / WatchAll deliveries.</summary>
   TNatsKeyValueWatchHandler = reference to procedure(const AEntry: TNatsKeyValueEntry);
 
-  /// <summary>Options for <see cref="TDextNatsKeyValue.Watch"/> / WatchAll.</summary>
+  /// <summary>Options for <see cref="TDextNatsKeyValue.Watch"/> / WatchAll (nats.go WatchOpt).</summary>
   TNatsKeyValueWatchOptions = record
     /// <summary>
     ///   Headers-only consumer: entry metadata (key, revision, operation) without values.
@@ -154,10 +155,33 @@ type
     /// <summary>
     ///   Skip the last-per-subject snapshot; deliver only new updates
     ///   (<c>deliver_policy=new</c>). No EndOfInitial marker is sent (nats.go semantics).
+    ///   Conflicts with <see cref="IncludeHistory"/>.
     /// </summary>
     UpdatesOnly: Boolean;
-    /// <summary>Defaults: MetaOnly=False, UpdatesOnly=False (snapshot + updates + marker).</summary>
+    /// <summary>
+    ///   Replay full per-key history (up to bucket History) instead of last-per-subject
+    ///   (<c>deliver_policy=all</c>). Conflicts with <see cref="UpdatesOnly"/>.
+    /// </summary>
+    IncludeHistory: Boolean;
+    /// <summary>
+    ///   Do not invoke the handler for delete/purge markers (client-side filter).
+    ///   Messages still count toward the EndOfInitial NumPending tally (nats.go).
+    /// </summary>
+    IgnoreDeletes: Boolean;
+    /// <summary>
+    ///   When &gt; 0, resume from this stream sequence
+    ///   (<c>deliver_policy=by_start_sequence</c> + <c>opt_start_seq</c>).
+    ///   Overrides IncludeHistory / UpdatesOnly deliver policy; UpdatesOnly still
+    ///   skips the EndOfInitial marker.
+    /// </summary>
+    ResumeFromRevision: UInt64;
+    /// <summary>
+    ///   Defaults: MetaOnly/UpdatesOnly/IncludeHistory/IgnoreDeletes=False,
+    ///   ResumeFromRevision=0 (last-per-subject snapshot + updates + marker).
+    /// </summary>
     class function CreateDefault: TNatsKeyValueWatchOptions; static;
+    /// <summary>Raises when IncludeHistory and UpdatesOnly are both set.</summary>
+    procedure Validate;
   end;
 
   /// <summary>
@@ -445,6 +469,13 @@ end;
 class function TNatsKeyValueWatchOptions.CreateDefault: TNatsKeyValueWatchOptions;
 begin
   Result := Default(TNatsKeyValueWatchOptions);
+end;
+
+procedure TNatsKeyValueWatchOptions.Validate;
+begin
+  if IncludeHistory and UpdatesOnly then
+    raise EDextNatsKeyValueError.Create(
+      'IncludeHistory cannot be used with UpdatesOnly');
 end;
 
 { TDextNatsKeyValue }
@@ -907,13 +938,15 @@ type
     FLock: TCriticalSection;
     FHandler: TNatsKeyValueWatchHandler;
     FUpdatesOnly: Boolean;
+    FIgnoreDeletes: Boolean;
     FStopped: Boolean;
     FInitDone: Boolean;
     FInitPendingKnown: Boolean;
     FInitPending: UInt64;
     FReceived: UInt64;
   public
-    constructor Create(AHandler: TNatsKeyValueWatchHandler; AUpdatesOnly: Boolean);
+    constructor Create(AHandler: TNatsKeyValueWatchHandler;
+      AUpdatesOnly, AIgnoreDeletes: Boolean);
     destructor Destroy; override;
     procedure Stop;
     procedure HandleJsMsg(const AEntry: TNatsKeyValueEntry; ANumPending: Integer);
@@ -921,12 +954,14 @@ type
     function InitialDone: Boolean;
   end;
 
-constructor TNatsKvWatchGate.Create(AHandler: TNatsKeyValueWatchHandler; AUpdatesOnly: Boolean);
+constructor TNatsKvWatchGate.Create(AHandler: TNatsKeyValueWatchHandler;
+  AUpdatesOnly, AIgnoreDeletes: Boolean);
 begin
   inherited Create;
   FLock := TCriticalSection.Create;
   FHandler := AHandler;
   FUpdatesOnly := AUpdatesOnly;
+  FIgnoreDeletes := AIgnoreDeletes;
   { UpdatesOnly skips the snapshot marker entirely (nats.go). }
   FInitDone := AUpdatesOnly;
   FInitPendingKnown := AUpdatesOnly;
@@ -991,11 +1026,13 @@ end;
 procedure TNatsKvWatchGate.HandleJsMsg(const AEntry: TNatsKeyValueEntry; ANumPending: Integer);
 var
   fireMarker: Boolean;
+  deliverEntry: Boolean;
   handler: TNatsKeyValueWatchHandler;
   pending: UInt64;
 begin
   fireMarker := False;
   handler := nil;
+  deliverEntry := True;
   if ANumPending < 0 then
     pending := 0
   else
@@ -1006,6 +1043,9 @@ begin
     if FStopped then
       Exit;
     handler := FHandler;
+    { IgnoreDeletes: skip DEL/PURGE for the handler, but still tally for EndOfInitial. }
+    if FIgnoreDeletes and ((AEntry.Operation = kvoDelete) or (AEntry.Operation = kvoPurge)) then
+      deliverEntry := False;
     if not FInitDone then
     begin
       if not FInitPendingKnown then
@@ -1020,7 +1060,7 @@ begin
     FLock.Leave;
   end;
 
-  if Assigned(handler) then
+  if deliverEntry and Assigned(handler) then
     handler(AEntry);
 
   FLock.Enter;
@@ -1111,10 +1151,11 @@ begin
     raise EDextNatsKeyValueError.Create('Watch requires a handler');
   if AFilterSubject = '' then
     raise EDextNatsKeyValueError.Create('Watch requires a filter subject');
+  AOptions.Validate;
 
   deliver := FJs.Client.NewInbox;
   consumerName := 'kvwatch_' + KvNewNuid;
-  gate := TNatsKvWatchGate.Create(AHandler, AOptions.UpdatesOnly);
+  gate := TNatsKvWatchGate.Create(AHandler, AOptions.UpdatesOnly, AOptions.IgnoreDeletes);
   push := nil;
   try
     { Subscribe before CONSUMER.CREATE so the deliver subject has interest. }
@@ -1127,8 +1168,17 @@ begin
     cons.Name := consumerName;
     cons.FilterSubject := AFilterSubject;
     cons.DeliverSubject := deliver;
-    if AOptions.UpdatesOnly then
+    { Priority matches nats.go stacking: StartSequence overrides DeliverNew /
+      LastPerSubject; IncludeHistory omits last_per_subject (deliver all). }
+    if AOptions.ResumeFromRevision > 0 then
+    begin
+      cons.DeliverPolicy := dpByStartSequence;
+      cons.OptStartSeq := AOptions.ResumeFromRevision;
+    end
+    else if AOptions.UpdatesOnly then
       cons.DeliverPolicy := dpNew
+    else if AOptions.IncludeHistory then
+      cons.DeliverPolicy := dpAll
     else
       cons.DeliverPolicy := dpLastPerSubject;
     cons.AckPolicy := apNone;
