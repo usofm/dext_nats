@@ -21,11 +21,12 @@
 {                                                                           }
 {  JetStream Object Store (ADR-20). Buckets are OBJ_<bucket> streams with   }
 {  chunk subjects $O.<bucket>.C.> and metadata $O.<bucket>.M.>.             }
-{  CreateStore / DeleteStore / Put / Get / Delete / List / Keys,            }
-{  Watch / WatchAll (EndOfInitial marker + MetaOnly / UpdatesOnly),         }
+{  CreateStore / UpdateStore / DeleteStore / Put / Get / Delete / List /   }
+{  Keys, Watch / WatchAll (EndOfInitial marker + MetaOnly / UpdatesOnly),  }
 {  UpdateMeta, Seal, AddLink / AddBucketLink.                               }
 {  Streaming Put/Get: TStream + PutFile/GetFile (chunked, no full TBytes).  }
 {  Get follows object links (same or other bucket); bucket links raise.     }
+{  UpdateStore maps mutable bucket fields onto STREAM.UPDATE (OBJ_*). }
 {  TDextNatsObjectStoreContext wraps a TDextNatsJetStreamContext (or        }
 {  creates one from TDextNatsClient); it does not own the client.           }
 {                                                                           }
@@ -54,21 +55,36 @@ type
   /// <summary>Raised when an Object Store object is missing or soft-deleted.</summary>
   EDextNatsObjectStoreError = class(EDextNatsException);
 
-  /// <summary>Configuration used to create an Object Store bucket (OBJ_ stream).</summary>
+  /// <summary>
+  ///   Configuration used to create or update an Object Store bucket (OBJ_ stream).
+  ///   Maps to STREAM.CREATE / STREAM.UPDATE via <see cref="ToStreamConfig"/>.
+  ///   Compression and placement are not exposed yet (no fields on
+  ///   <see cref="TNatsStreamConfig"/>).
+  /// </summary>
   TNatsObjectStoreConfig = record
     /// <summary>Bucket name (restricted-term: A-Z a-z 0-9 _ -). Becomes stream OBJ_&lt;Bucket&gt;.</summary>
     Bucket: string;
     Description: string;
-    /// <summary>Stream max_bytes; 0 or negative = unlimited (-1).</summary>
+    /// <summary>Stream max_bytes; 0 = unlimited (-1). Negative values pass through.</summary>
     MaxBytes: Int64;
-    /// <summary>Stream max_age in nanoseconds; 0 = unlimited.</summary>
+    /// <summary>
+    ///   Bucket TTL as stream max_age, in nanoseconds (nats.go ObjectStoreConfig.TTL).
+    ///   0 = unlimited.
+    /// </summary>
     MaxAge: Int64;
     Storage: TNatsStreamStorage;
     NumReplicas: Integer;
-    /// <summary>Chunk size for Put; 0 = <see cref="NATS_OBJ_DEFAULT_CHUNK_SIZE"/>.</summary>
+    /// <summary>Chunk size for Put; 0 = <see cref="NATS_OBJ_DEFAULT_CHUNK_SIZE"/>. Not a stream field.</summary>
     ChunkSize: Integer;
     /// <summary>Sensible defaults: file storage, 1 replica, 128 KiB chunks.</summary>
     class function CreateDefault(const ABucket: string): TNatsObjectStoreConfig; static;
+    /// <summary>
+    ///   Builds the OBJ_&lt;bucket&gt; stream config (subjects, discard=new, allow_rollup,
+    ///   allow_direct, description / max_bytes / max_age / storage / replicas).
+    /// </summary>
+    function ToStreamConfig: TNatsStreamConfig;
+    /// <summary>Resolved Put chunk size (default when ChunkSize &lt;= 0).</summary>
+    function EffectiveChunkSize: Integer;
   end;
 
   /// <summary>
@@ -339,6 +355,14 @@ type
 
     /// <summary>Creates OBJ_&lt;bucket&gt; with $O.&lt;bucket&gt;.C.&gt; and .M.&gt; subjects.</summary>
     function CreateStore(const AConfig: TNatsObjectStoreConfig): TDextNatsObjectStore;
+    /// <summary>
+    ///   Updates an existing Object Store bucket via STREAM.UPDATE on OBJ_&lt;bucket&gt;
+    ///   (description, max_bytes, max_age/TTL, storage, replicas). Raises if the
+    ///   bucket/stream is missing. Returns a bound store (caller Free).
+    /// </summary>
+    function UpdateStore(const AConfig: TNatsObjectStoreConfig): TDextNatsObjectStore;
+    /// <summary>nats.go-compatible alias of <see cref="UpdateStore"/>.</summary>
+    function UpdateObjectStore(const AConfig: TNatsObjectStoreConfig): TDextNatsObjectStore;
     /// <summary>Binds to an existing Object Store bucket (stream must exist).</summary>
     function OpenStore(const ABucket: string): TDextNatsObjectStore;
     /// <summary>Deletes the underlying OBJ_&lt;bucket&gt; stream.</summary>
@@ -588,6 +612,38 @@ begin
   Result.Storage := ssFile;
   Result.NumReplicas := 1;
   Result.ChunkSize := NATS_OBJ_DEFAULT_CHUNK_SIZE;
+end;
+
+function TNatsObjectStoreConfig.EffectiveChunkSize: Integer;
+begin
+  Result := ChunkSize;
+  if Result <= 0 then
+    Result := NATS_OBJ_DEFAULT_CHUNK_SIZE;
+end;
+
+function TNatsObjectStoreConfig.ToStreamConfig: TNatsStreamConfig;
+var
+  resolvedMaxBytes: Int64;
+  resolvedReplicas: Integer;
+begin
+  TDextNatsObjectStoreContext.ValidateBucketName(Bucket);
+  resolvedMaxBytes := Self.MaxBytes;
+  if resolvedMaxBytes = 0 then
+    resolvedMaxBytes := -1;
+  resolvedReplicas := Self.NumReplicas;
+  if resolvedReplicas <= 0 then
+    resolvedReplicas := 1;
+
+  Result := TNatsStreamConfig.CreateDefault(ObjStreamName(Bucket),
+    [Format('$O.%s.C.>', [Bucket]), Format('$O.%s.M.>', [Bucket])]);
+  Result.Description := Self.Description;
+  Result.Discard := sdNew;
+  Result.AllowRollup := True;
+  Result.AllowDirect := True;
+  Result.MaxBytes := resolvedMaxBytes;
+  Result.MaxAge := Self.MaxAge;
+  Result.Storage := Self.Storage;
+  Result.NumReplicas := resolvedReplicas;
 end;
 
 { TNatsObjectMeta }
@@ -1023,34 +1079,22 @@ end;
 
 function TDextNatsObjectStoreContext.CreateStore(
   const AConfig: TNatsObjectStoreConfig): TDextNatsObjectStore;
-var
-  cfg: TNatsStreamConfig;
-  chunkSize: Integer;
-  maxBytes: Int64;
-  replicas: Integer;
 begin
-  ValidateBucketName(AConfig.Bucket);
-  chunkSize := AConfig.ChunkSize;
-  if chunkSize <= 0 then
-    chunkSize := NATS_OBJ_DEFAULT_CHUNK_SIZE;
-  maxBytes := AConfig.MaxBytes;
-  if maxBytes = 0 then
-    maxBytes := -1;
-  replicas := AConfig.NumReplicas;
-  if replicas <= 0 then
-    replicas := 1;
+  FJs.CreateStream(AConfig.ToStreamConfig);
+  Result := TDextNatsObjectStore.Create(Self, AConfig.Bucket, AConfig.EffectiveChunkSize);
+end;
 
-  cfg := TNatsStreamConfig.CreateDefault(ObjStreamName(AConfig.Bucket),
-    [Format('$O.%s.C.>', [AConfig.Bucket]), Format('$O.%s.M.>', [AConfig.Bucket])]);
-  cfg.Discard := sdNew;
-  cfg.AllowRollup := True;
-  cfg.AllowDirect := True;
-  cfg.MaxBytes := maxBytes;
-  cfg.MaxAge := AConfig.MaxAge;
-  cfg.Storage := AConfig.Storage;
-  cfg.NumReplicas := replicas;
-  FJs.CreateStream(cfg);
-  Result := TDextNatsObjectStore.Create(Self, AConfig.Bucket, chunkSize);
+function TDextNatsObjectStoreContext.UpdateStore(
+  const AConfig: TNatsObjectStoreConfig): TDextNatsObjectStore;
+begin
+  FJs.UpdateStream(AConfig.ToStreamConfig);
+  Result := TDextNatsObjectStore.Create(Self, AConfig.Bucket, AConfig.EffectiveChunkSize);
+end;
+
+function TDextNatsObjectStoreContext.UpdateObjectStore(
+  const AConfig: TNatsObjectStoreConfig): TDextNatsObjectStore;
+begin
+  Result := UpdateStore(AConfig);
 end;
 
 function TDextNatsObjectStoreContext.OpenStore(const ABucket: string): TDextNatsObjectStore;

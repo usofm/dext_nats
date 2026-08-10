@@ -46,7 +46,8 @@ Source/
                                 JetStream.
   Dext.Net.Nats.ObjectStore.pas TDextNatsObjectStoreContext / TDextNatsObjectStore:
                                 JetStream Object Store (CreateStore /
-                                DeleteStore / Put / Get / Delete / List / Keys,
+                                UpdateStore/UpdateObjectStore / DeleteStore /
+                                Put / Get / Delete / List / Keys,
                                 Watch/WatchAll (EndOfInitial marker, MetaOnly /
                                 UpdatesOnly), UpdateMeta, Seal, AddLink /
                                 AddBucketLink on OBJ_ / $O.<bucket>.{C,M}.*).
@@ -210,17 +211,21 @@ parsing frames anywhere else.
  header, pull-consumer admin, Fetch, Ack/Nak/Term/InProgress, and push
  `SubscribePush` on `deliver_subject`
 - [x] Object Store (`Dext.Net.Nats.ObjectStore.pas`): CreateStore / OpenStore /
-      DeleteStore, Put / Get / Delete, List / ListObjects / Keys (meta filter
-      `$O.<bucket>.M.>`, `last_per_subject`), Watch / WatchAll (push
-      `last_per_subject` on meta subjects + EndOfInitial marker via NumPending;
-      `TNatsObjectStoreWatchOptions.MetaOnly` / `UpdatesOnly`; `Watcher.InitialDone`),
-      UpdateMeta (name / description / headers / metadata; no chunk rewrite),
-      Seal (`config.sealed` on OBJ_ stream), AddLink / AddBucketLink (`options.link`;
-      Get follows object links like nats.go, bucket links raise; GetInfo surfaces
-      link meta without following), streaming Put/Get (`TStream`, `PutFile` /
-      `GetFile`, `Put(TNatsObjectMeta, TStream)` chunked SHA-256 without loading
-      whole payload into one `TBytes`);
-      deferred vs nats.go: lazy ObjectResult reader, Get/Put show-deleted opts
+      UpdateStore / UpdateObjectStore (STREAM.UPDATE on OBJ_*; description /
+      max_bytes / MaxAge TTL / storage / replicas; compression/placement deferred —
+      not on `TNatsStreamConfig`), DeleteStore, Put / Get / Delete, List /
+      ListObjects / Keys (meta filter `$O.<bucket>.M.>`, `last_per_subject`),
+      Watch / WatchAll (push `last_per_subject` on meta subjects + EndOfInitial
+      marker via NumPending; `TNatsObjectStoreWatchOptions.MetaOnly` /
+      `UpdatesOnly`; `Watcher.InitialDone`), UpdateMeta (name / description /
+      headers / metadata; no chunk rewrite), Seal (`config.sealed` on OBJ_
+      stream), AddLink / AddBucketLink (`options.link`; Get follows object links
+      like nats.go, bucket links raise; GetInfo surfaces link meta without
+      following), streaming Put/Get (`TStream`, `PutFile` / `GetFile`,
+      `Put(TNatsObjectMeta, TStream)` chunked SHA-256 without loading whole
+      payload into one `TBytes`);
+      deferred vs nats.go: lazy ObjectResult reader, Get/Put show-deleted opts,
+      stream compression / placement
 - [x] Unit/integration tests in `Tests/Dext.Net.Nats.Tests.pas` (use `Dext.Testing`)
 - [x] Console demo projects (`.dpr`/`.dproj`): `Demo/PubSubE2E/` (core one-way
   pub/sub), `Demo/RequestReplyE2E/` (request/reply + no-responders),

@@ -13,7 +13,7 @@ Native [NATS](https://nats.io) client for the [Dext Framework](https://github.co
 | `Source/Dext.Net.Nats.HealthChecks.pas` | `TNatsHealthCheck` / `AddNatsHealthCheck` (Connected probe) |
 | `Source/Dext.Net.Nats.JetStream.pas` | `TDextNatsJetStreamContext` — streams, pull/push consumers, Fetch, SubscribePush, Ack/Nak/Term |
 | `Source/Dext.Net.Nats.KeyValue.pas` | `TDextNatsKeyValue` — JetStream KV (Put/Get/Delete/Purge, Keys, History, Watch/WatchAll, CAS Create/Update) |
-| `Source/Dext.Net.Nats.ObjectStore.pas` | Object Store (`CreateStore` / `Put` / `Get` / `Delete` / `List` / `Keys`, `Watch`/`WatchAll` with EndOfInitial + MetaOnly/UpdatesOnly, `UpdateMeta`, `Seal`, `AddLink` / `AddBucketLink`, streaming `Put`/`Get` via `TStream` + `PutFile`/`GetFile`) |
+| `Source/Dext.Net.Nats.ObjectStore.pas` | Object Store (`CreateStore` / `UpdateStore`/`UpdateObjectStore` / `Put` / `Get` / `Delete` / `List` / `Keys`, `Watch`/`WatchAll` with EndOfInitial + MetaOnly/UpdatesOnly, `UpdateMeta`, `Seal`, `AddLink` / `AddBucketLink`, streaming `Put`/`Get` via `TStream` + `PutFile`/`GetFile`) |
 
 ## Quick start
 
@@ -69,7 +69,7 @@ begin
 end;
 ```
 
-Object Store buckets are JetStream streams (`OBJ_<bucket>`, subjects `$O.<bucket>.{C,M}.*`). `Watch` / `WatchAll` push on meta subjects (`last_per_subject` + updates) and deliver an `EndOfInitial` marker when the snapshot is done — check `AInfo.IsEndOfInitial` or `Watcher.InitialDone`. Optional `TNatsObjectStoreWatchOptions.MetaOnly` (`headers_only`; name from subject, no ObjectInfo JSON) / `UpdatesOnly` (`deliver_policy=new`; no marker).
+Object Store buckets are JetStream streams (`OBJ_<bucket>`, subjects `$O.<bucket>.{C,M}.*`). `UpdateStore` / `UpdateObjectStore` maps mutable `TNatsObjectStoreConfig` fields (description, max bytes, TTL/`MaxAge`, storage, replicas) onto `STREAM.UPDATE`; compression/placement are not exposed yet. `Watch` / `WatchAll` push on meta subjects (`last_per_subject` + updates) and deliver an `EndOfInitial` marker when the snapshot is done — check `AInfo.IsEndOfInitial` or `Watcher.InitialDone`. Optional `TNatsObjectStoreWatchOptions.MetaOnly` (`headers_only`; name from subject, no ObjectInfo JSON) / `UpdatesOnly` (`deliver_policy=new`; no marker).
 
 ### JetStream Key-Value
 

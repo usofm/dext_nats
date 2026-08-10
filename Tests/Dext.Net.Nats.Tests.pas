@@ -260,11 +260,15 @@ type
     [Test, Category('JetStream')]
     procedure Stream_CRUD_ShouldRoundTrip;
     [Test, Category('JetStream')]
+    procedure Stream_List_ShouldIncludeCreatedStream;
+    [Test, Category('JetStream')]
     procedure Stream_Update_ShouldChangeMaxMsgs;
     [Test, Category('JetStream')]
     procedure Publish_Dedup_ShouldMarkDuplicate;
     [Test, Category('JetStream')]
     procedure Consumer_CRUD_ShouldRoundTrip;
+    [Test, Category('JetStream')]
+    procedure Consumer_List_ShouldIncludeCreatedConsumer;
     [Test, Category('JetStream')]
     procedure Fetch_Batch_ShouldReturnMultiple;
     [Test, Category('JetStream')]
@@ -473,8 +477,14 @@ type
     procedure ObjectInfo_EndOfInitialMarker_ShouldBeEmpty;
     [Test, Category('Unit'), Category('ObjectStore')]
     procedure WatchOptions_ShouldDefaultFalse;
+    [Test, Category('Unit'), Category('ObjectStore')]
+    procedure ObjectStoreConfig_ShouldMapToStreamConfig;
     [Test, Category('JetStream'), Category('ObjectStore')]
     procedure Store_CreatePutGetDelete_ShouldRoundTrip;
+    [Test, Category('JetStream'), Category('ObjectStore')]
+    procedure UpdateStore_ShouldChangeDescriptionMaxBytesAndTTL;
+    [Test, Category('JetStream'), Category('ObjectStore'), Category('Negative')]
+    procedure UpdateStore_MissingBucket_ShouldRaise;
     [Test, Category('JetStream'), Category('ObjectStore')]
     procedure Store_PutGet_StreamAndFile_ShouldRoundTrip;
     [Test, Category('JetStream'), Category('ObjectStore')]
@@ -2408,6 +2418,57 @@ begin
   end;
 end;
 
+procedure TDextNatsJetStreamTests.Stream_List_ShouldIncludeCreatedStream;
+var
+  stream, subject: string;
+  cfg: TNatsStreamConfig;
+  names: IList<string>;
+  infos: IList<TNatsStreamInfo>;
+  foundName, foundInfo: Boolean;
+  i: Integer;
+begin
+  if not EnsureJetStreamOrFail then
+    Exit;
+  stream := UniqueName('DEXT_JS_LIST');
+  subject := JsUniqueSubject(stream);
+  cfg := TNatsStreamConfig.CreateDefault(stream, [subject]);
+  cfg.Storage := ssMemory;
+  FJs.CreateStream(cfg);
+  try
+    names := FJs.ListStreamNames;
+    foundName := False;
+    for i := 0 to names.Count - 1 do
+      if names[i] = stream then
+      begin
+        foundName := True;
+        Break;
+      end;
+    Should(foundName).BeTrue;
+
+    names := FJs.ListStreamNames(subject);
+    foundName := False;
+    for i := 0 to names.Count - 1 do
+      if names[i] = stream then
+      begin
+        foundName := True;
+        Break;
+      end;
+    Should(foundName).BeTrue;
+
+    infos := FJs.ListStreams(subject);
+    foundInfo := False;
+    for i := 0 to infos.Count - 1 do
+      if infos[i].Name = stream then
+      begin
+        foundInfo := True;
+        Break;
+      end;
+    Should(foundInfo).BeTrue;
+  finally
+    FJs.DeleteStream(stream);
+  end;
+end;
+
 procedure TDextNatsJetStreamTests.Stream_Update_ShouldChangeMaxMsgs;
 var
   stream, subject: string;
@@ -2481,6 +2542,52 @@ begin
     info := FJs.GetConsumerInfo(stream, consumer);
     Should(info.DurableName).Be(consumer);
     Should(FJs.DeleteConsumer(stream, consumer)).BeTrue;
+  finally
+    FJs.DeleteStream(stream);
+  end;
+end;
+
+procedure TDextNatsJetStreamTests.Consumer_List_ShouldIncludeCreatedConsumer;
+var
+  stream, consumer, subject: string;
+  streamCfg: TNatsStreamConfig;
+  consumerCfg: TNatsConsumerConfig;
+  names: IList<string>;
+  infos: IList<TNatsConsumerInfo>;
+  foundName, foundInfo: Boolean;
+  i: Integer;
+begin
+  if not EnsureJetStreamOrFail then
+    Exit;
+  stream := UniqueName('DEXT_JS_CLIST');
+  consumer := UniqueName('DEXT_JS_CLISTC');
+  subject := JsUniqueSubject(stream);
+  streamCfg := TNatsStreamConfig.CreateDefault(stream, [subject]);
+  streamCfg.Storage := ssMemory;
+  FJs.CreateStream(streamCfg);
+  try
+    consumerCfg := TNatsConsumerConfig.CreateDefault(consumer, subject);
+    FJs.CreateConsumer(stream, consumerCfg);
+
+    names := FJs.ListConsumerNames(stream);
+    foundName := False;
+    for i := 0 to names.Count - 1 do
+      if names[i] = consumer then
+      begin
+        foundName := True;
+        Break;
+      end;
+    Should(foundName).BeTrue;
+
+    infos := FJs.ListConsumers(stream);
+    foundInfo := False;
+    for i := 0 to infos.Count - 1 do
+      if infos[i].Name = consumer then
+      begin
+        foundInfo := True;
+        Break;
+      end;
+    Should(foundInfo).BeTrue;
   finally
     FJs.DeleteStream(stream);
   end;
@@ -4674,6 +4781,38 @@ begin
   Should(opts.UpdatesOnly).BeFalse;
 end;
 
+procedure TDextNatsObjectStoreTests.ObjectStoreConfig_ShouldMapToStreamConfig;
+var
+  os: TNatsObjectStoreConfig;
+  stream: TNatsStreamConfig;
+begin
+  os := TNatsObjectStoreConfig.CreateDefault('INVOICES');
+  os.Description := 'billing blobs';
+  os.MaxBytes := 1048576;
+  os.MaxAge := 3600000000000; { 1h }
+  os.Storage := ssMemory;
+  os.NumReplicas := 1;
+  os.ChunkSize := 0;
+  stream := os.ToStreamConfig;
+  Should(stream.Name).Be('OBJ_INVOICES');
+  Should(Length(stream.Subjects)).Be(2);
+  Should(stream.Subjects[0]).Be('$O.INVOICES.C.>');
+  Should(stream.Subjects[1]).Be('$O.INVOICES.M.>');
+  Should(stream.Description).Be('billing blobs');
+  Should(stream.MaxBytes).Be(1048576);
+  Should(stream.MaxAge).Be(3600000000000);
+  Should(Ord(stream.Storage)).Be(Ord(ssMemory));
+  Should(stream.NumReplicas).Be(1);
+  Should(Ord(stream.Discard)).Be(Ord(sdNew));
+  Should(stream.AllowRollup).BeTrue;
+  Should(stream.AllowDirect).BeTrue;
+  Should(os.EffectiveChunkSize).Be(NATS_OBJ_DEFAULT_CHUNK_SIZE);
+
+  os.MaxBytes := 0;
+  stream := os.ToStreamConfig;
+  Should(stream.MaxBytes).Be(-1);
+end;
+
 procedure TDextNatsObjectStoreTests.Store_CreatePutGetDelete_ShouldRoundTrip;
 var
   cfg: TNatsObjectStoreConfig;
@@ -5444,6 +5583,63 @@ begin
     store.Free;
     FOs.DeleteStore(bucket);
   end;
+end;
+
+procedure TDextNatsObjectStoreTests.UpdateStore_ShouldChangeDescriptionMaxBytesAndTTL;
+var
+  cfg: TNatsObjectStoreConfig;
+  store: TDextNatsObjectStore;
+  bucket: string;
+  info: TNatsStreamInfo;
+  js: TDextNatsJetStreamContext;
+begin
+  if not EnsureJetStreamOrFail then
+    Exit;
+
+  bucket := UniqueBucket('DEXTOBJU');
+  cfg := TNatsObjectStoreConfig.CreateDefault(bucket);
+  cfg.Description := 'initial';
+  cfg.MaxBytes := 2 * 1024 * 1024;
+  store := FOs.CreateStore(cfg);
+  store.Free;
+
+  cfg.Description := 'updated-os';
+  cfg.MaxBytes := 4 * 1024 * 1024;
+  cfg.MaxAge := 7200000000000; { 2h TTL }
+  store := FOs.UpdateObjectStore(cfg);
+  try
+    js := FOs.JetStream;
+    info := js.GetStreamInfo('OBJ_' + bucket);
+    Should(info.Config.Description).Be('updated-os');
+    Should(info.Config.MaxBytes).Be(4 * 1024 * 1024);
+    Should(info.Config.MaxAge).Be(7200000000000);
+    Should(info.Config.AllowRollup).BeTrue;
+    Should(info.Config.AllowDirect).BeTrue;
+    Should(Length(info.Config.Subjects)).Be(2);
+
+    { Put still works after config update }
+    store.Put('alive.bin', TEncoding.UTF8.GetBytes('ok'));
+    Should(TEncoding.UTF8.GetString(store.Get('alive.bin'))).Be('ok');
+  finally
+    store.Free;
+    FOs.DeleteStore(bucket);
+  end;
+end;
+
+procedure TDextNatsObjectStoreTests.UpdateStore_MissingBucket_ShouldRaise;
+var
+  cfg: TNatsObjectStoreConfig;
+begin
+  if not EnsureJetStreamOrFail then
+    Exit;
+
+  cfg := TNatsObjectStoreConfig.CreateDefault(UniqueBucket('DEXTOBJX'));
+  cfg.Description := 'missing';
+  Should(
+    procedure
+    begin
+      FOs.UpdateStore(cfg).Free;
+    end).Throw(EDextNatsJetStreamError);
 end;
 
 procedure TDextNatsObjectStoreTests.AddLink_Get_ShouldFollowSameBucket;
