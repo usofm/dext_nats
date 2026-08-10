@@ -31,7 +31,6 @@ interface
 
 uses
   System.SysUtils,
-  System.JSON,
   Dext.Collections.Dict,
   Dext.Collections,
   Dext.Core.Span,
@@ -193,14 +192,6 @@ function NatsNewInbox: string;
 function NatsBoolStr(AValue: Boolean): string;
 /// <summary>Escapes a string for safe embedding inside a JSON string literal.</summary>
 function NatsJsonEscape(const S: string): string;
-/// <summary>Reads a string field from AObj, or ADefault if absent/null.</summary>
-function NatsJsonGetStr(AObj: TJSONObject; const AKey: string; const ADefault: string = ''): string;
-/// <summary>Reads an Integer field from AObj, or ADefault if absent/null/unparsable.</summary>
-function NatsJsonGetInt(AObj: TJSONObject; const AKey: string; ADefault: Integer = 0): Integer;
-/// <summary>Reads an Int64 field from AObj, or ADefault if absent/null/unparsable.</summary>
-function NatsJsonGetInt64(AObj: TJSONObject; const AKey: string; ADefault: Int64 = 0): Int64;
-/// <summary>Reads a Boolean field from AObj, or ADefault if absent/null.</summary>
-function NatsJsonGetBool(AObj: TJSONObject; const AKey: string; ADefault: Boolean = False): Boolean;
 
 /// <summary>Encodes a CONNECT control line from the given options.</summary>
 function NatsEncodeConnect(const AOptions: TNatsConnectOptions): TBytes;
@@ -453,50 +444,6 @@ begin
         Result := Result + C;
     end;
   end;
-end;
-
-function NatsJsonGetStr(AObj: TJSONObject; const AKey: string; const ADefault: string = ''): string;
-var
-  v: TJSONValue;
-begin
-  Result := ADefault;
-  if not Assigned(AObj) then Exit;
-  v := AObj.GetValue(AKey);
-  if Assigned(v) and not (v is TJSONNull) then
-    Result := v.Value;
-end;
-
-function NatsJsonGetInt(AObj: TJSONObject; const AKey: string; ADefault: Integer = 0): Integer;
-var
-  v: TJSONValue;
-begin
-  Result := ADefault;
-  if not Assigned(AObj) then Exit;
-  v := AObj.GetValue(AKey);
-  if Assigned(v) and not (v is TJSONNull) then
-    Result := StrToIntDef(v.Value, ADefault);
-end;
-
-function NatsJsonGetInt64(AObj: TJSONObject; const AKey: string; ADefault: Int64 = 0): Int64;
-var
-  v: TJSONValue;
-begin
-  Result := ADefault;
-  if not Assigned(AObj) then Exit;
-  v := AObj.GetValue(AKey);
-  if Assigned(v) and not (v is TJSONNull) then
-    Result := StrToInt64Def(v.Value, ADefault);
-end;
-
-function NatsJsonGetBool(AObj: TJSONObject; const AKey: string; ADefault: Boolean = False): Boolean;
-var
-  v: TJSONValue;
-begin
-  Result := ADefault;
-  if not Assigned(AObj) then Exit;
-  v := AObj.GetValue(AKey);
-  if Assigned(v) and not (v is TJSONNull) then
-    Result := (v is TJSONTrue) or SameText(v.Value, 'true');
 end;
 
 function NatsBytesToUtf8(const ABuf: TBytes; AOffset, ALength: Integer): string;

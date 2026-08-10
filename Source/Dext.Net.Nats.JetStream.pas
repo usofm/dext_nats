@@ -34,7 +34,6 @@ interface
 uses
   System.SysUtils,
   System.Classes,
-  System.JSON,
   System.SyncObjs,
   Dext.Collections,
   Dext.Net.Nats.Protocol,
@@ -297,23 +296,185 @@ type
 
 implementation
 
-/// <summary>Raises EDextNatsJetStreamError if AObj carries a top-level JSON "error" object;
-/// otherwise does nothing. Used by every JetStream response parser in this unit.</summary>
-procedure NatsJSRaiseIfError(AObj: TJSONObject);
-var
-  errVal: TJSONValue;
-  errObj: TJSONObject;
+uses
+  Dext.Core.Span,
+  Dext.Json.Utf8;
+
+type
+  /// <summary>Growable byte sink for JetStream admin JSON (mirrors Protocol TNatsByteWriter).</summary>
+  PJsByteWriter = ^TJsByteWriter;
+  TJsByteWriter = record
+  private
+    FBuf: TBytes;
+    FLen: Integer;
+  public
+    procedure Reset;
+    procedure EnsureCapacity(ANeeded: Integer);
+    procedure WriteBytes(AData: Pointer; ALength: Integer);
+    function ToBytes: TBytes;
+  end;
+
+procedure JsUtf8WriteToByteWriter(AContext, AData: Pointer; ALength: Integer);
 begin
-  if not Assigned(AObj) then Exit;
+  if (ALength > 0) and (AContext <> nil) then
+    PJsByteWriter(AContext)^.WriteBytes(AData, ALength);
+end;
 
-  errVal := AObj.GetValue('error');
-  if not Assigned(errVal) or not (errVal is TJSONObject) then Exit;
+procedure TJsByteWriter.Reset;
+begin
+  FLen := 0;
+end;
 
-  errObj := TJSONObject(errVal);
-  raise EDextNatsJetStreamError.CreateFromApi(
-    NatsJsonGetInt(errObj, 'code'),
-    NatsJsonGetInt(errObj, 'err_code'),
-    NatsJsonGetStr(errObj, 'description'));
+procedure TJsByteWriter.EnsureCapacity(ANeeded: Integer);
+var
+  cap, newCap: Integer;
+begin
+  if ANeeded <= 0 then
+    Exit;
+  cap := Length(FBuf);
+  if FLen + ANeeded <= cap then
+    Exit;
+  newCap := cap;
+  if newCap < 256 then
+    newCap := 256;
+  while FLen + ANeeded > newCap do
+    newCap := newCap * 2;
+  SetLength(FBuf, newCap);
+end;
+
+procedure TJsByteWriter.WriteBytes(AData: Pointer; ALength: Integer);
+begin
+  if (ALength <= 0) or (AData = nil) then
+    Exit;
+  EnsureCapacity(ALength);
+  Move(AData^, FBuf[FLen], ALength);
+  Inc(FLen, ALength);
+end;
+
+function TJsByteWriter.ToBytes: TBytes;
+begin
+  SetLength(Result, FLen);
+  if FLen > 0 then
+    Move(FBuf[0], Result[0], FLen);
+end;
+
+procedure NatsJSSkipValue(var AReader: TUtf8JsonReader);
+begin
+  if AReader.TokenType in [TJsonTokenType.StartObject, TJsonTokenType.StartArray] then
+    AReader.Skip;
+end;
+
+/// <summary>Raises when the reader is positioned on the error object's StartObject.</summary>
+procedure NatsJSRaiseFromErrorObject(var AReader: TUtf8JsonReader);
+var
+  code, errCode: Integer;
+  description: string;
+begin
+  code := 0;
+  errCode := 0;
+  description := '';
+  while AReader.Read do
+  begin
+    if AReader.TokenType = TJsonTokenType.EndObject then
+      Break;
+    if AReader.TokenType <> TJsonTokenType.PropertyName then
+      Continue;
+
+    if AReader.ValueSpanEquals('code') then
+    begin
+      if AReader.Read and (AReader.TokenType = TJsonTokenType.Number) then
+        code := AReader.GetInt32
+      else
+        NatsJSSkipValue(AReader);
+    end
+    else if AReader.ValueSpanEquals('err_code') then
+    begin
+      if AReader.Read and (AReader.TokenType = TJsonTokenType.Number) then
+        errCode := AReader.GetInt32
+      else
+        NatsJSSkipValue(AReader);
+    end
+    else if AReader.ValueSpanEquals('description') then
+    begin
+      if AReader.Read and (AReader.TokenType = TJsonTokenType.StringValue) then
+        description := AReader.GetString
+      else
+        NatsJSSkipValue(AReader);
+    end
+    else if AReader.Read then
+      NatsJSSkipValue(AReader);
+  end;
+  raise EDextNatsJetStreamError.CreateFromApi(code, errCode, description);
+end;
+
+procedure NatsJSHandlePropValue(var AReader: TUtf8JsonReader);
+begin
+  if AReader.Read then
+    NatsJSSkipValue(AReader);
+end;
+
+function NatsJSOpenReader(const AJson, AEmptyMsg: string; out ABytes: TBytes): TUtf8JsonReader;
+var
+  span: TByteSpan;
+begin
+  if Trim(AJson) = '' then
+    raise EDextNatsProtocolError.Create(AEmptyMsg);
+  ABytes := TEncoding.UTF8.GetBytes(AJson);
+  if Length(ABytes) = 0 then
+    raise EDextNatsProtocolError.Create(AEmptyMsg);
+  span := TByteSpan.Create(@ABytes[0], Length(ABytes));
+  Result := TUtf8JsonReader.Create(span);
+end;
+
+function NatsJSParseSuccessResponse(const AJson: string): Boolean;
+var
+  bytes: TBytes;
+  reader: TUtf8JsonReader;
+begin
+  Result := False;
+  try
+    reader := NatsJSOpenReader(AJson, 'Empty JetStream API response', bytes);
+    if (not reader.Read) or (reader.TokenType <> TJsonTokenType.StartObject) then
+      raise EDextNatsProtocolError.CreateFmt('Malformed JetStream API response: %s', [AJson]);
+
+    while reader.Read do
+    begin
+      if reader.TokenType = TJsonTokenType.EndObject then
+        Break;
+      if reader.TokenType <> TJsonTokenType.PropertyName then
+        Continue;
+
+      if reader.ValueSpanEquals('error') then
+      begin
+        if reader.Read then
+        begin
+          if reader.TokenType = TJsonTokenType.StartObject then
+            NatsJSRaiseFromErrorObject(reader)
+          else
+            NatsJSSkipValue(reader);
+        end;
+      end
+      else if reader.ValueSpanEquals('success') then
+      begin
+        if reader.Read then
+        begin
+          if reader.TokenType in [TJsonTokenType.TrueValue, TJsonTokenType.FalseValue] then
+            Result := reader.GetBoolean
+          else
+            NatsJSSkipValue(reader);
+        end;
+      end
+      else
+        NatsJSHandlePropValue(reader);
+    end;
+  except
+    on E: EDextNatsProtocolError do
+      raise;
+    on E: EDextNatsJetStreamError do
+      raise;
+    on E: EJsonException do
+      raise EDextNatsProtocolError.CreateFmt('Malformed JetStream API response: %s', [AJson]);
+  end;
 end;
 
 function NatsJSIsFetchControl(const AMsg: TNatsMsg): Boolean;
@@ -356,7 +517,8 @@ end;
 
 function TNatsStreamConfig.ToJson: string;
 var
-  sb: TStringBuilder;
+  w: TJsByteWriter;
+  jw: TUtf8JsonWriter;
   i: Integer;
   retentionStr, storageStr, discardStr: string;
 begin
@@ -382,72 +544,162 @@ begin
     discardStr := 'old';
   end;
 
-  sb := TStringBuilder.Create;
-  try
-    sb.Append('{');
-    sb.Append('"name":"').Append(NatsJsonEscape(Name)).Append('",');
-
-    sb.Append('"subjects":[');
-    for i := 0 to High(Subjects) do
-    begin
-      if i > 0 then
-        sb.Append(',');
-      sb.Append('"').Append(NatsJsonEscape(Subjects[i])).Append('"');
-    end;
-    sb.Append('],');
-
-    sb.Append('"retention":"').Append(retentionStr).Append('",');
-    sb.Append('"storage":"').Append(storageStr).Append('",');
-    sb.Append('"max_consumers":').Append(MaxConsumers).Append(',');
-    sb.Append('"max_msgs":').Append(MaxMsgs).Append(',');
-    sb.Append('"max_bytes":').Append(MaxBytes).Append(',');
-    sb.Append('"max_age":').Append(MaxAge).Append(',');
-    sb.Append('"max_msg_size":').Append(MaxMsgSize).Append(',');
-    sb.Append('"discard":"').Append(discardStr).Append('",');
-    sb.Append('"num_replicas":').Append(NumReplicas).Append(',');
-    sb.Append('"duplicate_window":').Append(DuplicateWindow);
-    sb.Append('}');
-    Result := sb.ToString;
-  finally
-    sb.Free;
-  end;
+  w.Reset;
+  jw := TUtf8JsonWriter.Create(@w, JsUtf8WriteToByteWriter, False);
+  jw.WriteStartObject;
+  jw.WritePropertyName('name');
+  jw.WriteString(Name);
+  jw.WritePropertyName('subjects');
+  jw.WriteStartArray;
+  for i := 0 to High(Subjects) do
+    jw.WriteString(Subjects[i]);
+  jw.WriteEndArray;
+  jw.WritePropertyName('retention');
+  jw.WriteString(retentionStr);
+  jw.WritePropertyName('storage');
+  jw.WriteString(storageStr);
+  jw.WritePropertyName('max_consumers');
+  jw.WriteNumber(MaxConsumers);
+  jw.WritePropertyName('max_msgs');
+  jw.WriteNumber(MaxMsgs);
+  jw.WritePropertyName('max_bytes');
+  jw.WriteNumber(MaxBytes);
+  jw.WritePropertyName('max_age');
+  jw.WriteNumber(MaxAge);
+  jw.WritePropertyName('max_msg_size');
+  jw.WriteNumber(MaxMsgSize);
+  jw.WritePropertyName('discard');
+  jw.WriteString(discardStr);
+  jw.WritePropertyName('num_replicas');
+  jw.WriteNumber(NumReplicas);
+  jw.WritePropertyName('duplicate_window');
+  jw.WriteNumber(DuplicateWindow);
+  jw.WriteEndObject;
+  Result := TEncoding.UTF8.GetString(w.ToBytes);
 end;
 
 { TNatsStreamInfo }
 
 class function TNatsStreamInfo.Parse(const AJson: string): TNatsStreamInfo;
 var
-  obj: TJSONObject;
-  configObj, stateObj: TJSONObject;
-  v: TJSONValue;
+  bytes: TBytes;
+  reader: TUtf8JsonReader;
 begin
   FillChar(Result, SizeOf(Result), 0);
-  if Trim(AJson) = '' then
-    raise EDextNatsProtocolError.Create('Empty JetStream API response');
-
-  obj := TJSONObject.ParseJSONValue(AJson) as TJSONObject;
-  if not Assigned(obj) then
-    raise EDextNatsProtocolError.CreateFmt('Malformed JetStream API response: %s', [AJson]);
   try
-    NatsJSRaiseIfError(obj);
+    reader := NatsJSOpenReader(AJson, 'Empty JetStream API response', bytes);
+    if (not reader.Read) or (reader.TokenType <> TJsonTokenType.StartObject) then
+      raise EDextNatsProtocolError.CreateFmt('Malformed JetStream API response: %s', [AJson]);
 
-    configObj := nil;
-    v := obj.GetValue('config');
-    if Assigned(v) and (v is TJSONObject) then
-      configObj := TJSONObject(v);
-    Result.Name := NatsJsonGetStr(configObj, 'name');
+    while reader.Read do
+    begin
+      if reader.TokenType = TJsonTokenType.EndObject then
+        Break;
+      if reader.TokenType <> TJsonTokenType.PropertyName then
+        Continue;
 
-    stateObj := nil;
-    v := obj.GetValue('state');
-    if Assigned(v) and (v is TJSONObject) then
-      stateObj := TJSONObject(v);
-    Result.Messages := UInt64(NatsJsonGetInt64(stateObj, 'messages'));
-    Result.Bytes := UInt64(NatsJsonGetInt64(stateObj, 'bytes'));
-    Result.FirstSeq := UInt64(NatsJsonGetInt64(stateObj, 'first_seq'));
-    Result.LastSeq := UInt64(NatsJsonGetInt64(stateObj, 'last_seq'));
-    Result.ConsumerCount := NatsJsonGetInt(stateObj, 'consumer_count');
-  finally
-    obj.Free;
+      if reader.ValueSpanEquals('error') then
+      begin
+        if reader.Read then
+        begin
+          if reader.TokenType = TJsonTokenType.StartObject then
+            NatsJSRaiseFromErrorObject(reader)
+          else
+            NatsJSSkipValue(reader);
+        end;
+      end
+      else if reader.ValueSpanEquals('config') then
+      begin
+        if reader.Read then
+        begin
+          if reader.TokenType = TJsonTokenType.StartObject then
+          begin
+            while reader.Read do
+            begin
+              if reader.TokenType = TJsonTokenType.EndObject then
+                Break;
+              if reader.TokenType <> TJsonTokenType.PropertyName then
+                Continue;
+              if reader.ValueSpanEquals('name') then
+              begin
+                if reader.Read and (reader.TokenType = TJsonTokenType.StringValue) then
+                  Result.Name := reader.GetString
+                else
+                  NatsJSSkipValue(reader);
+              end
+              else
+                NatsJSHandlePropValue(reader);
+            end;
+          end
+          else
+            NatsJSSkipValue(reader);
+        end;
+      end
+      else if reader.ValueSpanEquals('state') then
+      begin
+        if reader.Read then
+        begin
+          if reader.TokenType = TJsonTokenType.StartObject then
+          begin
+            while reader.Read do
+            begin
+              if reader.TokenType = TJsonTokenType.EndObject then
+                Break;
+              if reader.TokenType <> TJsonTokenType.PropertyName then
+                Continue;
+              if reader.ValueSpanEquals('messages') then
+              begin
+                if reader.Read and (reader.TokenType = TJsonTokenType.Number) then
+                  Result.Messages := UInt64(reader.GetInt64)
+                else
+                  NatsJSSkipValue(reader);
+              end
+              else if reader.ValueSpanEquals('bytes') then
+              begin
+                if reader.Read and (reader.TokenType = TJsonTokenType.Number) then
+                  Result.Bytes := UInt64(reader.GetInt64)
+                else
+                  NatsJSSkipValue(reader);
+              end
+              else if reader.ValueSpanEquals('first_seq') then
+              begin
+                if reader.Read and (reader.TokenType = TJsonTokenType.Number) then
+                  Result.FirstSeq := UInt64(reader.GetInt64)
+                else
+                  NatsJSSkipValue(reader);
+              end
+              else if reader.ValueSpanEquals('last_seq') then
+              begin
+                if reader.Read and (reader.TokenType = TJsonTokenType.Number) then
+                  Result.LastSeq := UInt64(reader.GetInt64)
+                else
+                  NatsJSSkipValue(reader);
+              end
+              else if reader.ValueSpanEquals('consumer_count') then
+              begin
+                if reader.Read and (reader.TokenType = TJsonTokenType.Number) then
+                  Result.ConsumerCount := reader.GetInt32
+                else
+                  NatsJSSkipValue(reader);
+              end
+              else
+                NatsJSHandlePropValue(reader);
+            end;
+          end
+          else
+            NatsJSSkipValue(reader);
+        end;
+      end
+      else
+        NatsJSHandlePropValue(reader);
+    end;
+  except
+    on E: EDextNatsProtocolError do
+      raise;
+    on E: EDextNatsJetStreamError do
+      raise;
+    on E: EJsonException do
+      raise EDextNatsProtocolError.CreateFmt('Malformed JetStream API response: %s', [AJson]);
   end;
 end;
 
@@ -474,7 +726,8 @@ end;
 
 function TNatsConsumerConfig.ToJson: string;
 var
-  sb: TStringBuilder;
+  w: TJsByteWriter;
+  jw: TUtf8JsonWriter;
   deliverStr, ackStr, replayStr: string;
 begin
   case DeliverPolicy of
@@ -503,77 +756,201 @@ begin
     replayStr := 'instant';
   end;
 
-  sb := TStringBuilder.Create;
-  try
-    sb.Append('{');
-    if DurableName <> '' then
-      sb.Append('"durable_name":"').Append(NatsJsonEscape(DurableName)).Append('",');
-    if Name <> '' then
-      sb.Append('"name":"').Append(NatsJsonEscape(Name)).Append('",');
-    if Description <> '' then
-      sb.Append('"description":"').Append(NatsJsonEscape(Description)).Append('",');
-    if FilterSubject <> '' then
-      sb.Append('"filter_subject":"').Append(NatsJsonEscape(FilterSubject)).Append('",');
-    if DeliverSubject <> '' then
-      sb.Append('"deliver_subject":"').Append(NatsJsonEscape(DeliverSubject)).Append('",');
-    if DeliverGroup <> '' then
-      sb.Append('"deliver_group":"').Append(NatsJsonEscape(DeliverGroup)).Append('",');
-    sb.Append('"deliver_policy":"').Append(deliverStr).Append('",');
-    if (DeliverPolicy = dpByStartSequence) and (OptStartSeq > 0) then
-      sb.Append('"opt_start_seq":').Append(OptStartSeq).Append(',');
-    sb.Append('"ack_policy":"').Append(ackStr).Append('",');
-    if AckWait > 0 then
-      sb.Append('"ack_wait":').Append(AckWait).Append(',');
-    sb.Append('"max_deliver":').Append(MaxDeliver).Append(',');
-    sb.Append('"max_ack_pending":').Append(MaxAckPending).Append(',');
-    // max_waiting applies to pull consumers only
-    if DeliverSubject = '' then
-      sb.Append('"max_waiting":').Append(MaxWaiting).Append(',');
-    sb.Append('"replay_policy":"').Append(replayStr).Append('"');
-    sb.Append('}');
-    Result := sb.ToString;
-  finally
-    sb.Free;
+  w.Reset;
+  jw := TUtf8JsonWriter.Create(@w, JsUtf8WriteToByteWriter, False);
+  jw.WriteStartObject;
+  if DurableName <> '' then
+  begin
+    jw.WritePropertyName('durable_name');
+    jw.WriteString(DurableName);
   end;
+  if Name <> '' then
+  begin
+    jw.WritePropertyName('name');
+    jw.WriteString(Name);
+  end;
+  if Description <> '' then
+  begin
+    jw.WritePropertyName('description');
+    jw.WriteString(Description);
+  end;
+  if FilterSubject <> '' then
+  begin
+    jw.WritePropertyName('filter_subject');
+    jw.WriteString(FilterSubject);
+  end;
+  if DeliverSubject <> '' then
+  begin
+    jw.WritePropertyName('deliver_subject');
+    jw.WriteString(DeliverSubject);
+  end;
+  if DeliverGroup <> '' then
+  begin
+    jw.WritePropertyName('deliver_group');
+    jw.WriteString(DeliverGroup);
+  end;
+  jw.WritePropertyName('deliver_policy');
+  jw.WriteString(deliverStr);
+  if (DeliverPolicy = dpByStartSequence) and (OptStartSeq > 0) then
+  begin
+    jw.WritePropertyName('opt_start_seq');
+    jw.WriteNumber(Int64(OptStartSeq));
+  end;
+  jw.WritePropertyName('ack_policy');
+  jw.WriteString(ackStr);
+  if AckWait > 0 then
+  begin
+    jw.WritePropertyName('ack_wait');
+    jw.WriteNumber(AckWait);
+  end;
+  jw.WritePropertyName('max_deliver');
+  jw.WriteNumber(MaxDeliver);
+  jw.WritePropertyName('max_ack_pending');
+  jw.WriteNumber(MaxAckPending);
+  // max_waiting applies to pull consumers only
+  if DeliverSubject = '' then
+  begin
+    jw.WritePropertyName('max_waiting');
+    jw.WriteNumber(MaxWaiting);
+  end;
+  jw.WritePropertyName('replay_policy');
+  jw.WriteString(replayStr);
+  jw.WriteEndObject;
+  Result := TEncoding.UTF8.GetString(w.ToBytes);
 end;
 
 { TNatsConsumerInfo }
 
 class function TNatsConsumerInfo.Parse(const AJson: string): TNatsConsumerInfo;
 var
-  obj: TJSONObject;
-  configObj: TJSONObject;
-  v: TJSONValue;
+  bytes: TBytes;
+  reader: TUtf8JsonReader;
 begin
   FillChar(Result, SizeOf(Result), 0);
-  if Trim(AJson) = '' then
-    raise EDextNatsProtocolError.Create('Empty JetStream API response');
-
-  obj := TJSONObject.ParseJSONValue(AJson) as TJSONObject;
-  if not Assigned(obj) then
-    raise EDextNatsProtocolError.CreateFmt('Malformed JetStream API response: %s', [AJson]);
   try
-    NatsJSRaiseIfError(obj);
+    reader := NatsJSOpenReader(AJson, 'Empty JetStream API response', bytes);
+    if (not reader.Read) or (reader.TokenType <> TJsonTokenType.StartObject) then
+      raise EDextNatsProtocolError.CreateFmt('Malformed JetStream API response: %s', [AJson]);
 
-    Result.StreamName := NatsJsonGetStr(obj, 'stream_name');
-    Result.Name := NatsJsonGetStr(obj, 'name');
-    Result.NumPending := UInt64(NatsJsonGetInt64(obj, 'num_pending'));
-    Result.NumAckPending := NatsJsonGetInt(obj, 'num_ack_pending');
-    Result.NumRedelivered := NatsJsonGetInt(obj, 'num_redelivered');
-    Result.NumWaiting := NatsJsonGetInt(obj, 'num_waiting');
+    while reader.Read do
+    begin
+      if reader.TokenType = TJsonTokenType.EndObject then
+        Break;
+      if reader.TokenType <> TJsonTokenType.PropertyName then
+        Continue;
 
-    configObj := nil;
-    v := obj.GetValue('config');
-    if Assigned(v) and (v is TJSONObject) then
-      configObj := TJSONObject(v);
-    Result.DurableName := NatsJsonGetStr(configObj, 'durable_name');
-    Result.FilterSubject := NatsJsonGetStr(configObj, 'filter_subject');
-    Result.DeliverSubject := NatsJsonGetStr(configObj, 'deliver_subject');
-    Result.DeliverGroup := NatsJsonGetStr(configObj, 'deliver_group');
+      if reader.ValueSpanEquals('error') then
+      begin
+        if reader.Read then
+        begin
+          if reader.TokenType = TJsonTokenType.StartObject then
+            NatsJSRaiseFromErrorObject(reader)
+          else
+            NatsJSSkipValue(reader);
+        end;
+      end
+      else if reader.ValueSpanEquals('stream_name') then
+      begin
+        if reader.Read and (reader.TokenType = TJsonTokenType.StringValue) then
+          Result.StreamName := reader.GetString
+        else
+          NatsJSSkipValue(reader);
+      end
+      else if reader.ValueSpanEquals('name') then
+      begin
+        if reader.Read and (reader.TokenType = TJsonTokenType.StringValue) then
+          Result.Name := reader.GetString
+        else
+          NatsJSSkipValue(reader);
+      end
+      else if reader.ValueSpanEquals('num_pending') then
+      begin
+        if reader.Read and (reader.TokenType = TJsonTokenType.Number) then
+          Result.NumPending := UInt64(reader.GetInt64)
+        else
+          NatsJSSkipValue(reader);
+      end
+      else if reader.ValueSpanEquals('num_ack_pending') then
+      begin
+        if reader.Read and (reader.TokenType = TJsonTokenType.Number) then
+          Result.NumAckPending := reader.GetInt32
+        else
+          NatsJSSkipValue(reader);
+      end
+      else if reader.ValueSpanEquals('num_redelivered') then
+      begin
+        if reader.Read and (reader.TokenType = TJsonTokenType.Number) then
+          Result.NumRedelivered := reader.GetInt32
+        else
+          NatsJSSkipValue(reader);
+      end
+      else if reader.ValueSpanEquals('num_waiting') then
+      begin
+        if reader.Read and (reader.TokenType = TJsonTokenType.Number) then
+          Result.NumWaiting := reader.GetInt32
+        else
+          NatsJSSkipValue(reader);
+      end
+      else if reader.ValueSpanEquals('config') then
+      begin
+        if reader.Read then
+        begin
+          if reader.TokenType = TJsonTokenType.StartObject then
+          begin
+            while reader.Read do
+            begin
+              if reader.TokenType = TJsonTokenType.EndObject then
+                Break;
+              if reader.TokenType <> TJsonTokenType.PropertyName then
+                Continue;
+              if reader.ValueSpanEquals('durable_name') then
+              begin
+                if reader.Read and (reader.TokenType = TJsonTokenType.StringValue) then
+                  Result.DurableName := reader.GetString
+                else
+                  NatsJSSkipValue(reader);
+              end
+              else if reader.ValueSpanEquals('filter_subject') then
+              begin
+                if reader.Read and (reader.TokenType = TJsonTokenType.StringValue) then
+                  Result.FilterSubject := reader.GetString
+                else
+                  NatsJSSkipValue(reader);
+              end
+              else if reader.ValueSpanEquals('deliver_subject') then
+              begin
+                if reader.Read and (reader.TokenType = TJsonTokenType.StringValue) then
+                  Result.DeliverSubject := reader.GetString
+                else
+                  NatsJSSkipValue(reader);
+              end
+              else if reader.ValueSpanEquals('deliver_group') then
+              begin
+                if reader.Read and (reader.TokenType = TJsonTokenType.StringValue) then
+                  Result.DeliverGroup := reader.GetString
+                else
+                  NatsJSSkipValue(reader);
+              end
+              else
+                NatsJSHandlePropValue(reader);
+            end;
+          end
+          else
+            NatsJSSkipValue(reader);
+        end;
+      end
+      else
+        NatsJSHandlePropValue(reader);
+    end;
     if Result.Name = '' then
       Result.Name := Result.DurableName;
-  finally
-    obj.Free;
+  except
+    on E: EDextNatsProtocolError do
+      raise;
+    on E: EDextNatsJetStreamError do
+      raise;
+    on E: EJsonException do
+      raise EDextNatsProtocolError.CreateFmt('Malformed JetStream API response: %s', [AJson]);
   end;
 end;
 
@@ -593,24 +970,75 @@ end;
 
 class function TNatsPublishAck.Parse(const AJson: string): TNatsPublishAck;
 var
-  obj: TJSONObject;
+  bytes: TBytes;
+  reader: TUtf8JsonReader;
 begin
   FillChar(Result, SizeOf(Result), 0);
-  if Trim(AJson) = '' then
-    raise EDextNatsProtocolError.Create('Empty JetStream publish acknowledgement payload');
-
-  obj := TJSONObject.ParseJSONValue(AJson) as TJSONObject;
-  if not Assigned(obj) then
-    raise EDextNatsProtocolError.CreateFmt('Malformed JetStream publish acknowledgement payload: %s', [AJson]);
   try
-    NatsJSRaiseIfError(obj);
+    reader := NatsJSOpenReader(AJson, 'Empty JetStream publish acknowledgement payload', bytes);
+    if (not reader.Read) or (reader.TokenType <> TJsonTokenType.StartObject) then
+      raise EDextNatsProtocolError.CreateFmt(
+        'Malformed JetStream publish acknowledgement payload: %s', [AJson]);
 
-    Result.Stream := NatsJsonGetStr(obj, 'stream');
-    Result.Sequence := UInt64(NatsJsonGetInt64(obj, 'seq'));
-    Result.Duplicate := NatsJsonGetBool(obj, 'duplicate', False);
-    Result.Domain := NatsJsonGetStr(obj, 'domain');
-  finally
-    obj.Free;
+    while reader.Read do
+    begin
+      if reader.TokenType = TJsonTokenType.EndObject then
+        Break;
+      if reader.TokenType <> TJsonTokenType.PropertyName then
+        Continue;
+
+      if reader.ValueSpanEquals('error') then
+      begin
+        if reader.Read then
+        begin
+          if reader.TokenType = TJsonTokenType.StartObject then
+            NatsJSRaiseFromErrorObject(reader)
+          else
+            NatsJSSkipValue(reader);
+        end;
+      end
+      else if reader.ValueSpanEquals('stream') then
+      begin
+        if reader.Read and (reader.TokenType = TJsonTokenType.StringValue) then
+          Result.Stream := reader.GetString
+        else
+          NatsJSSkipValue(reader);
+      end
+      else if reader.ValueSpanEquals('seq') then
+      begin
+        if reader.Read and (reader.TokenType = TJsonTokenType.Number) then
+          Result.Sequence := UInt64(reader.GetInt64)
+        else
+          NatsJSSkipValue(reader);
+      end
+      else if reader.ValueSpanEquals('duplicate') then
+      begin
+        if reader.Read then
+        begin
+          if reader.TokenType in [TJsonTokenType.TrueValue, TJsonTokenType.FalseValue] then
+            Result.Duplicate := reader.GetBoolean
+          else
+            NatsJSSkipValue(reader);
+        end;
+      end
+      else if reader.ValueSpanEquals('domain') then
+      begin
+        if reader.Read and (reader.TokenType = TJsonTokenType.StringValue) then
+          Result.Domain := reader.GetString
+        else
+          NatsJSSkipValue(reader);
+      end
+      else
+        NatsJSHandlePropValue(reader);
+    end;
+  except
+    on E: EDextNatsProtocolError do
+      raise;
+    on E: EDextNatsJetStreamError do
+      raise;
+    on E: EJsonException do
+      raise EDextNatsProtocolError.CreateFmt(
+        'Malformed JetStream publish acknowledgement payload: %s', [AJson]);
   end;
 end;
 
@@ -726,27 +1154,17 @@ begin
 end;
 
 function TDextNatsJetStreamContext.DeleteStream(const AStreamName: string): Boolean;
-var
-  obj: TJSONObject;
-  json: string;
 begin
-  json := ApiRequest('STREAM.DELETE.' + AStreamName, '{}');
-
-  obj := TJSONObject.ParseJSONValue(json) as TJSONObject;
-  if not Assigned(obj) then
-    raise EDextNatsProtocolError.CreateFmt('Malformed JetStream API response: %s', [json]);
-  try
-    NatsJSRaiseIfError(obj);
-    Result := NatsJsonGetBool(obj, 'success');
-  finally
-    obj.Free;
-  end;
+  Result := NatsJSParseSuccessResponse(ApiRequest('STREAM.DELETE.' + AStreamName, '{}'));
 end;
 
 function TDextNatsJetStreamContext.CreateConsumer(const AStreamName: string;
   const AConfig: TNatsConsumerConfig): TNatsConsumerInfo;
 var
   consumerPart, subject, body: string;
+  w: TJsByteWriter;
+  jw: TUtf8JsonWriter;
+  configBytes: TBytes;
 begin
   if AStreamName = '' then
     raise EDextNatsException.Create('CreateConsumer requires a stream name');
@@ -760,8 +1178,18 @@ begin
   else
     subject := Format('CONSUMER.CREATE.%s', [AStreamName]);
 
-  body := Format('{"stream_name":"%s","config":%s}',
-    [NatsJsonEscape(AStreamName), AConfig.ToJson]);
+  { Config ToJson is already a JSON object; splice as raw value after "config": }
+  configBytes := TEncoding.UTF8.GetBytes(AConfig.ToJson);
+  w.Reset;
+  jw := TUtf8JsonWriter.Create(@w, JsUtf8WriteToByteWriter, False);
+  jw.WriteStartObject;
+  jw.WritePropertyName('stream_name');
+  jw.WriteString(AStreamName);
+  jw.WritePropertyName('config');
+  if Length(configBytes) > 0 then
+    JsUtf8WriteToByteWriter(@w, @configBytes[0], Length(configBytes));
+  jw.WriteEndObject;
+  body := TEncoding.UTF8.GetString(w.ToBytes);
   Result := TNatsConsumerInfo.Parse(ApiRequest(subject, body));
 end;
 
@@ -774,23 +1202,12 @@ begin
 end;
 
 function TDextNatsJetStreamContext.DeleteConsumer(const AStreamName, AConsumerName: string): Boolean;
-var
-  obj: TJSONObject;
-  json: string;
 begin
   if (AStreamName = '') or (AConsumerName = '') then
     raise EDextNatsException.Create('DeleteConsumer requires stream and consumer names');
 
-  json := ApiRequest(Format('CONSUMER.DELETE.%s.%s', [AStreamName, AConsumerName]), '{}');
-  obj := TJSONObject.ParseJSONValue(json) as TJSONObject;
-  if not Assigned(obj) then
-    raise EDextNatsProtocolError.CreateFmt('Malformed JetStream API response: %s', [json]);
-  try
-    NatsJSRaiseIfError(obj);
-    Result := NatsJsonGetBool(obj, 'success');
-  finally
-    obj.Free;
-  end;
+  Result := NatsJSParseSuccessResponse(
+    ApiRequest(Format('CONSUMER.DELETE.%s.%s', [AStreamName, AConsumerName]), '{}'));
 end;
 
 { TDextNatsJetStreamPushSubscription }

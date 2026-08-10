@@ -52,9 +52,9 @@ in `Dext.Net.Nats.pas`.
 `Dext.Net.Nats.JetStream.pas` depends on `Dext.Net.Nats` — never the reverse.
 `TDextNatsJetStreamContext` wraps an already-connected `TDextNatsClient` by
 composition (it does not inherit from or modify the client, and does not own
-its lifetime) and reuses the `NatsJsonGetStr/Int/Int64/Bool`/`NatsBoolStr`/
-`NatsJsonEscape` helpers already exported from `Dext.Net.Nats.Protocol`'s
-interface section instead of re-implementing JSON parsing.
+its lifetime). Admin JSON (`ToJson` / `Parse` / API error objects) uses
+`Dext.Json.Utf8` (`TUtf8JsonReader` / `TUtf8JsonWriter`), same pattern as
+Protocol INFO/CONNECT.
 
 ## Reference material — read before extending
 
@@ -167,8 +167,8 @@ parsing frames anywhere else.
       `TNatsClientMetrics`, `Dext.Net.Nats.HealthChecks`
 - [x] Protocol hot-path PERF (`Docs/NATS_DEXT_ROADMAP.md` SPEC-PERF-01..05):
   `TNatsByteWriter` encode path, byte `ParseControlLine`, INFO/CONNECT via
-  `Dext.Json.Utf8` (`TUtf8JsonReader`/`TUtf8JsonWriter`); JetStream still uses
-  `System.JSON` + `NatsJsonGet*` helpers for now
+  `Dext.Json.Utf8` (`TUtf8JsonReader`/`TUtf8JsonWriter`); JetStream admin JSON
+  migrated the same way (PERF-03b); `System.JSON` removed from Protocol + JetStream
 - [ ] Async `Request`/`Flush` via `TAsyncBuilder` (roadmap SPEC-ASYNC)
 
 ## Working style expected of an agent here

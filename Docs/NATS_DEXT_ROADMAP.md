@@ -32,9 +32,9 @@
 
 | لایه | فایل | وابستگی Dext | گلوگاه شناخته‌شده |
 |------|------|--------------|-------------------|
-| Protocol | `Source/Dext.Net.Nats.Protocol.pas` | `Span`, `Collections` | `System.JSON`؛ `TEncoding.UTF8.GetBytes`؛ `NatsConcatBytes` چندمرحله‌ای؛ کنترل‌لاین با `GetString` |
-| Client | `Source/Dext.Net.Nats.pas` | `Tcp`, `Security`, `Collections`, `Span` | بدون DI / Logger / Metrics / Health |
-| JetStream | `Source/Dext.Net.Nats.JetStream.pas` | Client + Protocol helpers | JSON string-based؛ فقط pull consumer |
+| Protocol | `Source/Dext.Net.Nats.Protocol.pas` | `Span`, `Collections`, `Json.Utf8` | PERF-01..05 done (byte writer, control-line span, Utf8 INFO/CONNECT) |
+| Client | `Source/Dext.Net.Nats.pas` | `Tcp`, `Security`, `Collections`, `Span`, Logging/Metrics | ASYNC `TAsyncBuilder` هنوز باز |
+| JetStream | `Source/Dext.Net.Nats.JetStream.pas` | Client + `Json.Utf8` | PERF-03b Utf8 admin JSON؛ push `SubscribePush` done |
 | Tests | `Tests/Dext.Net.Nats.Tests.*` | `Dext.Testing` | پوشش خوب؛ پلن گسترش در `TEST_PLAN.md` |
 
 **قراردادهای تغییرناپذیر** (از `AGENTS.md`):
@@ -114,8 +114,8 @@
 
 1. `TNatsServerInfo.Parse` از `TUtf8JsonReader` روی `TByteSpan` / UTF-8 bytes استفاده کند.
 2. `TNatsConnectOptions.ToJson` با `TUtf8JsonWriter` (sink مستقیم به بافر) یا writer معادل نوشته شود — خروجی بایت یا string پایدار برای wire.
-3. JetStream `ToJson` / `Parse`های admin در فاز بعدی همان الگو را بگیرند (حداقل برای PubAck و error object در همین فاز یا PERF-03b).
-4. توابع `NatsJsonGetStr/Int/Int64/Bool` یا حذف شوند یا به overloads مبتنی بر Utf8 تبدیل شوند؛ اگر در interface عمومی‌اند، deprecate بدون شکست ناگهانی.
+3. JetStream `ToJson` / `Parse`های admin همان الگو را بگیرند (PERF-03b: PubAck، Stream/Consumer info، error object، Delete success).
+4. توابع `NatsJsonGetStr/Int/Int64/Bool` حذف شوند وقتی JetStream دیگر به `System.JSON` وابسته نیست.
 
 **مرجع API Dext:**
 
@@ -129,8 +129,9 @@ Dext.Json.Utf8.pas
 **Acceptance:**
 
 - [x] U-01، U-02، U-07 و تست‌های JS JSON موجود سبز.
-- [ ] `uses System.JSON` از `Protocol.pas` حذف شود (یا فقط پشت `{$IFDEF}` موقت در یک PR میانی — هدف نهایی حذف کامل). *Deferred: still required for public `NatsJsonGet*` JetStream helpers.*
+- [x] `uses System.JSON` از `Protocol.pas` و `JetStream.pas` حذف شد؛ `NatsJsonGet*` حذف شد (PERF-03b).
 - [x] فیلدهای INFO: `server_id`, `version`, `go`, `host`, `port`, `headers`, `auth_required`, `tls_required`, `max_payload`, `connect_urls`, `jetstream`, `proto` (در حد پشتیبانی فعلی) حفظ شوند.
+- [x] PERF-03b: JetStream Stream/Consumer `ToJson` + StreamInfo/ConsumerInfo/PublishAck `Parse` + API error/`success` روی `TUtf8JsonReader`/`TUtf8JsonWriter`.
 
 #### SPEC-PERF-04 — Payload: مالکیت واضح + حداقل کپی
 

@@ -26,7 +26,6 @@ uses
   System.SysUtils,
   System.Classes,
   System.SyncObjs,
-  System.JSON,
   System.Diagnostics,
   Dext.Collections,
   Dext.Testing,
@@ -897,26 +896,19 @@ end;
 
 procedure TDextNatsProtocolTests.JsonHelpers_ShouldEscapeAndParse;
 var
-  obj: TJSONObject;
+  ack: TNatsPublishAck;
 begin
   Should(NatsJsonEscape('a"b\c')).Be('a\"b\\c');
   Should(NatsJsonEscape('x' + #9 + 'y')).Be('x\ty');
   Should(NatsBoolStr(True)).Be('true');
   Should(NatsBoolStr(False)).Be('false');
 
-    obj := TJSONObject.ParseJSONValue(
-    '{"s":"hello","i":42,"n":9007199254740991,"b":true}') as TJSONObject;
-  try
-    Should(NatsJsonGetStr(obj, 's')).Be('hello');
-    Should(NatsJsonGetStr(obj, 'missing', 'd')).Be('d');
-    Should(NatsJsonGetInt(obj, 'i')).Be(42);
-    Should(NatsJsonGetInt(obj, 'missing', 7)).Be(7);
-    Should(NatsJsonGetInt64(obj, 'n')).Be(Int64(9007199254740991));
-    Should(NatsJsonGetBool(obj, 'b')).BeTrue;
-    Should(NatsJsonGetBool(obj, 'missing', True)).BeTrue;
-  finally
-    obj.Free;
-  end;
+  { Field getters now live on TUtf8JsonReader paths (JetStream/INFO); defaults via missing keys. }
+  ack := TNatsPublishAck.Parse('{"stream":"S","seq":1}');
+  Should(ack.Stream).Be('S');
+  Should(ack.Sequence).Be(UInt64(1));
+  Should(ack.Duplicate).BeFalse;
+  Should(ack.Domain).Be('');
 end;
 
 procedure TDextNatsProtocolTests.NatsNewInbox_ShouldBeUniqueWithPrefix;
