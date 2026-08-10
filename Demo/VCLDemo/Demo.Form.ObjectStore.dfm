@@ -2,7 +2,7 @@
   Left = 0
   Top = 0
   Caption = 'Dext.Nats Object Store'
-  ClientHeight = 560
+  ClientHeight = 640
   ClientWidth = 820
   Color = clBtnFace
   Font.Charset = DEFAULT_CHARSET
@@ -136,13 +136,22 @@
       TabOrder = 3
       OnClick = btnGetClick
     end
-    object btnDelete: TButton
+    object btnGetInfo: TButton
       Left = 188
       Top = 148
       Width = 80
       Height = 28
-      Caption = 'Delete'
+      Caption = 'GetInfo'
       TabOrder = 4
+      OnClick = btnGetInfoClick
+    end
+    object btnDelete: TButton
+      Left = 276
+      Top = 148
+      Width = 80
+      Height = 28
+      Caption = 'Delete'
+      TabOrder = 5
       OnClick = btnDeleteClick
     end
     object mmInfo: TMemo
@@ -152,7 +161,7 @@
       Height = 52
       ReadOnly = True
       ScrollBars = ssVertical
-      TabOrder = 5
+      TabOrder = 6
     end
   end
   object grpList: TGroupBox
@@ -190,11 +199,82 @@
       OnClick = btnKeysClick
     end
   end
+  object grpLink: TGroupBox
+    Left = 12
+    Top = 368
+    Width = 796
+    Height = 88
+    Caption = ' Links '
+    TabOrder = 3
+    object lblLinkName: TLabel
+      Left = 12
+      Top = 20
+      Width = 55
+      Height = 15
+      Caption = 'Link name'
+    end
+    object lblTargetObject: TLabel
+      Left = 200
+      Top = 20
+      Width = 108
+      Height = 15
+      Caption = 'Target object name'
+    end
+    object lblTargetBucket: TLabel
+      Left = 420
+      Top = 20
+      Width = 119
+      Height = 15
+      Caption = 'Target bucket (link)'
+    end
+    object edtLinkName: TEdit
+      Left = 12
+      Top = 40
+      Width = 170
+      Height = 23
+      TabOrder = 0
+      TextHint = 'alias.png'
+    end
+    object edtTargetObject: TEdit
+      Left = 200
+      Top = 40
+      Width = 200
+      Height = 23
+      TabOrder = 1
+      TextHint = 'readme.txt'
+    end
+    object edtTargetBucket: TEdit
+      Left = 420
+      Top = 40
+      Width = 160
+      Height = 23
+      TabOrder = 2
+      TextHint = 'other_bucket'
+    end
+    object btnAddLink: TButton
+      Left = 596
+      Top = 38
+      Width = 90
+      Height = 28
+      Caption = 'AddLink'
+      TabOrder = 3
+      OnClick = btnAddLinkClick
+    end
+    object btnAddBucketLink: TButton
+      Left = 694
+      Top = 38
+      Width = 90
+      Height = 28
+      Caption = 'AddBucket'
+      TabOrder = 4
+      OnClick = btnAddBucketLinkClick
+    end
+  end
   object mmLog: TMemo
     Left = 0
-    Top = 372
+    Top = 468
     Width = 820
-    Height = 168
+    Height = 152
     Align = alBottom
     Font.Charset = ANSI_CHARSET
     Font.Color = clWindowText
@@ -204,12 +284,12 @@
     ParentFont = False
     ReadOnly = True
     ScrollBars = ssBoth
-    TabOrder = 3
+    TabOrder = 4
     WordWrap = False
   end
   object sbMain: TStatusBar
     Left = 0
-    Top = 540
+    Top = 620
     Width = 820
     Height = 20
     Panels = <>

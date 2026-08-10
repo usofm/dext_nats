@@ -40,12 +40,22 @@ type
     mmData: TMemo;
     btnPut: TButton;
     btnGet: TButton;
+    btnGetInfo: TButton;
     btnDelete: TButton;
     mmInfo: TMemo;
     grpList: TGroupBox;
     lstNames: TListBox;
     btnList: TButton;
     btnKeys: TButton;
+    grpLink: TGroupBox;
+    lblLinkName: TLabel;
+    edtLinkName: TEdit;
+    lblTargetObject: TLabel;
+    edtTargetObject: TEdit;
+    lblTargetBucket: TLabel;
+    edtTargetBucket: TEdit;
+    btnAddLink: TButton;
+    btnAddBucketLink: TButton;
     procedure FormCreate(Sender: TObject);
     procedure FormDestroy(Sender: TObject);
     procedure FormClose(Sender: TObject; var Action: TCloseAction);
@@ -56,9 +66,12 @@ type
     procedure btnIsSealedClick(Sender: TObject);
     procedure btnPutClick(Sender: TObject);
     procedure btnGetClick(Sender: TObject);
+    procedure btnGetInfoClick(Sender: TObject);
     procedure btnDeleteClick(Sender: TObject);
     procedure btnListClick(Sender: TObject);
     procedure btnKeysClick(Sender: TObject);
+    procedure btnAddLinkClick(Sender: TObject);
+    procedure btnAddBucketLinkClick(Sender: TObject);
     procedure lstNamesClick(Sender: TObject);
   private
     FClient: TDextNatsClient;
@@ -69,7 +82,10 @@ type
     procedure EnsureContext;
     procedure EnsureStore;
     procedure BindStore(AStore: TDextNatsObjectStore);
-    procedure ShowInfo(const AInfo: TNatsObjectInfo);
+    procedure ShowInfo(const AInfo: TNatsObjectInfo; const ACaption: string = '';
+      AAppend: Boolean = False);
+    function FormatListName(const AInfo: TNatsObjectInfo): string;
+    function ListItemObjectName(const ADisplay: string): string;
     procedure FillNamesFromList;
     procedure FillNamesFromKeys;
   public
@@ -87,6 +103,9 @@ begin
   FStore := nil;
   edtBucket.Text := 'vcl_obj';
   edtName.Text := 'readme.txt';
+  edtLinkName.Text := 'alias.txt';
+  edtTargetObject.Text := 'readme.txt';
+  edtTargetBucket.Text := '';
   mmData.Lines.Text := 'hello from Dext.Nats Object Store';
   Log('Object Store form ready. Connect a tab, then open this form via Object Store.');
 end;
@@ -164,35 +183,73 @@ begin
   end;
 end;
 
-procedure TfrmObjectStore.ShowInfo(const AInfo: TNatsObjectInfo);
+procedure TfrmObjectStore.ShowInfo(const AInfo: TNatsObjectInfo; const ACaption: string;
+  AAppend: Boolean);
 begin
-  mmInfo.Clear;
+  if not AAppend then
+    mmInfo.Clear;
+  if ACaption <> '' then
+    mmInfo.Lines.Add(ACaption);
   mmInfo.Lines.Add('Name: ' + AInfo.Name);
   mmInfo.Lines.Add('Bucket: ' + AInfo.Bucket);
   mmInfo.Lines.Add('Size: ' + AInfo.Size.ToString);
   mmInfo.Lines.Add('Chunks: ' + AInfo.Chunks.ToString);
   mmInfo.Lines.Add('Digest: ' + AInfo.Digest);
   mmInfo.Lines.Add('Deleted: ' + BoolToStr(AInfo.Deleted, True));
+  mmInfo.Lines.Add('IsLink: ' + BoolToStr(AInfo.IsLink, True));
+  if AInfo.IsLink then
+  begin
+    mmInfo.Lines.Add('IsBucketLink: ' + BoolToStr(AInfo.IsBucketLink, True));
+    mmInfo.Lines.Add('Link.Bucket: ' + AInfo.Link.Bucket);
+    mmInfo.Lines.Add('Link.Name: ' + AInfo.Link.Name);
+  end;
   if AInfo.Description <> '' then
     mmInfo.Lines.Add('Description: ' + AInfo.Description);
+end;
+
+function TfrmObjectStore.FormatListName(const AInfo: TNatsObjectInfo): string;
+begin
+  if AInfo.IsBucketLink then
+    Result := Format('%s  [bucket-link -> %s]', [AInfo.Name, AInfo.Link.Bucket])
+  else if AInfo.IsLink then
+    Result := Format('%s  [link -> %s/%s]', [AInfo.Name, AInfo.Link.Bucket, AInfo.Link.Name])
+  else
+    Result := AInfo.Name;
+end;
+
+function TfrmObjectStore.ListItemObjectName(const ADisplay: string): string;
+var
+  p: Integer;
+begin
+  p := Pos('  [', ADisplay);
+  if p > 0 then
+    Result := Copy(ADisplay, 1, p - 1)
+  else
+    Result := ADisplay;
 end;
 
 procedure TfrmObjectStore.FillNamesFromList;
 var
   items: IList<TNatsObjectInfo>;
   i: Integer;
+  linkCount: Integer;
 begin
   EnsureStore;
   items := FStore.List;
+  linkCount := 0;
   lstNames.Items.BeginUpdate;
   try
     lstNames.Clear;
     for i := 0 to items.Count - 1 do
-      lstNames.Items.Add(items[i].Name);
+    begin
+      if items[i].IsLink then
+        Inc(linkCount);
+      lstNames.Items.Add(FormatListName(items[i]));
+    end;
   finally
     lstNames.Items.EndUpdate;
   end;
-  Log(Format('List: %d object(s).', [items.Count]));
+  Log(Format('List: %d object(s), %d link(s).', [items.Count, linkCount]));
 end;
 
 procedure TfrmObjectStore.FillNamesFromKeys;
@@ -321,7 +378,8 @@ begin
     end;
     info := FStore.Put(name, TEncoding.UTF8.GetBytes(mmData.Text));
     ShowInfo(info);
-    Log(Format('Put "%s" size=%s chunks=%d', [info.Name, info.Size.ToString, info.Chunks]));
+    Log(Format('Put "%s" size=%s chunks=%d IsLink=%s',
+      [info.Name, info.Size.ToString, info.Chunks, BoolToStr(info.IsLink, True)]));
     FillNamesFromKeys;
   except
     on E: Exception do
@@ -332,7 +390,7 @@ end;
 procedure TfrmObjectStore.btnGetClick(Sender: TObject);
 var
   name: string;
-  info: TNatsObjectInfo;
+  linkInfo, resolved: TNatsObjectInfo;
   data: TBytes;
 begin
   try
@@ -343,13 +401,53 @@ begin
       Log('Object name is required.');
       Exit;
     end;
-    data := FStore.Get(name, info);
-    ShowInfo(info);
+    { Get follows object links; show link meta first when the name is a link. }
+    linkInfo := FStore.GetInfo(name);
+    data := FStore.Get(name, resolved);
+    if linkInfo.IsLink then
+    begin
+      ShowInfo(linkInfo, 'Link meta (before follow):');
+      mmInfo.Lines.Add('');
+      ShowInfo(resolved, 'Resolved target (Get):', True);
+      Log(Format('Get "%s" IsLink=True -> %s/%s; resolved "%s" size=%s',
+        [name, linkInfo.Link.Bucket, linkInfo.Link.Name, resolved.Name, resolved.Size.ToString]));
+    end
+    else
+    begin
+      ShowInfo(resolved);
+      Log(Format('Get "%s" size=%s IsLink=%s',
+        [resolved.Name, resolved.Size.ToString, BoolToStr(resolved.IsLink, True)]));
+    end;
     mmData.Text := TEncoding.UTF8.GetString(data);
-    Log(Format('Get "%s" size=%s', [info.Name, info.Size.ToString]));
   except
     on E: Exception do
       Log('Get failed: ' + E.Message);
+  end;
+end;
+
+procedure TfrmObjectStore.btnGetInfoClick(Sender: TObject);
+var
+  name: string;
+  info: TNatsObjectInfo;
+begin
+  try
+    EnsureStore;
+    name := Trim(edtName.Text);
+    if name = '' then
+    begin
+      Log('Object name is required.');
+      Exit;
+    end;
+    info := FStore.GetInfo(name);
+    ShowInfo(info);
+    if info.IsLink then
+      Log(Format('GetInfo "%s" IsLink=True Link=%s/%s IsBucketLink=%s',
+        [info.Name, info.Link.Bucket, info.Link.Name, BoolToStr(info.IsBucketLink, True)]))
+    else
+      Log(Format('GetInfo "%s" IsLink=False size=%s', [info.Name, info.Size.ToString]));
+  except
+    on E: Exception do
+      Log('GetInfo failed: ' + E.Message);
   end;
 end;
 
@@ -395,10 +493,100 @@ begin
   end;
 end;
 
-procedure TfrmObjectStore.lstNamesClick(Sender: TObject);
+procedure TfrmObjectStore.btnAddLinkClick(Sender: TObject);
+var
+  linkName, targetName, targetBucket: string;
+  targetStore: TDextNatsObjectStore;
+  target, info: TNatsObjectInfo;
 begin
-  if lstNames.ItemIndex >= 0 then
-    edtName.Text := lstNames.Items[lstNames.ItemIndex];
+  targetStore := nil;
+  try
+    EnsureStore;
+    linkName := Trim(edtLinkName.Text);
+    targetName := Trim(edtTargetObject.Text);
+    targetBucket := Trim(edtTargetBucket.Text);
+    if linkName = '' then
+    begin
+      Log('Link name is required.');
+      Exit;
+    end;
+    if targetName = '' then
+    begin
+      Log('Target object name is required for AddLink.');
+      Exit;
+    end;
+    if (targetBucket = '') or SameText(targetBucket, FStore.Bucket) then
+      target := FStore.GetInfo(targetName)
+    else
+    begin
+      EnsureContext;
+      targetStore := FObjCtx.OpenStore(targetBucket);
+      target := targetStore.GetInfo(targetName);
+    end;
+    info := FStore.AddLink(linkName, target);
+    ShowInfo(info);
+    Log(Format('AddLink "%s" -> %s/%s IsLink=%s',
+      [info.Name, info.Link.Bucket, info.Link.Name, BoolToStr(info.IsLink, True)]));
+    edtName.Text := linkName;
+    FillNamesFromList;
+  except
+    on E: Exception do
+      Log('AddLink failed: ' + E.Message);
+  end;
+  targetStore.Free;
+end;
+
+procedure TfrmObjectStore.btnAddBucketLinkClick(Sender: TObject);
+var
+  linkName, targetBucket: string;
+  targetStore: TDextNatsObjectStore;
+  info: TNatsObjectInfo;
+begin
+  targetStore := nil;
+  try
+    EnsureStore;
+    linkName := Trim(edtLinkName.Text);
+    targetBucket := Trim(edtTargetBucket.Text);
+    if linkName = '' then
+    begin
+      Log('Link name is required.');
+      Exit;
+    end;
+    if targetBucket = '' then
+    begin
+      Log('Target bucket is required for AddBucketLink.');
+      Exit;
+    end;
+    if SameText(targetBucket, FStore.Bucket) then
+    begin
+      Log('AddBucketLink target should be another store bucket.');
+      Exit;
+    end;
+    EnsureContext;
+    targetStore := FObjCtx.OpenStore(targetBucket);
+    info := FStore.AddBucketLink(linkName, targetStore);
+    ShowInfo(info);
+    Log(Format('AddBucketLink "%s" -> bucket %s IsBucketLink=%s',
+      [info.Name, info.Link.Bucket, BoolToStr(info.IsBucketLink, True)]));
+    edtName.Text := linkName;
+    FillNamesFromList;
+  except
+    on E: Exception do
+      Log('AddBucketLink failed: ' + E.Message);
+  end;
+  targetStore.Free;
+end;
+
+procedure TfrmObjectStore.lstNamesClick(Sender: TObject);
+var
+  display, name: string;
+begin
+  if lstNames.ItemIndex < 0 then
+    Exit;
+  display := lstNames.Items[lstNames.ItemIndex];
+  name := ListItemObjectName(display);
+  edtName.Text := name;
+  edtLinkName.Text := name;
 end;
 
 end.
