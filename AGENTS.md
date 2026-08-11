@@ -49,14 +49,15 @@ Source/
                                 Ack/Nak/Term/InProgress via $JS.API.*.
   Dext.Net.Nats.KeyValue.pas    TDextNatsKeyValue: JetStream KV buckets
                                 (CreateBucket/Put/Get/GetRevision/Delete/Purge /
-                                PurgeDeletes, Keys/ListKeys, History,
-                                Watch/WatchFiltered/WatchAll (wildcards, EndOfInitial,
-                                MetaOnly / UpdatesOnly / IncludeHistory /
-                                IgnoreDeletes), Config()/Status.Config stream
-                                read-back, CAS Create/Update, bucket
-                                Compression/Placement, per-key TTL via
-                                LimitMarkerTTL + Create/Purge Nats-TTL;
-                                NATS 2.11+ / ADR-48). Composition over JetStream.
+                                PurgeDeletes, Keys/ListKeys/ListKeysFiltered,
+                                History, Watch/WatchFiltered/WatchAll (wildcards,
+                                EndOfInitial, MetaOnly / UpdatesOnly /
+                                IncludeHistory / IgnoreDeletes),
+                                Config()/Status.Config stream read-back, CAS
+                                Create/Update, bucket Compression/Placement,
+                                per-key TTL via LimitMarkerTTL + Create/Purge
+                                Nats-TTL; NATS 2.11+ / ADR-48). Composition over
+                                JetStream.
   Dext.Net.Nats.ObjectStore.pas TDextNatsObjectStoreContext / TDextNatsObjectStore:
                                 JetStream Object Store (CreateStore /
                                 UpdateStore/UpdateObjectStore / DeleteStore /
@@ -295,7 +296,8 @@ parsing frames anywhere else.
       callback `RequestAsync` overload retained
 - [x] JetStream Key-Value (`Dext.Net.Nats.KeyValue.pas` / SPEC-KV-01):
       CreateBucket / DeleteBucket / BucketExists / Put / Get / GetRevision /
-      Delete / Purge / PurgeDeletes (`DeleteMarkersOlderThan`), Keys / ListKeys,
+      Delete / Purge / PurgeDeletes (`DeleteMarkersOlderThan`), Keys / ListKeys /
+      ListKeysFiltered (multi-filter last_per_subject; `ValidateSearchKey`),
       History, Watch / WatchFiltered / WatchAll (push last_per_subject +
       EndOfInitial marker via NumPending; key wildcards `*` / `>`; MetaOnly /
       UpdatesOnly / IncludeHistory / IgnoreDeletes / ResumeFromRevision),

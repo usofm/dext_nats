@@ -14,7 +14,7 @@ Native [NATS](https://nats.io) client for the [Dext Framework](https://github.co
 | `Source/Dext.Net.Nats.DependencyInjection.pas` | `AddNatsClient` / configure / config bind (`Nats` section) / `AddNatsJetStream` |
 | `Source/Dext.Net.Nats.HealthChecks.pas` | `TNatsHealthCheck` / `AddNatsHealthCheck` (Connected; optional Flush via `TNatsHealthCheckOptions`) |
 | `Source/Dext.Net.Nats.JetStream.pas` | `TDextNatsJetStreamContext` — streams (`ListStreams` / `ListStreamNames`), pull/push consumers (`ListConsumers` / `ListConsumerNames`), Fetch, SubscribePush, ordered SubscribeOrdered, Ack/Nak/Term |
-| `Source/Dext.Net.Nats.KeyValue.pas` | `TDextNatsKeyValue` — JetStream KV (Put/Get/GetRevision/Delete/Purge, Keys, History, Watch/WatchFiltered/WatchAll, Config(), CAS Create/Update; bucket Compression/Placement) |
+| `Source/Dext.Net.Nats.KeyValue.pas` | `TDextNatsKeyValue` — JetStream KV (Put/Get/GetRevision/Delete/Purge, Keys/ListKeysFiltered, History, Watch/WatchFiltered/WatchAll, Config(), CAS Create/Update; bucket Compression/Placement) |
 | `Source/Dext.Net.Nats.ObjectStore.pas` | Object Store (`CreateStore` / `UpdateStore`/`UpdateObjectStore` / `Put` / `Get` / `GetResult` / `Delete` / `List` / `Keys`, `Watch`/`WatchAll` with EndOfInitial + MetaOnly/UpdatesOnly, `UpdateMeta`, `Seal`, `AddLink` / `AddBucketLink`, streaming `Put`/`Get` via `TStream` + `PutFile`/`GetFile`, lazy `TDextNatsObjectResult`) |
 | `Source/Dext.Net.Nats.Services.pas` | NATS Services API MVP — `TDextNatsService` (`AddService` / `AddEndpoint` / `Stop`, auto `$SRV.PING\|INFO\|STATS`) |
 
@@ -111,7 +111,7 @@ Object Store buckets are JetStream streams (`OBJ_<bucket>`, subjects `$O.<bucket
 
 ### JetStream Key-Value
 
-Buckets are JetStream streams (`KV_<bucket>`, subjects `$KV.<bucket>.>`). API: put/get/delete/purge, CAS `Create`/`Update`, `Keys`/`ListKeys`, `History`, `Watch`/`WatchFiltered`/`WatchAll` (push `last_per_subject` + updates; key filters accept NATS wildcards `*` / trailing `>`; delivers an `EndOfInitial` marker when the snapshot is done — check `AEntry.IsEndOfInitial` or `Watcher.InitialDone`; optional `TNatsKeyValueWatchOptions.MetaOnly` / `UpdatesOnly`), `Config` / `Status.Config` (STREAM.INFO read-back), and per-key TTL (NATS 2.11+: set `LimitMarkerTTL` on the bucket, then `Create(key, value, ttlNanos)` / `Purge(key, ttlNanos)` via `Nats-TTL`; bucket-level `TTL` remains stream `MaxAge`. Put/Update do not take a TTL — ADR-48).
+Buckets are JetStream streams (`KV_<bucket>`, subjects `$KV.<bucket>.>`). API: put/get/delete/purge, CAS `Create`/`Update`, `Keys`/`ListKeys`/`ListKeysFiltered` (and `Keys(filters)`; same wildcards / multi-filter as `WatchFiltered`), `History`, `Watch`/`WatchFiltered`/`WatchAll` (push `last_per_subject` + updates; key filters accept NATS wildcards `*` / trailing `>`; delivers an `EndOfInitial` marker when the snapshot is done — check `AEntry.IsEndOfInitial` or `Watcher.InitialDone`; optional `TNatsKeyValueWatchOptions.MetaOnly` / `UpdatesOnly`), `Config` / `Status.Config` (STREAM.INFO read-back), and per-key TTL (NATS 2.11+: set `LimitMarkerTTL` on the bucket, then `Create(key, value, ttlNanos)` / `Purge(key, ttlNanos)` via `Nats-TTL`; bucket-level `TTL` remains stream `MaxAge`. Put/Update do not take a TTL — ADR-48).
 
 ```delphi
 uses Dext.Collections, Dext.Net.Nats, Dext.Net.Nats.JetStream, Dext.Net.Nats.KeyValue;

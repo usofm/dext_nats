@@ -35,8 +35,10 @@
 {  IncludeHistory / ResumeFromRevision via consumer headers_only /          }
 {  deliver_policy; IgnoreDeletes filters DEL/PURGE client-side (nats.go).   }
 {  Watch / WatchFiltered accept NATS subject wildcards (* / >) on keys;     }
-{  multi-filter uses consumer filter_subjects. Config() / Status.Config     }
-{  round-trip bucket settings from STREAM.INFO (no Mirror/Sources/RePublish).}
+{  multi-filter uses consumer filter_subjects. Keys / ListKeysFiltered       }
+{  reuse the same search-key validation + last_per_subject pull. Config() / }
+{  Status.Config round-trip bucket settings from STREAM.INFO                }
+{  (no Mirror/Sources/RePublish).                                           }
 {                                                                           }
 {***************************************************************************}
 unit Dext.Net.Nats.KeyValue;
@@ -284,8 +286,10 @@ type
       ATTLNanos: Int64 = 0): UInt64;
     /// <summary>CAS create implementation shared by Create overloads (avoids ctor name clash).</summary>
     function CreateKey(const AKey: string; const AValue: TBytes; ATTLNanos: Int64): UInt64;
+    function PullSubjectEntries(const AFilterSubjects: TArray<string>;
+      ADeliver: TNatsDeliverPolicy; AIncludeDeletes: Boolean): IList<TNatsKeyValueEntry>; overload;
     function PullSubjectEntries(const AFilterSubject: string; ADeliver: TNatsDeliverPolicy;
-      AIncludeDeletes: Boolean): IList<TNatsKeyValueEntry>;
+      AIncludeDeletes: Boolean): IList<TNatsKeyValueEntry>; overload;
     function StartWatch(const AFilterSubjects: TArray<string>;
       AHandler: TNatsKeyValueWatchHandler;
       const AOptions: TNatsKeyValueWatchOptions): TDextNatsKeyValueWatcher;
@@ -380,9 +384,19 @@ type
     ///   Live key names (latest revision is a PUT). Ephemeral pull consumer with
     ///   deliver_policy=last_per_subject on $KV.&lt;bucket&gt;.&gt;.
     /// </summary>
-    function Keys: IList<string>;
-    /// <summary>Alias of <see cref="Keys"/>.</summary>
+    function Keys: IList<string>; overload;
+    /// <summary>
+    ///   Live keys matching any of AKeyFilters (subject wildcards; nats.go
+    ///   <c>ListKeysFiltered</c> / filtered Keys). Empty filters = all keys.
+    /// </summary>
+    function Keys(const AKeyFilters: TArray<string>): IList<string>; overload;
+    /// <summary>Alias of parameterless <see cref="Keys"/>.</summary>
     function ListKeys: IList<string>;
+    /// <summary>
+    ///   Live keys matching any of AKeyFilters (nats.go <c>ListKeysFiltered</c>).
+    ///   Same search-key rules as <see cref="WatchFiltered"/>; empty = all keys.
+    /// </summary>
+    function ListKeysFiltered(const AKeyFilters: TArray<string>): IList<string>;
     /// <summary>
     ///   All retained revisions for AKey (oldest first), including DEL/PURGE markers.
     ///   Ephemeral pull consumer with deliver_policy=all on the key subject.
@@ -1086,7 +1100,7 @@ begin
   Result := Status.Config;
 end;
 
-function TDextNatsKeyValue.PullSubjectEntries(const AFilterSubject: string;
+function TDextNatsKeyValue.PullSubjectEntries(const AFilterSubjects: TArray<string>;
   ADeliver: TNatsDeliverPolicy; AIncludeDeletes: Boolean): IList<TNatsKeyValueEntry>;
 const
   PULL_BATCH = 64;
@@ -1098,11 +1112,16 @@ var
   batch, i, pending: Integer;
   entry: TNatsKeyValueEntry;
 begin
+  if Length(AFilterSubjects) = 0 then
+    raise EDextNatsKeyValueError.Create('Pull requires a filter subject');
   Result := TCollections.CreateList<TNatsKeyValueEntry>;
   consumerName := 'kvpull_' + KvNewNuid;
   cons := TNatsConsumerConfig.CreateDefault;
   cons.Name := consumerName;
-  cons.FilterSubject := AFilterSubject;
+  if Length(AFilterSubjects) = 1 then
+    cons.FilterSubject := AFilterSubjects[0]
+  else
+    cons.FilterSubjects := AFilterSubjects;
   cons.DeliverPolicy := ADeliver;
   cons.AckPolicy := apNone;
   cons.MaxDeliver := 1;
@@ -1143,16 +1162,44 @@ begin
   end;
 end;
 
-function TDextNatsKeyValue.Keys: IList<string>;
+function TDextNatsKeyValue.PullSubjectEntries(const AFilterSubject: string;
+  ADeliver: TNatsDeliverPolicy; AIncludeDeletes: Boolean): IList<TNatsKeyValueEntry>;
+begin
+  Result := PullSubjectEntries([AFilterSubject], ADeliver, AIncludeDeletes);
+end;
+
+function TDextNatsKeyValue.ListKeysFiltered(const AKeyFilters: TArray<string>): IList<string>;
 var
+  subjects: TArray<string>;
   entries: IList<TNatsKeyValueEntry>;
   i: Integer;
 begin
   Result := TCollections.CreateList<string>;
-  entries := PullSubjectEntries(Format(NATS_KV_SUBJECTS, [FBucket]), dpLastPerSubject, False);
+  if Length(AKeyFilters) = 0 then
+    subjects := [Format(NATS_KV_SUBJECTS, [FBucket])]
+  else
+  begin
+    SetLength(subjects, Length(AKeyFilters));
+    for i := 0 to High(AKeyFilters) do
+    begin
+      ValidateSearchKey(AKeyFilters[i]);
+      subjects[i] := SubjectForKey(FBucket, AKeyFilters[i]);
+    end;
+  end;
+  entries := PullSubjectEntries(subjects, dpLastPerSubject, False);
   for i := 0 to entries.Count - 1 do
     if entries[i].Key <> '' then
       Result.Add(entries[i].Key);
+end;
+
+function TDextNatsKeyValue.Keys: IList<string>;
+begin
+  Result := ListKeysFiltered([]);
+end;
+
+function TDextNatsKeyValue.Keys(const AKeyFilters: TArray<string>): IList<string>;
+begin
+  Result := ListKeysFiltered(AKeyFilters);
 end;
 
 function TDextNatsKeyValue.ListKeys: IList<string>;

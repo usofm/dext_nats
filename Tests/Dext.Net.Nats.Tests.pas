@@ -358,6 +358,8 @@ type
     [Test, Category('JetStream'), Category('KeyValue')]
     procedure Keys_ShouldListLiveKeysOnly;
     [Test, Category('JetStream'), Category('KeyValue')]
+    procedure ListKeysFiltered_ShouldMatchWildcardAndMultiFilters;
+    [Test, Category('JetStream'), Category('KeyValue')]
     procedure History_ShouldReturnRevisions;
     [Test, Category('JetStream'), Category('KeyValue')]
     procedure GetRevision_ShouldReturnHistoricalPutAndTombstone;
@@ -1963,6 +1965,17 @@ begin
       procedure
       begin
         kv.WatchFiltered(['has..dot'], handler);
+      end).Throw(EDextNatsKeyValueError);
+    { ListKeysFiltered shares ValidateSearchKey (no server I/O on reject). }
+    Should(
+      procedure
+      begin
+        kv.ListKeysFiltered(['a>b']);
+      end).Throw(EDextNatsKeyValueError);
+    Should(
+      procedure
+      begin
+        kv.Keys(['.leading']);
       end).Throw(EDextNatsKeyValueError);
   finally
     kv.Free;
@@ -3751,6 +3764,84 @@ begin
     end;
     Should(sawA).BeFalse;
     Should(sawB).BeTrue;
+  finally
+    kv.Free;
+    TDextNatsKeyValue.DeleteBucket(FJs, bucket);
+  end;
+end;
+
+procedure TDextNatsKeyValueTests.ListKeysFiltered_ShouldMatchWildcardAndMultiFilters;
+var
+  bucket: string;
+  cfg: TNatsKeyValueConfig;
+  kv: TDextNatsKeyValue;
+  keys: IList<string>;
+  i: Integer;
+  sawBlue, sawRed, sawGadget, sawTool: Boolean;
+begin
+  if not EnsureJetStreamOrFail then
+    Exit;
+
+  bucket := UniqueBucket('DEXTKVLKF');
+  cfg := TNatsKeyValueConfig.CreateDefault(bucket);
+  cfg.Storage := ssMemory;
+  cfg.History := 1;
+  kv := TDextNatsKeyValue.CreateBucket(FJs, cfg);
+  try
+    kv.Put('widget.blue', '41');
+    kv.Put('widget.red', '7');
+    kv.Put('gadget.pro', '99');
+    kv.Put('tool.kit', '1');
+    kv.Delete('tool.kit');
+
+    keys := kv.ListKeysFiltered(['widget.*']);
+    sawBlue := False;
+    sawRed := False;
+    sawGadget := False;
+    sawTool := False;
+    for i := 0 to keys.Count - 1 do
+    begin
+      if keys[i] = 'widget.blue' then
+        sawBlue := True;
+      if keys[i] = 'widget.red' then
+        sawRed := True;
+      if keys[i] = 'gadget.pro' then
+        sawGadget := True;
+      if keys[i] = 'tool.kit' then
+        sawTool := True;
+    end;
+    Should(keys.Count).Be(2);
+    Should(sawBlue).BeTrue;
+    Should(sawRed).BeTrue;
+    Should(sawGadget).BeFalse;
+    Should(sawTool).BeFalse;
+
+    { Multi-filter via consumer filter_subjects; Keys overload aliases ListKeysFiltered. }
+    keys := kv.Keys(['widget.*', 'gadget.>']);
+    sawBlue := False;
+    sawRed := False;
+    sawGadget := False;
+    sawTool := False;
+    for i := 0 to keys.Count - 1 do
+    begin
+      if keys[i] = 'widget.blue' then
+        sawBlue := True;
+      if keys[i] = 'widget.red' then
+        sawRed := True;
+      if keys[i] = 'gadget.pro' then
+        sawGadget := True;
+      if keys[i] = 'tool.kit' then
+        sawTool := True;
+    end;
+    Should(keys.Count).Be(3);
+    Should(sawBlue).BeTrue;
+    Should(sawRed).BeTrue;
+    Should(sawGadget).BeTrue;
+    Should(sawTool).BeFalse;
+
+    { Empty filters = all live keys (same as Keys). }
+    keys := kv.ListKeysFiltered([]);
+    Should(keys.Count).Be(3);
   finally
     kv.Free;
     TDextNatsKeyValue.DeleteBucket(FJs, bucket);
