@@ -247,7 +247,8 @@ parsing frames anywhere else.
   AddLink / Seal / DeleteStore)
 - [x] VCL demo (`Demo/VCLDemo/`): multi-connection tabs, connect toggle,
   Publish/Subscribe/Request/Unsubscribe, shared log, JetStream helper form
-  (stream/consumer admin, publish, Fetch/Ack), Key-Value and Object Store forms
+  (stream/consumer admin incl. ListStreams / ListConsumers, publish, Fetch/Ack),
+  Key-Value and Object Store forms
 - [x] TLS on `TDextNatsClient` via `TDextTLSOptions` / `IDextTLSEngine`
       (upgrade after cleartext INFO when `tls_required` or `Options.TLS.Enabled`)
 - [x] `README.md` with usage examples

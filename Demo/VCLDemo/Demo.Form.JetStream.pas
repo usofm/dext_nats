@@ -44,6 +44,9 @@ type
     edtStreamNameDetail: TEdit;
     lblStreamNameDetail: TLabel;
     btnStreamExists: TButton;
+    grpStreamList: TGroupBox;
+    btnListStreams: TButton;
+    lbStreams: TListBox;
     grpPublish: TGroupBox;
     lblPublishSubject: TLabel;
     edtPublishSubject: TEdit;
@@ -66,11 +69,13 @@ type
     grpConsumerDetails: TGroupBox;
     mmConsumerInfo: TMemo;
     btnConsumerInfo: TButton;
+    btnListConsumers: TButton;
     btnConsumerDelete: TButton;
     edtConsumerNameDetail: TEdit;
     lblConsumerNameDetail: TLabel;
     edtConsumerStreamNameDetail: TEdit;
     lblConsumerStreamNameDetail: TLabel;
+    lbConsumers: TListBox;
     grpConsume: TGroupBox;
     lblConsumeStream: TLabel;
     edtConsumeStream: TEdit;
@@ -88,9 +93,13 @@ type
     procedure btnStreamInfoClick(Sender: TObject);
     procedure btnStreamDeleteClick(Sender: TObject);
     procedure btnStreamExistsClick(Sender: TObject);
+    procedure btnListStreamsClick(Sender: TObject);
+    procedure lbStreamsDblClick(Sender: TObject);
     procedure btnPublishClick(Sender: TObject);
     procedure btnConsumerCreateClick(Sender: TObject);
     procedure btnConsumerInfoClick(Sender: TObject);
+    procedure btnListConsumersClick(Sender: TObject);
+    procedure lbConsumersDblClick(Sender: TObject);
     procedure btnConsumerDeleteClick(Sender: TObject);
     procedure btnFetchMessagesClick(Sender: TObject);
     procedure btnAckAllClick(Sender: TObject);
@@ -337,6 +346,55 @@ begin
   end;
 end;
 
+procedure TfrmJetStream.btnListStreamsClick(Sender: TObject);
+var
+  infos: IList<TNatsStreamInfo>;
+  i: Integer;
+  info: TNatsStreamInfo;
+  line: string;
+begin
+  try
+    EnsureJS;
+    infos := FJS.ListStreams;
+    lbStreams.Items.BeginUpdate;
+    try
+      lbStreams.Clear;
+      mmStreamInfo.Clear;
+      mmStreamInfo.Lines.Add(Format('Streams: %d', [infos.Count]));
+      for i := 0 to infos.Count - 1 do
+      begin
+        info := infos[i];
+        line := Format('%s  msgs=%s  consumers=%d',
+          [info.Name, info.Messages.ToString, info.ConsumerCount]);
+        lbStreams.Items.Add(info.Name);
+        mmStreamInfo.Lines.Add(line);
+        Log(line);
+      end;
+    finally
+      lbStreams.Items.EndUpdate;
+    end;
+    Log(Format('ListStreams returned %d stream(s).', [infos.Count]));
+  except
+    on E: Exception do
+      Log('ListStreams failed: ' + E.Message);
+  end;
+end;
+
+procedure TfrmJetStream.lbStreamsDblClick(Sender: TObject);
+var
+  name: string;
+begin
+  if lbStreams.ItemIndex < 0 then
+    Exit;
+  name := lbStreams.Items[lbStreams.ItemIndex];
+  edtStreamNameDetail.Text := name;
+  edtPublishExpectedStream.Text := name;
+  edtConsumerStreamNameCreate.Text := name;
+  edtConsumerStreamNameDetail.Text := name;
+  edtConsumeStream.Text := name;
+  Log('Selected stream "' + name + '".');
+end;
+
 procedure TfrmJetStream.btnPublishClick(Sender: TObject);
 var
   opts: TNatsJetStreamPublishOptions;
@@ -417,6 +475,60 @@ begin
     on E: Exception do
       Log('GetConsumerInfo failed: ' + E.Message);
   end;
+end;
+
+procedure TfrmJetStream.btnListConsumersClick(Sender: TObject);
+var
+  infos: IList<TNatsConsumerInfo>;
+  streamName: string;
+  i: Integer;
+  info: TNatsConsumerInfo;
+  line: string;
+begin
+  try
+    EnsureJS;
+    streamName := Trim(edtConsumerStreamNameDetail.Text);
+    if streamName = '' then
+    begin
+      Log('Enter a stream name to list consumers.');
+      Exit;
+    end;
+    infos := FJS.ListConsumers(streamName);
+    lbConsumers.Items.BeginUpdate;
+    try
+      lbConsumers.Clear;
+      mmConsumerInfo.Clear;
+      mmConsumerInfo.Lines.Add(Format('Consumers on "%s": %d', [streamName, infos.Count]));
+      for i := 0 to infos.Count - 1 do
+      begin
+        info := infos[i];
+        line := Format('%s  pending=%s  filter=%s',
+          [info.Name, info.NumPending.ToString, info.FilterSubject]);
+        lbConsumers.Items.Add(info.Name);
+        mmConsumerInfo.Lines.Add(line);
+        Log(line);
+      end;
+    finally
+      lbConsumers.Items.EndUpdate;
+    end;
+    Log(Format('ListConsumers returned %d consumer(s) on "%s".',
+      [infos.Count, streamName]));
+  except
+    on E: Exception do
+      Log('ListConsumers failed: ' + E.Message);
+  end;
+end;
+
+procedure TfrmJetStream.lbConsumersDblClick(Sender: TObject);
+var
+  name: string;
+begin
+  if lbConsumers.ItemIndex < 0 then
+    Exit;
+  name := lbConsumers.Items[lbConsumers.ItemIndex];
+  edtConsumerNameDetail.Text := name;
+  edtConsumeConsumer.Text := name;
+  Log('Selected consumer "' + name + '".');
 end;
 
 procedure TfrmJetStream.btnConsumerDeleteClick(Sender: TObject);

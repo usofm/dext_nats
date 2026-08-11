@@ -70,6 +70,32 @@
           OnClick = btnStreamCreateClick
         end
       end
+      object grpStreamList: TGroupBox
+        Left = 12
+        Top = 164
+        Width = 380
+        Height = 148
+        Caption = ' List Streams '
+        TabOrder = 2
+        object btnListStreams: TButton
+          Left = 12
+          Top = 24
+          Width = 140
+          Height = 28
+          Caption = 'List Streams'
+          TabOrder = 0
+          OnClick = btnListStreamsClick
+        end
+        object lbStreams: TListBox
+          Left = 12
+          Top = 60
+          Width = 352
+          Height = 72
+          ItemHeight = 15
+          TabOrder = 1
+          OnDblClick = lbStreamsDblClick
+        end
+      end
       object grpStreamDetails: TGroupBox
         Left = 408
         Top = 12
@@ -313,11 +339,20 @@
         object btnConsumerInfo: TButton
           Left = 224
           Top = 42
-          Width = 140
+          Width = 68
           Height = 28
           Caption = 'Info'
           TabOrder = 2
           OnClick = btnConsumerInfoClick
+        end
+        object btnListConsumers: TButton
+          Left = 298
+          Top = 42
+          Width = 68
+          Height = 28
+          Caption = 'List'
+          TabOrder = 5
+          OnClick = btnListConsumersClick
         end
         object btnConsumerDelete: TButton
           Left = 224
@@ -328,11 +363,20 @@
           TabOrder = 3
           OnClick = btnConsumerDeleteClick
         end
+        object lbConsumers: TListBox
+          Left = 12
+          Top = 124
+          Width = 352
+          Height = 56
+          ItemHeight = 15
+          TabOrder = 6
+          OnDblClick = lbConsumersDblClick
+        end
         object mmConsumerInfo: TMemo
           Left = 12
-          Top = 132
+          Top = 188
           Width = 352
-          Height = 152
+          Height = 96
           ReadOnly = True
           ScrollBars = ssVertical
           TabOrder = 4
