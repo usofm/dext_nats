@@ -337,7 +337,12 @@ type
     property Connected: Boolean read GetConnected;
     /// <summary>True while <see cref="Drain"/> is in progress (before the final Disconnect).</summary>
     property IsDraining: Boolean read GetIsDraining;
-    /// <summary>Snapshot of the last INFO message received from the server.</summary>
+    /// <summary>
+    ///   Snapshot of the last INFO JSON from the server (handshake and later async
+    ///   INFO refreshes). Includes limits (<c>MaxPayload</c>), cluster/domain,
+    ///   account bind hints (<c>RemoteAccount</c> / <c>IsSystemAccount</c>), and
+    ///   <c>LameDuckMode</c> when advertised — see <see cref="TNatsServerInfo"/>.
+    /// </summary>
     property ServerInfo: TNatsServerInfo read FServerInfo;
     property Options: TDextNatsOptions read FOptions write FOptions;
     property Host: string read FHost;

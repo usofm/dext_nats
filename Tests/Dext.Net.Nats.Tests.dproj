@@ -104,6 +104,7 @@
         <DCCReference Include="..\Source\Dext.Net.Nats.JetStream.pas"/>
         <DCCReference Include="..\Source\Dext.Net.Nats.KeyValue.pas"/>
         <DCCReference Include="..\Source\Dext.Net.Nats.ObjectStore.pas"/>
+        <DCCReference Include="..\Source\Dext.Net.Nats.Services.pas"/>
         <DCCReference Include="..\Source\Dext.Net.Nats.DependencyInjection.pas"/>
         <DCCReference Include="..\Source\Dext.Net.Nats.HealthChecks.pas"/>
         <DCCReference Include="Dext.Net.Nats.Tests.pas"/>

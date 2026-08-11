@@ -17,14 +17,17 @@ and feels like a first-party Dext component.
 ```
 Source/
   Dext.Net.Nats.Protocol.pas   Pure wire-protocol layer: constants, INFO/CONNECT
-                                JSON, headers, TNatsFrame, TDextNatsFrameParser
-                                (incremental parser), frame encoders. NO socket I/O.
+                                JSON (`TNatsServerInfo` incl. domain / account /
+                                ldm / max_payload / ws_connect_urls, …), headers,
+                                TNatsFrame, TDextNatsFrameParser (incremental
+                                parser), frame encoders. NO socket I/O.
   Dext.Net.Nats.NKeys.pas       NKey/JWT helpers: seed decode, Ed25519 nonce
                                 signing (OpenSSL libcrypto), .creds parse,
                                 CONNECT jwt|nkey+sig. NO socket I/O.
   Dext.Net.Nats.pas             TDextNatsClient: the public API. Socket I/O,
                                 threading, reconnection, pub/sub, request/reply,
                                 Drain/DrainAsync/IsDraining, NKey/JWT auth,
+                                ServerInfo snapshot (handshake + async INFO),
                                 optional ILogger + opt-in TMetrics.
   Dext.Net.Nats.DependencyInjection.pas
                                 Dext.DI helpers: AddNatsClient (singleton),
@@ -38,8 +41,9 @@ Source/
                                 ListStreamNames), consumer list
                                 (ListConsumers / ListConsumerNames),
                                 dedup'd publish, pull Fetch + push
-                                SubscribePush, Ack/Nak/Term/InProgress via
-                                $JS.API.*.
+                                SubscribePush, ordered SubscribeOrdered
+                                (ADR-17 TDextNatsOrderedConsumer),
+                                Ack/Nak/Term/InProgress via $JS.API.*.
   Dext.Net.Nats.KeyValue.pas    TDextNatsKeyValue: JetStream KV buckets
                                 (CreateBucket/Put/Get/Delete/Purge, Keys/ListKeys,
                                 History, Watch/WatchAll (EndOfInitial marker,
@@ -58,6 +62,11 @@ Source/
                                 Put with TNatsObjectMeta); Get follows object
                                 links; bucket links raise. Composition over
                                 JetStream; does not own the client.
+  Dext.Net.Nats.Services.pas    TDextNatsService: NATS Services API MVP (ADR-32 /
+                                nats.go micro) — AddService / AddEndpoint /
+                                Stop / Reset; auto $SRV.PING|INFO|STATS;
+                                Respond / RespondError. Composition over
+                                TDextNatsClient; does not own the client.
 Demo/
   PubSubE2E/                    One-way core pub/sub E2E console smoke test
                                 against a plain local `nats-server` (no JetStream).
@@ -113,12 +122,14 @@ in `Dext.Net.Nats.pas`.
 `Dext.Net.Nats.JetStream.pas` depends on `Dext.Net.Nats` — never the reverse.
 `Dext.Net.Nats.KeyValue.pas` / `Dext.Net.Nats.ObjectStore.pas` depend on
 JetStream — never the reverse.
-`TDextNatsJetStreamContext` / `TDextNatsKeyValue` / Object Store types wrap an
-already-connected client (or JetStream context) by composition; they do not own
-those lifetimes (Object Store may own a JetStream wrapper it creates from a
-client). Admin JSON (`ToJson` / `Parse` / API error objects) uses
-`Dext.Json.Utf8` (`TUtf8JsonReader` / `TUtf8JsonWriter`), same pattern as
-Protocol INFO/CONNECT.
+`Dext.Net.Nats.Services.pas` depends on `Dext.Net.Nats` — never the reverse
+(and never on JetStream).
+`TDextNatsJetStreamContext` / `TDextNatsKeyValue` / Object Store /
+`TDextNatsService` wrap an already-connected client (or JetStream context) by
+composition; they do not own those lifetimes (Object Store may own a JetStream
+wrapper it creates from a client). Admin JSON (`ToJson` / `Parse` / API error
+objects) and Services discovery JSON use `Dext.Json.Utf8`
+(`TUtf8JsonReader` / `TUtf8JsonWriter`), same pattern as Protocol INFO/CONNECT.
 
 ## Reference material — read before extending
 
@@ -219,7 +230,8 @@ parsing frames anywhere else.
  `compression` / `placement`), consumer admin including
  `ListConsumers` / `ListConsumerNames` (`CONSUMER.LIST` / `CONSUMER.NAMES`),
  dedup'd publish with a `Nats-Msg-Id` header, Fetch, Ack/Nak/Term/InProgress,
- and push `SubscribePush` on `deliver_subject`
+ push `SubscribePush` on `deliver_subject`, and ordered `SubscribeOrdered`
+ (`TDextNatsOrderedConsumer` / ADR-17 push helper)
 - [x] Object Store (`Dext.Net.Nats.ObjectStore.pas`): CreateStore / OpenStore /
       UpdateStore / UpdateObjectStore (STREAM.UPDATE on OBJ_*; description /
       max_bytes / MaxAge TTL / storage / replicas / compression / placement),
@@ -234,7 +246,9 @@ parsing frames anywhere else.
       following), streaming Put/Get (`TStream`, `PutFile` / `GetFile`,
       `Put(TNatsObjectMeta, TStream)` chunked SHA-256 without loading whole
       payload into one `TBytes`);
-      deferred vs nats.go: lazy ObjectResult reader, Get/Put show-deleted opts
+      ShowDeleted on Get/GetInfo/GetFile + List IncludeDeleted/ShowDeleted;
+      lazy ObjectResult (`TDextNatsObjectResult` / `GetResult`: on-demand
+      chunk Fetch + digest at EOF; `Get(TStream)` drains via GetResult)
 - [x] Unit/integration tests in `Tests/Dext.Net.Nats.Tests.pas` (use `Dext.Testing`)
 - [x] Console demo projects (`.dpr`/`.dproj`): `Demo/PubSubE2E/` (core one-way
   pub/sub), `Demo/RequestReplyE2E/` (request/reply + no-responders),
@@ -277,6 +291,12 @@ parsing frames anywhere else.
       CAS Create / Update (`Nats-Expected-Last-Subject-Sequence`),
       per-key TTL (`LimitMarkerTTL` + `Create`/`Purge` with `Nats-TTL`; NATS 2.11+)
 - [x] Release **1.0.0** — `CHANGELOG.md`, README version line, git tag `v1.0.0`
+- [x] NATS Services API MVP (`Dext.Net.Nats.Services.pas`): AddService /
+      AddEndpoint / Stop / Reset, `$SRV.PING|INFO|STATS`, Respond /
+      RespondError; gaps vs nats.go micro noted in unit header + FUTURE_PLAN
+- [x] Richer INFO / `TDextNatsClient.ServerInfo` — domain, remote_account,
+      acc_is_sys, ldm, api_lvl, cluster*, git_commit, tls_verify, ws_connect_urls
+      (account JWT limit claims / OnLameDuckMode / $SYS monitoring still deferred)
 
 ## Working style expected of an agent here
 

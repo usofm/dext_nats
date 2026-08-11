@@ -22,6 +22,7 @@ jobs:
           test -f Source/Dext.Net.Nats.JetStream.pas
           test -f Source/Dext.Net.Nats.KeyValue.pas
           test -f Source/Dext.Net.Nats.ObjectStore.pas
+          test -f Source/Dext.Net.Nats.Services.pas
           test -f Tests/Dext.Net.Nats.Tests.dproj
           test -f Dext.Nats.groupproj
           test -f CHANGELOG.md

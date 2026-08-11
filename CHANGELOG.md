@@ -3,6 +3,16 @@
 All notable releases of this library are documented here.  
 Format inspired by [Keep a Changelog](https://keepachangelog.com/); versioning follows [SemVer](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **Object Store show-deleted:** `TNatsObjectStoreGetOptions.ShowDeleted` for `Get` / `GetInfo` / `GetFile`; `TNatsObjectStoreListOptions.ShowDeleted` alongside existing `List`/`ListObjects(AIncludeDeleted)` (nats.go `*ShowDeleted` parity). Put has no public flag — re-Put after Delete already sees tombstones.
+- **Object Store lazy ObjectResult:** `TDextNatsObjectResult` (`TStream`) + `GetResult` — chunk Fetch on `Read`, SHA-256/size verified at EOF (nats.go `ObjectResult`). Eager `Get(TStream)` / `Get(TBytes)` / `GetFile` drain via `GetResult`.
+- **JetStream ordered consumer:** `SubscribeOrdered` / `TDextNatsOrderedConsumer` + `TNatsOrderedConsumerOptions` (ADR-17 push: ephemeral, `ack_policy=none`, flow_control + idle heartbeats, mem_storage, recreate on consumer-sequence gap / missed HB). Consumer config gains `FlowControl` / `IdleHeartbeat` / `InactiveThreshold` / `MemoryStorage` / `NumReplicas`.
+- **NATS Services API (MVP):** `Source/Dext.Net.Nats.Services.pas` — `TDextNatsService.AddService` / `AddEndpoint` / `Stop` / `Reset`, auto `$SRV.PING|INFO|STATS` (all / kind / instance), `Respond` / `RespondError`, default queue `q`. Composition over `TDextNatsClient` (does not own it).
+- **Richer server INFO:** `TNatsServerInfo` parses additional wire fields (`git_commit`, `ip`, `tls_verify`, `api_lvl`, `cluster`, `cluster_dynamic`, `domain`, `remote_account`, `acc_is_sys`, `ldm`, `ws_connect_urls`) and exposes them via existing `TDextNatsClient.ServerInfo` (updated on handshake and async INFO).
+
 ## [1.0.0] — 2026-08-11
 
 First production-oriented release of the native NATS client for the Dext Framework (Delphi 12 / Studio 23.0).
@@ -14,16 +24,16 @@ First production-oriented release of the native NATS client for the Dext Framewo
 - **Auth:** user/password/token, NKey/JWT, `.creds`
 - **Async:** `RequestAsync` / `FlushAsync` (`TAsyncBuilder`)
 - **DI / ops:** `AddNatsClient` / config bind / `AddNatsJetStream`, optional `ILogger`, opt-in metrics, `TNatsHealthCheck`
-- **JetStream:** stream/consumer admin (`ListStreams` / `ListConsumers`, …), Fetch, push `SubscribePush`, Ack/Nak/Term/InProgress, compression (`s2`) + placement on stream config
+- **JetStream:** stream/consumer admin (`ListStreams` / `ListConsumers`, …), Fetch, push `SubscribePush`, ordered `SubscribeOrdered`, Ack/Nak/Term/InProgress, compression (`s2`) + placement on stream config
 - **Key-Value:** Put/Get/Delete/Purge, Keys, History, Watch (EndOfInitial, MetaOnly/UpdatesOnly, IncludeHistory, IgnoreDeletes, ResumeFromRevision), CAS Create/Update, per-key TTL (server 2.11+)
-- **Object Store:** Create/Update/Delete store, Put/Get/Delete, List/Keys, Watch, UpdateMeta, Seal, links, streaming Put/Get + PutFile/GetFile
+- **Object Store:** Create/Update/Delete store, Put/Get/Delete, List/Keys, Watch, UpdateMeta, Seal, links, streaming Put/Get + PutFile/GetFile, lazy `GetResult` / `TDextNatsObjectResult`
 - **DX:** unit + live tests (`Dext.Testing`), console E2E demos, VCLDemo, `Dext.Nats.groupproj`
 
 ### Not supported / deferred (not blocking 1.0)
 
-- Object Store show-deleted options; lazy on-demand ObjectResult reader
-- NATS Services API (`$SRV.*`); ordered-consumer helper
-- Full account INFO surface beyond current `TNatsServerInfo`
+- Full nats.go micro parity beyond Services MVP (groups, StatsHandler schema depth, Done/Error handlers, sub Drain on Stop) — see `Docs/NATS_FUTURE_PLAN.md`
+- Account JWT/claims limit objects and dedicated `OnLameDuckMode` (INFO `ldm` is on `ServerInfo.LameDuckMode`; full account limits are not on INFO wire)
+- Modern nats.go pull `jetstream.OrderedConsumer` / multi-filter / `OptStartTime` (push ADR-17 helper is present)
 - B2B Agent / `TNatsManager` product (design only: `Docs/NATS_B2B_AGENT_PLAN.md`)
 - MQTT feature port (architecture notes only: `Docs/MQTT_VS_NATS.md`)
 - Hosted CI with Embarcadero compilers (local reproduce documented in README; self-hosted runner TBD)

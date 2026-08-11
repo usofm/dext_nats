@@ -25,7 +25,10 @@
 {  Keys, Watch / WatchAll (EndOfInitial marker + MetaOnly / UpdatesOnly),  }
 {  UpdateMeta, Seal, AddLink / AddBucketLink.                               }
 {  Streaming Put/Get: TStream + PutFile/GetFile (chunked, no full TBytes).  }
+{  Lazy GetResult (TDextNatsObjectResult): on-demand chunk Fetch + digest   }
+{  verify at EOF (nats.go ObjectResult).                                    }
 {  Get follows object links (same or other bucket); bucket links raise.     }
+{  ShowDeleted on Get/GetInfo (and List AIncludeDeleted) for tombstones.    }
 {  UpdateStore maps mutable bucket fields (incl. compression/placement) onto }
 {  STREAM.UPDATE (OBJ_*).                                              }
 {  TDextNatsObjectStoreContext wraps a TDextNatsJetStreamContext (or        }
@@ -39,6 +42,7 @@ interface
 uses
   System.SysUtils,
   System.Classes,
+  System.Hash,
   System.SyncObjs,
   Dext.Collections,
   Dext.Collections.Dict,
@@ -170,6 +174,93 @@ type
   end;
 
   /// <summary>
+  ///   Options for <see cref="TDextNatsObjectStore.Get"/> / GetInfo / GetFile
+  ///   (nats.go <c>GetObjectShowDeleted</c> / <c>GetObjectInfoShowDeleted</c>).
+  /// </summary>
+  TNatsObjectStoreGetOptions = record
+    /// <summary>
+    ///   When True, return soft-deleted object meta (and empty Get payload after chunk
+    ///   purge). Default False treats deleted as not found.
+    /// </summary>
+    ShowDeleted: Boolean;
+    /// <summary>Defaults: ShowDeleted=False.</summary>
+    class function CreateDefault: TNatsObjectStoreGetOptions; static;
+  end;
+
+  /// <summary>
+  ///   Options for <see cref="TDextNatsObjectStore.List"/> / ListObjects
+  ///   (nats.go <c>ListObjectsShowDeleted</c>). Equivalent to the Boolean
+  ///   <c>AIncludeDeleted</c> overload.
+  /// </summary>
+  TNatsObjectStoreListOptions = record
+    /// <summary>When True, include soft-deleted tombstone meta in the snapshot.</summary>
+    ShowDeleted: Boolean;
+    /// <summary>Defaults: ShowDeleted=False.</summary>
+    class function CreateDefault: TNatsObjectStoreListOptions; static;
+  end;
+
+  /// <summary>
+  ///   Lazy Object Store get result (nats.go <c>ObjectResult</c>). Forward-only
+  ///   <see cref="TStream"/>: chunk payloads are pulled on <c>Read</c> (batched
+  ///   Fetch); SHA-256 digest and size are verified when Read reaches EOF.
+  ///   Does not own the JetStream context. Call <see cref="Close"/> or Free to
+  ///   delete the ephemeral pull consumer (partial reads skip digest verify).
+  /// </summary>
+  TDextNatsObjectResult = class(TStream)
+  private
+    const
+      CHUNK_FETCH_BATCH = 16;
+    var
+      FJs: TDextNatsJetStreamContext;
+      FStreamName: string;
+      FChunkSubject: string;
+      FConsumerName: string;
+      FInfo: TNatsObjectInfo;
+      FHash: THashSHA2;
+      FBatch: IList<TNatsJsMsg>;
+      FBatchIndex: Integer;
+      FChunkOffset: Integer;
+      FChunksGot: Cardinal;
+      FBytesRead: UInt64;
+      FConsumerReady: Boolean;
+      FClosed: Boolean;
+      FEof: Boolean;
+      FFailed: Boolean;
+    procedure EnsureConsumer;
+    procedure FetchMore;
+    procedure FinalizeAtEof;
+    procedure CleanupConsumer;
+    procedure Fail(const AMsg: string); overload;
+    procedure FailFmt(const AMsg: string; const AArgs: array of const);
+    function GetObjectInfo: TNatsObjectInfo;
+  protected
+    function GetSize: Int64; override;
+    function GetPosition: Int64; override;
+    procedure SetPosition(const Pos: Int64); override;
+    function GetCanRead: Boolean; override;
+    function GetCanSeek: Boolean; override;
+    function GetCanWrite: Boolean; override;
+  public
+    /// <summary>
+    ///   Binds to an already-resolved object (links followed by
+    ///   <see cref="TDextNatsObjectStore.GetResult"/>). Creates no consumer until
+    ///   the first Read that needs chunks.
+    /// </summary>
+    constructor Create(AJs: TDextNatsJetStreamContext; const AStreamName,
+      AChunkSubject: string; const AInfo: TNatsObjectInfo);
+    destructor Destroy; override;
+    function Read(var Buffer; Count: Longint): Longint; override;
+    function Write(const Buffer; Count: Longint): Longint; override;
+    function Seek(const Offset: Int64; Origin: TSeekOrigin): Int64; override;
+    /// <summary>Deletes the pull consumer; idempotent. Also called from Destroy.</summary>
+    procedure Close;
+    /// <summary>Resolved object metadata (after link follow).</summary>
+    property Info: TNatsObjectInfo read GetObjectInfo;
+    /// <summary>True after a permanent Read failure (digest / size / fetch).</summary>
+    property Failed: Boolean read FFailed;
+  end;
+
+  /// <summary>
   ///   Active Object Store watch (ephemeral push consumer + deliver-subject SUB).
   ///   Does not own the JetStream context. Call <see cref="Stop"/> or Free before
   ///   freeing the Object Store. Handlers run on the client's receive thread —
@@ -215,12 +306,6 @@ type
     function TryGetInfo(const AObjectName: string; out AInfo: TNatsObjectInfo): Boolean;
     procedure PublishMeta(const AInfo: TNatsObjectInfo);
     procedure PurgeSubject(const ASubject: string);
-    /// <summary>
-    ///   Pulls chunks in modest batches and writes each payload to AStream while
-    ///   hashing (avoids assembling one giant TBytes).
-    /// </summary>
-    procedure WriteChunksToStream(const ANuid: string; AChunkCount: Cardinal;
-      AStream: TStream; out AWritten: UInt64; out ADigest: string);
     function PutFromStream(const AName: string; AStream: TStream;
       const ADescription: string; const AHeaders: TNatsHeaders;
       const AMetadata: IDictionary<string, string>): TNatsObjectInfo;
@@ -254,26 +339,50 @@ type
     ///   Reassembles chunks for AName. Object links are followed (same or other
     ///   bucket via OpenStore) like nats.go; the returned / out info is the
     ///   resolved target. Bucket links raise (cannot get a whole bucket).
-    ///   Raises if missing, deleted, or digest mismatch.
+    ///   Raises if missing, deleted (unless ShowDeleted), or digest mismatch.
     /// </summary>
     function Get(const AName: string): TBytes; overload;
+    /// <summary>Get with <see cref="TNatsObjectStoreGetOptions"/> (ShowDeleted).</summary>
+    function Get(const AName: string; const AOptions: TNatsObjectStoreGetOptions): TBytes; overload;
     /// <summary>Same as Get; AInfo is the resolved target metadata after link follow.</summary>
     function Get(const AName: string; out AInfo: TNatsObjectInfo): TBytes; overload;
+    /// <summary>Get with out-info and <see cref="TNatsObjectStoreGetOptions"/>.</summary>
+    function Get(const AName: string; out AInfo: TNatsObjectInfo;
+      const AOptions: TNatsObjectStoreGetOptions): TBytes; overload;
     /// <summary>
-    ///   Writes object bytes into AStream (batched chunk fetch + digest verify).
+    ///   Writes object bytes into AStream via <see cref="GetResult"/> (eager drain).
     ///   Object links are followed like Get(TBytes). Returns resolved target info.
     /// </summary>
     function Get(const AName: string; AStream: TStream): TNatsObjectInfo; overload;
+    /// <summary>Streaming Get with <see cref="TNatsObjectStoreGetOptions"/>.</summary>
+    function Get(const AName: string; AStream: TStream;
+      const AOptions: TNatsObjectStoreGetOptions): TNatsObjectInfo; overload;
+    /// <summary>
+    ///   Lazy reader for AName (nats.go <c>Get</c> → <c>ObjectResult</c>).
+    ///   Returns immediately with meta; chunk Fetch happens on Read. Caller must
+    ///   Free the result. Links are followed like other Get overloads.
+    /// </summary>
+    function GetResult(const AName: string): TDextNatsObjectResult; overload;
+    /// <summary>GetResult with <see cref="TNatsObjectStoreGetOptions"/> (ShowDeleted).</summary>
+    function GetResult(const AName: string;
+      const AOptions: TNatsObjectStoreGetOptions): TDextNatsObjectResult; overload;
     /// <summary>
     ///   Downloads AName into AFileName (creates or overwrites). Returns resolved
     ///   target info after link follow.
     /// </summary>
-    function GetFile(const AName, AFileName: string): TNatsObjectInfo;
+    function GetFile(const AName, AFileName: string): TNatsObjectInfo; overload;
+    /// <summary>GetFile with <see cref="TNatsObjectStoreGetOptions"/>.</summary>
+    function GetFile(const AName, AFileName: string;
+      const AOptions: TNatsObjectStoreGetOptions): TNatsObjectInfo; overload;
     /// <summary>
-    ///   Current metadata for a live (non-deleted) object. Does not follow links —
-    ///   link entries surface their own meta (<see cref="TNatsObjectInfo.Link"/>).
+    ///   Current metadata for a live object (deleted raises unless ShowDeleted).
+    ///   Does not follow links — link entries surface their own meta
+    ///   (<see cref="TNatsObjectInfo.Link"/>).
     /// </summary>
-    function GetInfo(const AName: string): TNatsObjectInfo;
+    function GetInfo(const AName: string): TNatsObjectInfo; overload;
+    /// <summary>GetInfo with <see cref="TNatsObjectStoreGetOptions"/> (ShowDeleted).</summary>
+    function GetInfo(const AName: string;
+      const AOptions: TNatsObjectStoreGetOptions): TNatsObjectInfo; overload;
     /// <summary>
     ///   Creates (or replaces an existing link named AName with) an object link to
     ///   ATarget. Meta JSON: <c>options.link = {bucket, name}</c>. Target must not
@@ -307,12 +416,17 @@ type
     /// <summary>
     ///   Snapshot of object metadata from <c>$O.&lt;bucket&gt;.M.&gt;</c>
     ///   (ephemeral pull, <c>deliver_policy=last_per_subject</c>).
-    ///   Soft-deleted objects are omitted unless AIncludeDeleted is True.
+    ///   Soft-deleted objects are omitted unless AIncludeDeleted is True
+    ///   (nats.go <c>ListObjectsShowDeleted</c>).
     ///   Empty bucket returns an empty list (not an error).
     /// </summary>
-    function List(AIncludeDeleted: Boolean = False): IList<TNatsObjectInfo>;
+    function List(AIncludeDeleted: Boolean = False): IList<TNatsObjectInfo>; overload;
+    /// <summary>List with <see cref="TNatsObjectStoreListOptions"/> (ShowDeleted).</summary>
+    function List(const AOptions: TNatsObjectStoreListOptions): IList<TNatsObjectInfo>; overload;
     /// <summary>Alias of <see cref="List"/> (ADR-20 List / ListObjects naming).</summary>
-    function ListObjects(AIncludeDeleted: Boolean = False): IList<TNatsObjectInfo>;
+    function ListObjects(AIncludeDeleted: Boolean = False): IList<TNatsObjectInfo>; overload;
+    /// <summary>ListObjects with <see cref="TNatsObjectStoreListOptions"/>.</summary>
+    function ListObjects(const AOptions: TNatsObjectStoreListOptions): IList<TNatsObjectInfo>; overload;
     /// <summary>Live (non-deleted) object names from <see cref="List"/>.</summary>
     function Keys: IList<string>;
     /// <summary>
@@ -379,7 +493,6 @@ type
 implementation
 
 uses
-  System.Hash,
   System.NetEncoding,
   Dext.Core.Span,
   Dext.Json.Utf8;
@@ -703,6 +816,20 @@ end;
 class function TNatsObjectStoreWatchOptions.CreateDefault: TNatsObjectStoreWatchOptions;
 begin
   Result := Default(TNatsObjectStoreWatchOptions);
+end;
+
+{ TNatsObjectStoreGetOptions }
+
+class function TNatsObjectStoreGetOptions.CreateDefault: TNatsObjectStoreGetOptions;
+begin
+  Result := Default(TNatsObjectStoreGetOptions);
+end;
+
+{ TNatsObjectStoreListOptions }
+
+class function TNatsObjectStoreListOptions.CreateDefault: TNatsObjectStoreListOptions;
+begin
+  Result := Default(TNatsObjectStoreListOptions);
 end;
 
 procedure ObjParseLinkObject(var AReader: TUtf8JsonReader; out ALink: TNatsObjectLink);
@@ -1207,85 +1334,256 @@ begin
   ObjParseSuccessResponse(reply);
 end;
 
-procedure TDextNatsObjectStore.WriteChunksToStream(const ANuid: string;
-  AChunkCount: Cardinal; AStream: TStream; out AWritten: UInt64; out ADigest: string);
-const
-  CHUNK_FETCH_BATCH = 16;
+{ TDextNatsObjectResult }
+
+constructor TDextNatsObjectResult.Create(AJs: TDextNatsJetStreamContext;
+  const AStreamName, AChunkSubject: string; const AInfo: TNatsObjectInfo);
+begin
+  inherited Create;
+  if AJs = nil then
+    raise EDextNatsObjectStoreError.Create('Object Store result requires JetStream');
+  FJs := AJs;
+  FStreamName := AStreamName;
+  FChunkSubject := AChunkSubject;
+  FInfo := AInfo;
+  FHash := THashSHA2.Create(THashSHA2.TSHA2Version.SHA256);
+  FBatchIndex := 0;
+  FChunkOffset := 0;
+  FChunksGot := 0;
+  FBytesRead := 0;
+  FConsumerReady := False;
+  FClosed := False;
+  FEof := False;
+  FFailed := False;
+end;
+
+destructor TDextNatsObjectResult.Destroy;
+begin
+  Close;
+  inherited;
+end;
+
+function TDextNatsObjectResult.GetObjectInfo: TNatsObjectInfo;
+begin
+  Result := FInfo;
+end;
+
+function TDextNatsObjectResult.GetSize: Int64;
+begin
+  Result := Int64(FInfo.Size);
+end;
+
+function TDextNatsObjectResult.GetPosition: Int64;
+begin
+  Result := Int64(FBytesRead);
+end;
+
+procedure TDextNatsObjectResult.SetPosition(const Pos: Int64);
+begin
+  if Pos <> Int64(FBytesRead) then
+    raise EDextNatsObjectStoreError.Create('Object Store result is not seekable');
+end;
+
+function TDextNatsObjectResult.GetCanRead: Boolean;
+begin
+  Result := (not FClosed) and (not FFailed);
+end;
+
+function TDextNatsObjectResult.GetCanSeek: Boolean;
+begin
+  Result := False;
+end;
+
+function TDextNatsObjectResult.GetCanWrite: Boolean;
+begin
+  Result := False;
+end;
+
+procedure TDextNatsObjectResult.Fail(const AMsg: string);
+begin
+  FFailed := True;
+  FEof := True;
+  CleanupConsumer;
+  raise EDextNatsObjectStoreError.Create(AMsg);
+end;
+
+procedure TDextNatsObjectResult.FailFmt(const AMsg: string; const AArgs: array of const);
+begin
+  Fail(Format(AMsg, AArgs));
+end;
+
+procedure TDextNatsObjectResult.CleanupConsumer;
+begin
+  if FConsumerReady and (FJs <> nil) and (FStreamName <> '') and (FConsumerName <> '') then
+  try
+    FJs.DeleteConsumer(FStreamName, FConsumerName);
+  except
+  end;
+  FConsumerReady := False;
+  FConsumerName := '';
+  FBatch := nil;
+  FBatchIndex := 0;
+  FChunkOffset := 0;
+end;
+
+procedure TDextNatsObjectResult.Close;
+begin
+  TMonitor.Enter(Self);
+  try
+    FClosed := True;
+    FEof := True;
+    CleanupConsumer;
+  finally
+    TMonitor.Exit(Self);
+  end;
+end;
+
+procedure TDextNatsObjectResult.EnsureConsumer;
 var
   cons: TNatsConsumerConfig;
   consInfo: TNatsConsumerInfo;
-  consumerName: string;
-  remaining: Cardinal;
-  batch, i, n: Integer;
-  msgs: IList<TNatsJsMsg>;
-  hash: THashSHA2;
-  got: Cardinal;
 begin
-  AWritten := 0;
-  hash := THashSHA2.Create(THashSHA2.TSHA2Version.SHA256);
-  if (ANuid = '') or (AChunkCount = 0) then
-  begin
-    ADigest := ObjDigestValue(hash.HashAsBytes);
+  if FConsumerReady or (FInfo.Chunks = 0) then
     Exit;
-  end;
-  if AStream = nil then
-    raise EDextNatsObjectStoreError.Create('Object Store Get stream is required');
-
-  consumerName := 'osget_' + ObjNewNuid;
   cons := TNatsConsumerConfig.CreateDefault;
-  cons.Name := consumerName;
-  cons.FilterSubject := ChunkSubject(ANuid);
+  cons.Name := 'osget_' + ObjNewNuid;
+  cons.FilterSubject := FChunkSubject;
   cons.DeliverPolicy := dpAll;
   cons.AckPolicy := apNone;
   cons.MaxDeliver := 1;
-  consInfo := FContext.FJs.CreateConsumer(FStreamName, cons);
-  try
-    remaining := AChunkCount;
-    got := 0;
-    while remaining > 0 do
-    begin
-      batch := Integer(remaining);
-      if batch > CHUNK_FETCH_BATCH then
-        batch := CHUNK_FETCH_BATCH;
-      msgs := FContext.FJs.Fetch(FStreamName, consInfo.Name, batch, 30000);
-      if msgs.Count = 0 then
-        raise EDextNatsObjectStoreError.CreateFmt(
-          'Object Store chunk fetch stalled for nuid %s: got %d of %d',
-          [ANuid, got, AChunkCount]);
-      if msgs.Count > batch then
-        raise EDextNatsObjectStoreError.CreateFmt(
-          'Object Store chunk batch overflow for nuid %s', [ANuid]);
+  consInfo := FJs.CreateConsumer(FStreamName, cons);
+  FConsumerName := consInfo.Name;
+  FConsumerReady := True;
+end;
 
-      for i := 0 to msgs.Count - 1 do
+procedure TDextNatsObjectResult.FetchMore;
+var
+  remaining: Cardinal;
+  batch: Integer;
+begin
+  EnsureConsumer;
+  if FChunksGot >= FInfo.Chunks then
+    Exit;
+  remaining := FInfo.Chunks - FChunksGot;
+  batch := Integer(remaining);
+  if batch > CHUNK_FETCH_BATCH then
+    batch := CHUNK_FETCH_BATCH;
+  FBatch := FJs.Fetch(FStreamName, FConsumerName, batch, 30000);
+  FBatchIndex := 0;
+  FChunkOffset := 0;
+  if (FBatch = nil) or (FBatch.Count = 0) then
+    FailFmt('Object Store chunk fetch stalled for nuid %s: got %d of %d',
+      [FInfo.Nuid, FChunksGot, FInfo.Chunks]);
+  if FBatch.Count > batch then
+    FailFmt('Object Store chunk batch overflow for nuid %s', [FInfo.Nuid]);
+end;
+
+procedure TDextNatsObjectResult.FinalizeAtEof;
+var
+  digest: string;
+begin
+  if FEof then
+    Exit;
+  FEof := True;
+  CleanupConsumer;
+  digest := ObjDigestValue(FHash.HashAsBytes);
+  if (FInfo.Digest <> '') and (digest <> FInfo.Digest) then
+    FailFmt('Object Store digest mismatch for %s', [FInfo.Name]);
+  if FBytesRead <> FInfo.Size then
+    FailFmt('Object Store size mismatch for %s: expected %d got %d',
+      [FInfo.Name, FInfo.Size, FBytesRead]);
+  if FChunksGot <> FInfo.Chunks then
+    FailFmt('Object Store chunk count mismatch for nuid %s: expected %d got %d',
+      [FInfo.Nuid, FInfo.Chunks, FChunksGot]);
+end;
+
+function TDextNatsObjectResult.Read(var Buffer; Count: Longint): Longint;
+var
+  dest: PByte;
+  avail, take: Integer;
+  payload: TBytes;
+begin
+  TMonitor.Enter(Self);
+  try
+    if FClosed then
+      Fail('Object Store result is closed');
+    if FFailed then
+      FailFmt('Object Store result previously failed for %s', [FInfo.Name]);
+    if Count <= 0 then
+      Exit(0);
+    if FEof then
+      Exit(0);
+
+    if FInfo.Chunks = 0 then
+    begin
+      FinalizeAtEof;
+      Exit(0);
+    end;
+
+    Result := 0;
+    dest := @Buffer;
+    while Result < Count do
+    begin
+      while (FBatch = nil) or (FBatchIndex >= FBatch.Count) do
       begin
-        n := Length(msgs[i].Payload);
-        if n > 0 then
+        if FChunksGot >= FInfo.Chunks then
         begin
-          hash.Update(msgs[i].Payload);
-          if AStream.Write(msgs[i].Payload[0], n) <> n then
-            raise EDextNatsObjectStoreError.Create(
-              'Object Store failed to write chunk to stream');
-          Inc(AWritten, UInt64(n));
+          FinalizeAtEof;
+          Exit;
         end;
-        Inc(got);
+        FetchMore;
       end;
-      if Cardinal(msgs.Count) > remaining then
-        raise EDextNatsObjectStoreError.CreateFmt(
-          'Object Store chunk count mismatch for nuid %s: expected %d',
-          [ANuid, AChunkCount]);
-      Dec(remaining, Cardinal(msgs.Count));
+
+      payload := FBatch[FBatchIndex].Payload;
+      avail := Length(payload) - FChunkOffset;
+      if avail <= 0 then
+      begin
+        Inc(FChunksGot);
+        Inc(FBatchIndex);
+        FChunkOffset := 0;
+        Continue;
+      end;
+
+      take := Count - Result;
+      if take > avail then
+        take := avail;
+      Move(payload[FChunkOffset], dest^, take);
+      FHash.Update(payload[FChunkOffset], Cardinal(take));
+      Inc(FChunkOffset, take);
+      Inc(FBytesRead, UInt64(take));
+      Inc(Result, take);
+      Inc(dest, take);
+      if FChunkOffset >= Length(payload) then
+      begin
+        Inc(FChunksGot);
+        Inc(FBatchIndex);
+        FChunkOffset := 0;
+      end;
     end;
-    if got <> AChunkCount then
-      raise EDextNatsObjectStoreError.CreateFmt(
-        'Object Store chunk count mismatch for nuid %s: expected %d got %d',
-        [ANuid, AChunkCount, got]);
+    { Exact buffer fill can consume the last chunk without a trailing 0-byte Read. }
+    if (not FEof) and (FChunksGot >= FInfo.Chunks) then
+      FinalizeAtEof;
   finally
-    try
-      FContext.FJs.DeleteConsumer(FStreamName, consInfo.Name);
-    except
-    end;
+    TMonitor.Exit(Self);
   end;
-  ADigest := ObjDigestValue(hash.HashAsBytes);
+end;
+
+function TDextNatsObjectResult.Write(const Buffer; Count: Longint): Longint;
+begin
+  raise EDextNatsObjectStoreError.Create('Object Store result is read-only');
+end;
+
+function TDextNatsObjectResult.Seek(const Offset: Int64; Origin: TSeekOrigin): Int64;
+begin
+  case Origin of
+    soCurrent:
+      if Offset = 0 then
+        Exit(Int64(FBytesRead));
+    soBeginning:
+      if Offset = Int64(FBytesRead) then
+        Exit(Int64(FBytesRead));
+  end;
+  raise EDextNatsObjectStoreError.Create('Object Store result is not seekable');
 end;
 
 function TDextNatsObjectStore.PutFromStream(const AName: string; AStream: TStream;
@@ -1410,7 +1708,15 @@ end;
 
 function TDextNatsObjectStore.GetInfo(const AName: string): TNatsObjectInfo;
 begin
-  if not TryGetInfo(AName, Result) or Result.Deleted then
+  Result := GetInfo(AName, TNatsObjectStoreGetOptions.CreateDefault);
+end;
+
+function TDextNatsObjectStore.GetInfo(const AName: string;
+  const AOptions: TNatsObjectStoreGetOptions): TNatsObjectInfo;
+begin
+  if not TryGetInfo(AName, Result) then
+    raise EDextNatsObjectStoreError.CreateFmt('Object Store object not found: %s', [AName]);
+  if Result.Deleted and (not AOptions.ShowDeleted) then
     raise EDextNatsObjectStoreError.CreateFmt('Object Store object not found: %s', [AName]);
 end;
 
@@ -1479,52 +1785,91 @@ begin
 end;
 
 function TDextNatsObjectStore.Get(const AName: string; AStream: TStream): TNatsObjectInfo;
+begin
+  Result := Get(AName, AStream, TNatsObjectStoreGetOptions.CreateDefault);
+end;
+
+function TDextNatsObjectStore.GetResult(const AName: string): TDextNatsObjectResult;
+begin
+  Result := GetResult(AName, TNatsObjectStoreGetOptions.CreateDefault);
+end;
+
+function TDextNatsObjectStore.GetResult(const AName: string;
+  const AOptions: TNatsObjectStoreGetOptions): TDextNatsObjectResult;
 var
-  digest: string;
-  written: UInt64;
+  info: TNatsObjectInfo;
   targetStore: TDextNatsObjectStore;
   linkBucket, linkName: string;
 begin
-  if AStream = nil then
-    raise EDextNatsObjectStoreError.Create('Object Store Get stream is required');
+  info := GetInfo(AName, AOptions);
 
-  Result := GetInfo(AName);
-
-  { Follow object links (nats.go Get); bucket links cannot be retrieved as bytes. }
-  if Result.IsLink then
+  { Follow object links (nats.go Get); bucket links cannot be retrieved as bytes.
+    Link targets use default GetResult (no ShowDeleted), matching nats.go. }
+  if info.IsLink then
   begin
-    if Result.IsBucketLink then
+    if info.IsBucketLink then
       raise EDextNatsObjectStoreError.CreateFmt(
         'Object Store cannot get bucket link: %s', [AName]);
-    linkBucket := Result.Link.Bucket;
-    linkName := Result.Link.Name;
+    linkBucket := info.Link.Bucket;
+    linkName := info.Link.Name;
     if linkBucket = FBucket then
-      Exit(Get(linkName, AStream));
+      Exit(GetResult(linkName));
     targetStore := FContext.OpenStore(linkBucket);
     try
-      Result := targetStore.Get(linkName, AStream);
+      Result := targetStore.GetResult(linkName);
     finally
       targetStore.Free;
     end;
     Exit;
   end;
 
-  WriteChunksToStream(Result.Nuid, Result.Chunks, AStream, written, digest);
-  if (Result.Digest <> '') and (digest <> Result.Digest) then
-    raise EDextNatsObjectStoreError.CreateFmt('Object Store digest mismatch for %s', [AName]);
-  if written <> Result.Size then
+  if info.Nuid = '' then
     raise EDextNatsObjectStoreError.CreateFmt(
-      'Object Store size mismatch for %s: expected %d got %d',
-      [AName, Result.Size, written]);
+      'Object Store object has empty nuid: %s', [AName]);
+
+  Result := TDextNatsObjectResult.Create(FContext.FJs, FStreamName,
+    ChunkSubject(info.Nuid), info);
+end;
+
+function TDextNatsObjectStore.Get(const AName: string; AStream: TStream;
+  const AOptions: TNatsObjectStoreGetOptions): TNatsObjectInfo;
+var
+  reader: TDextNatsObjectResult;
+  buf: TBytes;
+  n: Integer;
+begin
+  if AStream = nil then
+    raise EDextNatsObjectStoreError.Create('Object Store Get stream is required');
+
+  reader := GetResult(AName, AOptions);
+  try
+    Result := reader.Info;
+    SetLength(buf, 64 * 1024);
+    repeat
+      n := reader.Read(buf[0], Length(buf));
+      if n > 0 then
+        if AStream.Write(buf[0], n) <> n then
+          raise EDextNatsObjectStoreError.Create(
+            'Object Store failed to write chunk to stream');
+    until n <= 0;
+  finally
+    reader.Free;
+  end;
 end;
 
 function TDextNatsObjectStore.Get(const AName: string; out AInfo: TNatsObjectInfo): TBytes;
+begin
+  Result := Get(AName, AInfo, TNatsObjectStoreGetOptions.CreateDefault);
+end;
+
+function TDextNatsObjectStore.Get(const AName: string; out AInfo: TNatsObjectInfo;
+  const AOptions: TNatsObjectStoreGetOptions): TBytes;
 var
   ms: TBytesStream;
 begin
   ms := TBytesStream.Create;
   try
-    AInfo := Get(AName, ms);
+    AInfo := Get(AName, ms, AOptions);
     SetLength(Result, ms.Size);
     if ms.Size > 0 then
       Move(ms.Memory^, Result[0], ms.Size);
@@ -1534,13 +1879,25 @@ begin
 end;
 
 function TDextNatsObjectStore.Get(const AName: string): TBytes;
+begin
+  Result := Get(AName, TNatsObjectStoreGetOptions.CreateDefault);
+end;
+
+function TDextNatsObjectStore.Get(const AName: string;
+  const AOptions: TNatsObjectStoreGetOptions): TBytes;
 var
   info: TNatsObjectInfo;
 begin
-  Result := Get(AName, info);
+  Result := Get(AName, info, AOptions);
 end;
 
 function TDextNatsObjectStore.GetFile(const AName, AFileName: string): TNatsObjectInfo;
+begin
+  Result := GetFile(AName, AFileName, TNatsObjectStoreGetOptions.CreateDefault);
+end;
+
+function TDextNatsObjectStore.GetFile(const AName, AFileName: string;
+  const AOptions: TNatsObjectStoreGetOptions): TNatsObjectInfo;
 var
   fs: TFileStream;
 begin
@@ -1548,7 +1905,7 @@ begin
     raise EDextNatsObjectStoreError.Create('Object Store GetFile requires a file path');
   fs := TFileStream.Create(AFileName, fmCreate);
   try
-    Result := Get(AName, fs);
+    Result := Get(AName, fs, AOptions);
   finally
     fs.Free;
   end;
@@ -1698,9 +2055,20 @@ begin
   end;
 end;
 
+function TDextNatsObjectStore.List(const AOptions: TNatsObjectStoreListOptions): IList<TNatsObjectInfo>;
+begin
+  Result := List(AOptions.ShowDeleted);
+end;
+
 function TDextNatsObjectStore.ListObjects(AIncludeDeleted: Boolean): IList<TNatsObjectInfo>;
 begin
   Result := List(AIncludeDeleted);
+end;
+
+function TDextNatsObjectStore.ListObjects(
+  const AOptions: TNatsObjectStoreListOptions): IList<TNatsObjectInfo>;
+begin
+  Result := List(AOptions);
 end;
 
 function TDextNatsObjectStore.Keys: IList<string>;

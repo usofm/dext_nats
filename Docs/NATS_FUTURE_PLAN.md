@@ -62,17 +62,17 @@
 
 ### P1 — هم‌ترازی با nats.go (شکاف‌های اعلام‌شده)
 
-- [ ] **Object Store show-deleted** — گزینه‌های Get/Put/List برای آبجکت‌های حذف‌شده (مثل nats.go)
-- [ ] **Lazy ObjectResult reader** — خواندن تنبل chunkها به‌جای بارگذاری یک‌جا در Get حجیم
-- [ ] **Account / server INFO غنی‌تر** — سطح API برای فیلدهای INFO حساب / محدودیت‌ها در صورت نیاز اپ‌های multi-tenant
-- [ ] **Ordered consumer** — helper JetStream برای consumer مرتب (ordered) روی یک subject/stream
-- [ ] **NATS Services API** — ثبت/کشف microservice (`$SRV.*`) در حد MVP اگر تقاضا باشد
+- [x] **Object Store show-deleted** — `TNatsObjectStoreGetOptions.ShowDeleted` روی Get/GetInfo/GetFile؛ `List`/`ListObjects` با `AIncludeDeleted` یا `TNatsObjectStoreListOptions.ShowDeleted`؛ Put بدون گزینهٔ عمومی (مثل nats.go، tombstone را داخلی می‌بیند)
+- [x] **Lazy ObjectResult reader** — `TDextNatsObjectResult` / `GetResult`: Fetch تنبل روی `Read`، verify digest در EOF (nats.go `ObjectResult`)؛ `Get(TStream)` از روی آن drain می‌کند
+- [x] **Account / server INFO غنی‌تر** — `TNatsServerInfo` + `TDextNatsClient.ServerInfo` (handshake و async INFO): `git_commit` / `ip` / `tls_verify` / `api_lvl` / `cluster` / `cluster_dynamic` / `domain` / `remote_account` / `acc_is_sys` / `ldm` / `ws_connect_urls` علاوه بر فیلدهای قبلی (`max_payload`, `client_id`, …). **Gaps:** محدودیت‌های حساب JWT/claims (max_connections و غیره) روی INFO نیستند؛ بدون `OnLameDuckMode` جدا (فقط snapshot/`ldm`)؛ بدون `$SYS` account monitoring
+- [x] **Ordered consumer** — `SubscribeOrdered` / `TDextNatsOrderedConsumer` (ADR-17 push: ephemeral, ack_none, flow_control + idle HB, mem_storage, recreate on gap / missed HB). **Gaps vs nats.go:** classic push API only (not modern `jetstream.OrderedConsumer` pull); single `FilterSubject` (no multi-filter); no `OptStartTime`; no Messages/Fetch iterator surface — callback delivery only.
+- [x] **NATS Services API** — MVP در `Dext.Net.Nats.Services.pas`: `AddService` / `AddEndpoint` / `Stop` / `Reset`، پاسخ خودکار `$SRV.PING|INFO|STATS` (all/kind/instance)، queue پیش‌فرض `q`، `Respond` / `RespondError`. **Gaps vs nats.go micro:** `AddGroup`، `StatsHandler` / schema JSON عمیق، `DoneHandler` / `ErrorHandler`، Drain روی Stop (اینجا Unsubscribe)، auto-stop روی connection closed، metadata immutability سخت‌گیرانه
 
 ### P2 — کیفیت ریلیز و عملیات
 
 - [x] **Versioning** — `CHANGELOG.md` + semver **1.0.0** + git tag `v1.0.0` (local; push tag when publishing).
 - [x] **CI** — `.github/workflows/ci.yml` structure checks on hosted runners; full Delphi suite remains **local / self-hosted** (reproduce commands in README). Live/`DEXT_NATS_REQUIRE_LIVE` not in hosted CI.
-- [ ] **پوشش تست باز از TEST_PLAN** — صف/headers/reconnect/outbox، JS Nak/Term/InProgress، stress Explicit؛ بستن gapهای §۲.۳ که هنوز soft-skip یا غایب‌اند
+- [x] **پوشش تست باز از TEST_PLAN** — صف/headers/reconnect/outbox، JS Nak/Term/InProgress، stress Explicit، و gapهای عملی §۲.۳ در suite بسته شده‌اند (live همچنان soft-skip بدون سرور؛ Stress/`Explicit` با `DEXT_NATS_RUN_STRESS=1`؛ TLS/NKey env-gated). ConnectUrls failover چندسروره هنوز بدون تست یکپارچه است.
 - [ ] **Push / publish ریلیز** — پکیج یا subtree برای مصرف‌کننده‌های Dext؛ `git push` + `git push --tags` وقتی آمادهٔ انتشار؛ بدون force-push به `main`
 
 ### P3 — بعد از 1.0 (اختیاری)

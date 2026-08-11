@@ -191,13 +191,20 @@ begin
   lstServerInfo.Strings.Values['Server ID'] := AInfo.ServerId;
   lstServerInfo.Strings.Values['Server Name'] := AInfo.ServerName;
   lstServerInfo.Strings.Values['Server Version'] := AInfo.Version;
+  lstServerInfo.Strings.Values['Git Commit'] := AInfo.GitCommit;
   lstServerInfo.Strings.Values['Protocol'] := AInfo.Proto.ToString;
   lstServerInfo.Strings.Values['Host'] := AInfo.Host;
   lstServerInfo.Strings.Values['Port'] := AInfo.Port.ToString;
   lstServerInfo.Strings.Values['Client ID'] := AInfo.ClientId.ToString;
   lstServerInfo.Strings.Values['Client IP'] := AInfo.ClientIp;
+  lstServerInfo.Strings.Values['Cluster'] := AInfo.Cluster;
+  lstServerInfo.Strings.Values['Domain'] := AInfo.Domain;
+  lstServerInfo.Strings.Values['Remote Account'] := AInfo.RemoteAccount;
+  lstServerInfo.Strings.Values['System Account'] := BoolToStr(AInfo.IsSystemAccount, True);
   lstServerInfo.Strings.Values['JetStream'] := BoolToStr(AInfo.Jetstream, True);
+  lstServerInfo.Strings.Values['JS API Level'] := AInfo.JsApiLevel.ToString;
   lstServerInfo.Strings.Values['Max Payload'] := AInfo.MaxPayload.ToString;
+  lstServerInfo.Strings.Values['Lame Duck'] := BoolToStr(AInfo.LameDuckMode, True);
 end;
 
 procedure TfrmConnection.HandleConnected(const AInfo: TNatsServerInfo; AIsReconnect: Boolean);

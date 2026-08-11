@@ -22,8 +22,9 @@
 {  delete, ListStreams / ListStreamNames), dedup'd publish with a           }
 {  Nats-Msg-Id header, pull-consumer admin (create/info/delete,             }
 {  ListConsumers / ListConsumerNames), Fetch, push SubscribePush on         }
-{  deliver_subject, and Ack/Nak/Term/InProgress — all built on plain        }
-{  request/reply and PUB against $JS.API.* subjects.                        }
+{  deliver_subject, ordered SubscribeOrdered (ADR-17 push helper), and      }
+{  Ack/Nak/Term/InProgress — all built on plain request/reply and PUB       }
+{  against $JS.API.* subjects.                                              }
 {  TDextNatsJetStreamContext wraps an already-connected TDextNatsClient     }
 {  (composition); it neither owns nor frees the client.                     }
 {                                                                           }
@@ -164,6 +165,25 @@ type
     ///   Used by KV <c>MetaOnly</c> watches.
     /// </summary>
     HeadersOnly: Boolean;
+    /// <summary>
+    ///   When True, enables push flow-control (JSON <c>flow_control</c>).
+    ///   Client must reply to status-100 FC requests on <c>ReplyTo</c>.
+    /// </summary>
+    FlowControl: Boolean;
+    /// <summary>Idle heartbeat interval in nanoseconds (JSON <c>idle_heartbeat</c>). 0 = omit.</summary>
+    IdleHeartbeat: Int64;
+    /// <summary>
+    ///   Ephemeral idle lifetime in nanoseconds (JSON <c>inactive_threshold</c>).
+    ///   0 = omit. Ordered consumers default to five minutes.
+    /// </summary>
+    InactiveThreshold: Int64;
+    /// <summary>When True, emits <c>mem_storage:true</c> (consumer state in memory).</summary>
+    MemoryStorage: Boolean;
+    /// <summary>
+    ///   Consumer replicas (JSON <c>num_replicas</c>). 0 = omit (server default);
+    ///   ordered consumers force 1.
+    /// </summary>
+    NumReplicas: Integer;
     /// <summary>Defaults for a durable pull consumer: deliver all, ack_policy=explicit.</summary>
     class function CreateDefault(const ADurableName: string = '';
       const AFilterSubject: string = ''): TNatsConsumerConfig; static;
@@ -281,9 +301,108 @@ type
     property Active: Boolean read FActive;
   end;
 
+  TDextNatsJetStreamContext = class;
+
+  /// <summary>Callback for messages from <see cref="TDextNatsJetStreamContext.SubscribeOrdered"/>.</summary>
+  TNatsOrderedConsumerHandler = TNatsJsMsgHandler;
+  /// <summary>Optional error callback when ordered-consumer reset fails terminally.</summary>
+  TNatsOrderedConsumerErrorHandler = reference to procedure(const AErrorMessage: string);
+
+  /// <summary>
+  ///   Options for an ADR-17 style ordered push consumer (nats.go classic <c>OrderedConsumer()</c>).
+  ///   Ephemeral, ack_policy=none, flow_control + idle heartbeats, mem_storage, recreate on gap/missed HB.
+  /// </summary>
+  TNatsOrderedConsumerOptions = record
+    /// <summary>Optional filter within the stream (empty = whole stream).</summary>
+    FilterSubject: string;
+    /// <summary>Initial deliver policy (default <c>dpAll</c>). Recreates always use by_start_sequence.</summary>
+    DeliverPolicy: TNatsDeliverPolicy;
+    /// <summary>When <see cref="DeliverPolicy"/> is <c>dpByStartSequence</c>, first start sequence.</summary>
+    OptStartSeq: UInt64;
+    /// <summary>When True, headers-only deliveries (no payload).</summary>
+    HeadersOnly: Boolean;
+    /// <summary>Consumer name prefix (<c>prefix_1</c>, <c>prefix_2</c>, …). Empty = auto nuid.</summary>
+    NamePrefix: string;
+    /// <summary>Idle heartbeat nanoseconds. 0 = five seconds (nats.go default).</summary>
+    IdleHeartbeat: Int64;
+    /// <summary>Inactive threshold nanoseconds. 0 = five minutes (server deletes idle ephemeral).</summary>
+    InactiveThreshold: Int64;
+    /// <summary>
+    ///   Max recreate attempts after gap / missed heartbeat. 0 or negative = unlimited
+    ///   (nats.go <c>MaxResetAttempts</c> default).
+    /// </summary>
+    MaxResetAttempts: Integer;
+    /// <summary>Optional terminal-error callback (exhausted resets / create failure).</summary>
+    OnError: TNatsOrderedConsumerErrorHandler;
+    /// <summary>Defaults: deliver all, 5s heartbeat, 5min inactive, unlimited resets.</summary>
+    class function CreateDefault(const AFilterSubject: string = ''): TNatsOrderedConsumerOptions; static;
+  end;
+
+  /// <summary>
+  ///   Client-managed ordered push consumer (ADR-17 / classic nats.go OrderedConsumer).
+  ///   Owns the deliver SUB and ephemeral consumer name; does not own the JetStream context.
+  ///   Call <see cref="Stop"/> or Free to tear down. Handlers run on the receive thread —
+  ///   do not block with Request/Fetch. Gap / missed-heartbeat recovery runs on a helper thread.
+  /// </summary>
+  TDextNatsOrderedConsumer = class
+  private
+    FJs: TDextNatsJetStreamContext;
+    FStreamName: string;
+    FOptions: TNatsOrderedConsumerOptions;
+    FHandler: TNatsOrderedConsumerHandler;
+    FLock: TCriticalSection;
+    FPush: TDextNatsJetStreamPushSubscription;
+    FConsumerName: string;
+    FDeliverSubject: string;
+    FSerial: Integer;
+    FExpectedDseq: UInt64;
+    FLastStreamSeq: UInt64;
+    FLastConsumerSeq: UInt64;
+    FActive: Boolean;
+    FStopping: Boolean;
+    FResetPending: Boolean;
+    FResetCount: Integer;
+    FLastActivityMs: UInt64;
+    FIdleHeartbeatNs: Int64;
+    FWake: TEvent;
+    FMonitor: TThread;
+    procedure TouchActivity;
+    procedure RequestReset;
+    procedure MonitorLoop;
+    procedure TeardownPushAndConsumer;
+    function BuildConsumerConfig(ASerial: Integer; const ADeliver: string;
+      ARecreate: Boolean; ALastStreamSeq: UInt64): TNatsConsumerConfig;
+    procedure InstallDelivery(ASerial: Integer);
+    function TryReset(AInitial: Boolean = False): Boolean;
+    procedure FailTerminal(const AErrorMessage: string);
+    procedure HandleRawMsg(ASerial: Integer; const AMsg: TNatsMsg);
+    function GetActive: Boolean;
+    function GetConsumerName: string;
+    function GetLastStreamSequence: UInt64;
+    function GetSerial: Integer;
+    function GetResetCount: Integer;
+  public
+    constructor Create(AJs: TDextNatsJetStreamContext; const AStreamName: string;
+      AHandler: TNatsOrderedConsumerHandler; const AOptions: TNatsOrderedConsumerOptions);
+    destructor Destroy; override;
+    /// <summary>Stops delivery, deletes the ephemeral consumer (best effort), joins the monitor thread.</summary>
+    procedure Stop;
+    property Active: Boolean read GetActive;
+    property StreamName: string read FStreamName;
+    /// <summary>Current ephemeral consumer name (<c>prefix_N</c>), empty when inactive.</summary>
+    property ConsumerName: string read GetConsumerName;
+    /// <summary>Last delivered stream sequence (0 before the first message).</summary>
+    property LastStreamSequence: UInt64 read GetLastStreamSequence;
+    /// <summary>Current consumer generation (increments on each create/recreate).</summary>
+    property Serial: Integer read GetSerial;
+    /// <summary>How many gap/HB-driven recreates have completed successfully.</summary>
+    property ResetCount: Integer read GetResetCount;
+  end;
+
   /// <summary>
   ///   Thin JetStream wrapper around an already-connected <see cref="TDextNatsClient"/>.
-  ///   Stream admin, dedup'd publish, pull/push consumer admin, Fetch, SubscribePush, and Ack helpers.
+  ///   Stream admin, dedup'd publish, pull/push consumer admin, Fetch, SubscribePush,
+  ///   SubscribeOrdered, and Ack helpers.
   ///   Does not own the wrapped client; the caller remains responsible for its lifetime.
   /// </summary>
   TDextNatsJetStreamContext = class
@@ -355,6 +474,17 @@ type
     function SubscribePush(const ADeliverSubject: string; AHandler: TNatsJsMsgHandler;
       const AQueueGroup: string = ''): TDextNatsJetStreamPushSubscription; overload;
 
+    /// <summary>
+    ///   Creates an ADR-17 ordered push consumer on AStreamName and delivers messages in stream
+    ///   order via AHandler. Recreates the ephemeral consumer on consumer-sequence gaps and
+    ///   missed idle heartbeats. Caller must Free (or <see cref="TDextNatsOrderedConsumer.Stop"/>).
+    /// </summary>
+    function SubscribeOrdered(const AStreamName: string; AHandler: TNatsOrderedConsumerHandler;
+      const AOptions: TNatsOrderedConsumerOptions): TDextNatsOrderedConsumer; overload;
+    /// <summary>Ordered consumer with <see cref="TNatsOrderedConsumerOptions.CreateDefault"/>.</summary>
+    function SubscribeOrdered(const AStreamName: string;
+      AHandler: TNatsOrderedConsumerHandler): TDextNatsOrderedConsumer; overload;
+
     /// <summary>Acknowledges a fetched message (+ACK on ReplyTo).</summary>
     procedure Ack(const AMsg: TNatsJsMsg); overload;
     /// <summary>Acknowledges by ReplyTo subject.</summary>
@@ -393,6 +523,17 @@ uses
   System.NetEncoding,
   Dext.Core.Span,
   Dext.Json.Utf8;
+
+const
+  NATS_JS_NS_PER_MS = Int64(1000000);
+  /// <summary>nats.go orderedHeartbeatsInterval (5s) in nanoseconds.</summary>
+  NATS_JS_ORDERED_HB_NS = Int64(5) * 1000 * NATS_JS_NS_PER_MS;
+  /// <summary>Five-minute inactive_threshold for throwaway ordered ephemerals.</summary>
+  NATS_JS_ORDERED_INACTIVE_NS = Int64(5) * 60 * 1000 * NATS_JS_NS_PER_MS;
+  /// <summary>nats.go ordered AckWait (22h); unused with ack_policy=none but required by ADR-17.</summary>
+  NATS_JS_ORDERED_ACK_WAIT_NS = Int64(22) * 60 * 60 * 1000 * NATS_JS_NS_PER_MS;
+  /// <summary>Missed-heartbeat multiplier (nats.go hbcThresh).</summary>
+  NATS_JS_ORDERED_HB_THRESH = 2;
 
 type
   /// <summary>Growable byte sink for JetStream admin JSON (mirrors Protocol TNatsByteWriter).</summary>
@@ -1681,6 +1822,31 @@ begin
     jw.WritePropertyName('headers_only');
     jw.WriteBoolean(True);
   end;
+  if FlowControl then
+  begin
+    jw.WritePropertyName('flow_control');
+    jw.WriteBoolean(True);
+  end;
+  if IdleHeartbeat > 0 then
+  begin
+    jw.WritePropertyName('idle_heartbeat');
+    jw.WriteNumber(IdleHeartbeat);
+  end;
+  if InactiveThreshold > 0 then
+  begin
+    jw.WritePropertyName('inactive_threshold');
+    jw.WriteNumber(InactiveThreshold);
+  end;
+  if MemoryStorage then
+  begin
+    jw.WritePropertyName('mem_storage');
+    jw.WriteBoolean(True);
+  end;
+  if NumReplicas > 0 then
+  begin
+    jw.WritePropertyName('num_replicas');
+    jw.WriteNumber(NumReplicas);
+  end;
   jw.WriteEndObject;
   Result := TEncoding.UTF8.GetString(w.ToBytes);
 end;
@@ -2207,6 +2373,585 @@ begin
     FClient.Unsubscribe(FSid);
   except
   end;
+end;
+
+function JsOrderedNewNuid: string;
+var
+  guid: TGUID;
+  s: string;
+begin
+  CreateGUID(guid);
+  s := GUIDToString(guid);
+  s := StringReplace(s, '{', '', [rfReplaceAll]);
+  s := StringReplace(s, '}', '', [rfReplaceAll]);
+  Result := LowerCase(StringReplace(s, '-', '', [rfReplaceAll]));
+end;
+
+{ TNatsOrderedConsumerOptions }
+
+class function TNatsOrderedConsumerOptions.CreateDefault(
+  const AFilterSubject: string): TNatsOrderedConsumerOptions;
+begin
+  Result := Default(TNatsOrderedConsumerOptions);
+  Result.FilterSubject := AFilterSubject;
+  Result.DeliverPolicy := dpAll;
+  Result.OptStartSeq := 0;
+  Result.HeadersOnly := False;
+  Result.NamePrefix := '';
+  Result.IdleHeartbeat := 0;
+  Result.InactiveThreshold := 0;
+  Result.MaxResetAttempts := 0;
+  Result.OnError := nil;
+end;
+
+{ TDextNatsOrderedConsumer }
+
+constructor TDextNatsOrderedConsumer.Create(AJs: TDextNatsJetStreamContext;
+  const AStreamName: string; AHandler: TNatsOrderedConsumerHandler;
+  const AOptions: TNatsOrderedConsumerOptions);
+var
+  prefix: string;
+begin
+  inherited Create;
+  if AJs = nil then
+    raise EDextNatsException.Create('SubscribeOrdered requires a JetStream context');
+  if AStreamName = '' then
+    raise EDextNatsException.Create('SubscribeOrdered requires a stream name');
+  if not Assigned(AHandler) then
+    raise EDextNatsException.Create('SubscribeOrdered requires a message handler');
+  if not AJs.Client.Connected then
+    raise EDextNatsException.Create('Cannot SubscribeOrdered: NATS client is not connected');
+
+  FJs := AJs;
+  FStreamName := AStreamName;
+  FOptions := AOptions;
+  FHandler := AHandler;
+  FLock := TCriticalSection.Create;
+  FWake := TEvent.Create(nil, False, False, '');
+  FPush := nil;
+  FConsumerName := '';
+  FDeliverSubject := '';
+  FSerial := 0;
+  FExpectedDseq := 1;
+  FLastStreamSeq := 0;
+  FLastConsumerSeq := 0;
+  FActive := False;
+  FStopping := False;
+  FResetPending := False;
+  FResetCount := 0;
+
+  FIdleHeartbeatNs := FOptions.IdleHeartbeat;
+  if FIdleHeartbeatNs <= 0 then
+    FIdleHeartbeatNs := NATS_JS_ORDERED_HB_NS;
+
+  prefix := Trim(FOptions.NamePrefix);
+  if prefix = '' then
+    prefix := 'ord_' + JsOrderedNewNuid;
+  FOptions.NamePrefix := prefix;
+
+  TouchActivity;
+  if not TryReset(True) then
+  begin
+    FWake.Free;
+    FLock.Free;
+    raise EDextNatsException.Create('SubscribeOrdered failed to create the initial consumer');
+  end;
+
+  FMonitor := TThread.CreateAnonymousThread(MonitorLoop);
+  FMonitor.FreeOnTerminate := False;
+  FMonitor.Start;
+end;
+
+destructor TDextNatsOrderedConsumer.Destroy;
+begin
+  Stop;
+  FWake.Free;
+  FLock.Free;
+  inherited;
+end;
+
+procedure TDextNatsOrderedConsumer.TouchActivity;
+begin
+  FLock.Enter;
+  try
+    FLastActivityMs := TThread.GetTickCount64;
+  finally
+    FLock.Leave;
+  end;
+end;
+
+procedure TDextNatsOrderedConsumer.RequestReset;
+begin
+  FLock.Enter;
+  try
+    if FStopping or (not FActive) then
+      Exit;
+    if FResetPending then
+      Exit;
+    FResetPending := True;
+  finally
+    FLock.Leave;
+  end;
+  FWake.SetEvent;
+end;
+
+function TDextNatsOrderedConsumer.GetActive: Boolean;
+begin
+  FLock.Enter;
+  try
+    Result := FActive and (not FStopping);
+  finally
+    FLock.Leave;
+  end;
+end;
+
+function TDextNatsOrderedConsumer.GetConsumerName: string;
+begin
+  FLock.Enter;
+  try
+    Result := FConsumerName;
+  finally
+    FLock.Leave;
+  end;
+end;
+
+function TDextNatsOrderedConsumer.GetLastStreamSequence: UInt64;
+begin
+  FLock.Enter;
+  try
+    Result := FLastStreamSeq;
+  finally
+    FLock.Leave;
+  end;
+end;
+
+function TDextNatsOrderedConsumer.GetSerial: Integer;
+begin
+  FLock.Enter;
+  try
+    Result := FSerial;
+  finally
+    FLock.Leave;
+  end;
+end;
+
+function TDextNatsOrderedConsumer.GetResetCount: Integer;
+begin
+  FLock.Enter;
+  try
+    Result := FResetCount;
+  finally
+    FLock.Leave;
+  end;
+end;
+
+procedure TDextNatsOrderedConsumer.FailTerminal(const AErrorMessage: string);
+var
+  errHandler: TNatsOrderedConsumerErrorHandler;
+begin
+  FLock.Enter;
+  try
+    FActive := False;
+    errHandler := FOptions.OnError;
+  finally
+    FLock.Leave;
+  end;
+  if Assigned(errHandler) then
+  try
+    errHandler(AErrorMessage);
+  except
+  end;
+end;
+
+function TDextNatsOrderedConsumer.BuildConsumerConfig(ASerial: Integer; const ADeliver: string;
+  ARecreate: Boolean; ALastStreamSeq: UInt64): TNatsConsumerConfig;
+var
+  inactive: Int64;
+  nextSeq: UInt64;
+begin
+  Result := TNatsConsumerConfig.CreateDefault;
+  Result.DurableName := '';
+  Result.Name := Format('%s_%d', [FOptions.NamePrefix, ASerial]);
+  Result.FilterSubject := FOptions.FilterSubject;
+  Result.DeliverSubject := ADeliver;
+  Result.DeliverGroup := '';
+  Result.AckPolicy := apNone;
+  Result.MaxAckPending := 0;
+  Result.MaxDeliver := 1;
+  Result.AckWait := NATS_JS_ORDERED_ACK_WAIT_NS;
+  Result.FlowControl := True;
+  Result.IdleHeartbeat := FIdleHeartbeatNs;
+  inactive := FOptions.InactiveThreshold;
+  if inactive <= 0 then
+    inactive := NATS_JS_ORDERED_INACTIVE_NS;
+  Result.InactiveThreshold := inactive;
+  Result.MemoryStorage := True;
+  Result.NumReplicas := 1;
+  Result.HeadersOnly := FOptions.HeadersOnly;
+  Result.ReplayPolicy := rpInstant;
+
+  if ARecreate or (ALastStreamSeq > 0) then
+  begin
+    nextSeq := ALastStreamSeq + 1;
+    if nextSeq = 0 then
+      nextSeq := 1;
+    Result.DeliverPolicy := dpByStartSequence;
+    Result.OptStartSeq := nextSeq;
+  end
+  else
+  begin
+    Result.DeliverPolicy := FOptions.DeliverPolicy;
+    case FOptions.DeliverPolicy of
+      dpByStartSequence:
+        begin
+          if FOptions.OptStartSeq > 0 then
+            Result.OptStartSeq := FOptions.OptStartSeq
+          else
+            Result.OptStartSeq := 1;
+        end;
+      dpLastPerSubject:
+        if Result.FilterSubject = '' then
+          Result.FilterSubject := '>';
+    else
+      Result.OptStartSeq := 0;
+    end;
+  end;
+end;
+
+procedure TDextNatsOrderedConsumer.TeardownPushAndConsumer;
+var
+  push: TDextNatsJetStreamPushSubscription;
+  consumerName: string;
+  js: TDextNatsJetStreamContext;
+  stream: string;
+begin
+  FLock.Enter;
+  try
+    push := FPush;
+    FPush := nil;
+    consumerName := FConsumerName;
+    FConsumerName := '';
+    FDeliverSubject := '';
+    js := FJs;
+    stream := FStreamName;
+  finally
+    FLock.Leave;
+  end;
+
+  if push <> nil then
+  try
+    push.Free;
+  except
+  end;
+
+  if (js <> nil) and (consumerName <> '') then
+  try
+    js.DeleteConsumer(stream, consumerName);
+  except
+  end;
+end;
+
+procedure TDextNatsOrderedConsumer.InstallDelivery(ASerial: Integer);
+var
+  deliver: string;
+  sid: Integer;
+  selfRef: TDextNatsOrderedConsumer;
+begin
+  deliver := FJs.Client.NewInbox;
+  selfRef := Self;
+  sid := FJs.Client.Subscribe(deliver,
+    procedure(const AMsg: TNatsMsg)
+    begin
+      selfRef.HandleRawMsg(ASerial, AMsg);
+    end);
+  FLock.Enter;
+  try
+    FPush := TDextNatsJetStreamPushSubscription.Create(FJs.Client, sid, deliver);
+    FDeliverSubject := deliver;
+  finally
+    FLock.Leave;
+  end;
+end;
+
+function TDextNatsOrderedConsumer.TryReset(AInitial: Boolean): Boolean;
+var
+  serial: Integer;
+  deliver: string;
+  cfg: TNatsConsumerConfig;
+  info: TNatsConsumerInfo;
+  recreate: Boolean;
+  lastStreamSeq: UInt64;
+  attempts, maxAttempts, sleepMs: Integer;
+  delaying: Integer;
+  lastError: string;
+begin
+  Result := False;
+  FLock.Enter;
+  try
+    if FStopping then
+      Exit;
+    maxAttempts := FOptions.MaxResetAttempts;
+  finally
+    FLock.Leave;
+  end;
+  if AInitial then
+    maxAttempts := 1
+  else if maxAttempts = 0 then
+    maxAttempts := -1; { unlimited }
+
+  attempts := 0;
+  delaying := 200;
+  lastError := '';
+  while True do
+  begin
+    FLock.Enter;
+    try
+      if FStopping then
+        Exit;
+    finally
+      FLock.Leave;
+    end;
+
+    TeardownPushAndConsumer;
+
+    FLock.Enter;
+    try
+      Inc(FSerial);
+      serial := FSerial;
+      FExpectedDseq := 1;
+      FLastConsumerSeq := 0;
+      lastStreamSeq := FLastStreamSeq;
+      recreate := lastStreamSeq > 0;
+    finally
+      FLock.Leave;
+    end;
+
+    try
+      InstallDelivery(serial);
+      FLock.Enter;
+      try
+        deliver := FDeliverSubject;
+      finally
+        FLock.Leave;
+      end;
+      cfg := BuildConsumerConfig(serial, deliver, recreate, lastStreamSeq);
+      info := FJs.CreateConsumer(FStreamName, cfg);
+      FLock.Enter;
+      try
+        FConsumerName := info.Name;
+        if info.Name = '' then
+          FConsumerName := cfg.Name;
+        FActive := True;
+        FResetPending := False;
+        if recreate then
+          Inc(FResetCount);
+        FLastActivityMs := TThread.GetTickCount64;
+      finally
+        FLock.Leave;
+      end;
+      Result := True;
+      Exit;
+    except
+      on E: Exception do
+      begin
+        TeardownPushAndConsumer;
+        lastError := E.Message;
+        Inc(attempts);
+        if (maxAttempts > 0) and (attempts >= maxAttempts) then
+        begin
+          if not AInitial then
+            FailTerminal(Format('Ordered consumer reset failed after %d attempts: %s',
+              [attempts, lastError]));
+          Exit;
+        end;
+        sleepMs := delaying;
+        if sleepMs > 2000 then
+          sleepMs := 2000;
+        Sleep(sleepMs);
+        delaying := delaying * 2;
+        if delaying > 10000 then
+          delaying := 10000;
+      end;
+    end;
+  end;
+end;
+
+procedure TDextNatsOrderedConsumer.HandleRawMsg(ASerial: Integer; const AMsg: TNatsMsg);
+var
+  jsMsg: TNatsJsMsg;
+  handler: TNatsOrderedConsumerHandler;
+  lastConsHdr: string;
+  lastCons: UInt64;
+  needReset: Boolean;
+  empty: TBytes;
+begin
+  needReset := False;
+  handler := nil;
+  FLock.Enter;
+  try
+    if FStopping or (not FActive) or (ASerial <> FSerial) then
+      Exit;
+    FLastActivityMs := TThread.GetTickCount64;
+  finally
+    FLock.Leave;
+  end;
+
+  { Status 100: idle heartbeat and/or flow-control request. }
+  if AMsg.StatusCode = 100 then
+  begin
+    if AMsg.ReplyTo <> '' then
+    begin
+      SetLength(empty, 0);
+      try
+        FJs.Client.Publish(AMsg.ReplyTo, empty);
+      except
+      end;
+    end;
+
+    lastConsHdr := AMsg.Headers.GetValue('Nats-Last-Consumer');
+    if lastConsHdr <> '' then
+    begin
+      lastCons := UInt64(StrToInt64Def(lastConsHdr, 0));
+      FLock.Enter;
+      try
+        if (ASerial = FSerial) and (FLastConsumerSeq > 0) and (lastCons <> FLastConsumerSeq) then
+          needReset := True;
+      finally
+        FLock.Leave;
+      end;
+      if needReset then
+        RequestReset;
+    end;
+    Exit;
+  end;
+
+  if NatsJSIsFetchControl(AMsg) then
+    Exit;
+
+  jsMsg := TNatsJsMsg.FromNatsMsg(AMsg);
+  FLock.Enter;
+  try
+    if FStopping or (not FActive) or (ASerial <> FSerial) then
+      Exit;
+    if jsMsg.ConsumerSequence <> FExpectedDseq then
+    begin
+      needReset := True;
+    end
+    else
+    begin
+      FExpectedDseq := jsMsg.ConsumerSequence + 1;
+      FLastStreamSeq := jsMsg.StreamSequence;
+      FLastConsumerSeq := jsMsg.ConsumerSequence;
+      handler := FHandler;
+    end;
+  finally
+    FLock.Leave;
+  end;
+
+  if needReset then
+  begin
+    RequestReset;
+    Exit;
+  end;
+
+  if Assigned(handler) then
+  try
+    handler(jsMsg);
+  except
+  end;
+end;
+
+procedure TDextNatsOrderedConsumer.MonitorLoop;
+var
+  waitMs: Cardinal;
+  hbMs: UInt64;
+  lastAct: UInt64;
+  nowMs: UInt64;
+  doReset: Boolean;
+  stopping: Boolean;
+begin
+  hbMs := UInt64(FIdleHeartbeatNs div NATS_JS_NS_PER_MS);
+  if hbMs < 1000 then
+    hbMs := 1000;
+  waitMs := Cardinal(hbMs);
+  if waitMs > 5000 then
+    waitMs := 5000;
+
+  while True do
+  begin
+    FWake.WaitFor(waitMs);
+
+    FLock.Enter;
+    try
+      stopping := FStopping;
+      doReset := FResetPending and (not FStopping);
+      lastAct := FLastActivityMs;
+      nowMs := TThread.GetTickCount64;
+      if (not doReset) and FActive and (not FStopping) then
+      begin
+        if (nowMs - lastAct) >= (hbMs * NATS_JS_ORDERED_HB_THRESH) then
+        begin
+          FResetPending := True;
+          doReset := True;
+        end;
+      end;
+    finally
+      FLock.Leave;
+    end;
+
+    if stopping then
+      Break;
+
+    if doReset then
+      TryReset;
+  end;
+end;
+
+procedure TDextNatsOrderedConsumer.Stop;
+var
+  monitor: TThread;
+begin
+  FLock.Enter;
+  try
+    if FStopping then
+    begin
+      monitor := nil;
+    end
+    else
+    begin
+      FStopping := True;
+      FActive := False;
+      FResetPending := False;
+      monitor := FMonitor;
+      FMonitor := nil;
+    end;
+  finally
+    FLock.Leave;
+  end;
+
+  if FWake <> nil then
+    FWake.SetEvent;
+
+  if monitor <> nil then
+  begin
+    monitor.WaitFor;
+    monitor.Free;
+  end;
+
+  TeardownPushAndConsumer;
+end;
+
+function TDextNatsJetStreamContext.SubscribeOrdered(const AStreamName: string;
+  AHandler: TNatsOrderedConsumerHandler;
+  const AOptions: TNatsOrderedConsumerOptions): TDextNatsOrderedConsumer;
+begin
+  Result := TDextNatsOrderedConsumer.Create(Self, AStreamName, AHandler, AOptions);
+end;
+
+function TDextNatsJetStreamContext.SubscribeOrdered(const AStreamName: string;
+  AHandler: TNatsOrderedConsumerHandler): TDextNatsOrderedConsumer;
+begin
+  Result := SubscribeOrdered(AStreamName, AHandler, TNatsOrderedConsumerOptions.CreateDefault);
 end;
 
 function TDextNatsJetStreamContext.SubscribePush(const ADeliverSubject: string;

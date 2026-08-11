@@ -46,6 +46,7 @@ uses
   Dext.Net.Nats.JetStream,
   Dext.Net.Nats.KeyValue,
   Dext.Net.Nats.ObjectStore,
+  Dext.Net.Nats.Services,
   Dext.Net.Nats.DependencyInjection,
   Dext.Net.Nats.HealthChecks;
 
@@ -105,6 +106,8 @@ type
     [Test, Category('Unit')]
     procedure Parser_ShouldDecodeInfoJetstreamAndAuth;
     [Test, Category('Unit')]
+    procedure Parser_ShouldDecodeInfoAccountAndLimitFields;
+    [Test, Category('Unit')]
     procedure Encode_ShouldBuildPubAndSubFrames;
     [Test, Category('Unit')]
     procedure Encode_ShouldBuildPubWithReplyTo;
@@ -144,6 +147,10 @@ type
     procedure ConsumerConfig_ShouldSerializeEnumVariants;
     [Test, Category('Unit')]
     procedure ConsumerConfig_ShouldSerializeHeadersOnly;
+    [Test, Category('Unit')]
+    procedure ConsumerConfig_ShouldSerializeOrderedFields;
+    [Test, Category('Unit')]
+    procedure OrderedConsumerOptions_ShouldDefault;
     [Test, Category('Unit')]
     procedure JsMsg_ShouldParseAckSubjectMetadata;
     [Test, Category('Unit')]
@@ -214,6 +221,8 @@ type
     [Test, Category('Integration')]
     procedure Unsubscribe_ShouldStopDelivery;
     [Test, Category('Integration')]
+    procedure UnsubscribeSubject_ShouldCancelAllOnSubject;
+    [Test, Category('Integration')]
     procedure Unsubscribe_MaxMsgs_ShouldAutoCancel;
     [Test, Category('Integration')]
     procedure Flush_ShouldRoundTrip;
@@ -231,6 +240,8 @@ type
     procedure FlushAsync_ShouldAwait;
     [Test, Category('Integration')]
     procedure Events_OnConnected_ShouldFire;
+    [Test, Category('Integration')]
+    procedure Events_OnDisconnected_ShouldFire;
     [Test, Category('Integration')]
     procedure WildcardSubscribe_ShouldMatch;
     [Test, Category('Integration')]
@@ -267,6 +278,8 @@ type
     procedure Consumer_FetchAndAck_ShouldRoundTrip;
     [Test, Category('JetStream')]
     procedure Consumer_PushSubscribe_ShouldDeliverAndAck;
+    [Test, Category('JetStream')]
+    procedure OrderedConsumer_ShouldDeliverInOrder;
     [Test, Category('JetStream')]
     procedure Stream_CRUD_ShouldRoundTrip;
     [Test, Category('JetStream')]
@@ -468,6 +481,36 @@ type
     procedure Logger_FireError_ShouldRecordWhenAttached;
   end;
 
+  [TestFixture('NATS Services API ($SRV.*)')]
+  TDextNatsServicesTests = class
+  private
+    FClient: TDextNatsClient;
+    function EnsureServerOrFail: Boolean;
+    function UniqueServiceName(const APrefix: string): string;
+  public
+    [SetUp]
+    procedure SetUp;
+    [TearDown]
+    procedure TearDown;
+
+    [Test, Category('Unit'), Category('Services')]
+    procedure ControlSubject_ShouldBuildAllKindAndInstance;
+    [Test, Category('Unit'), Category('Services')]
+    procedure ControlSubject_IdWithoutName_ShouldRaise;
+    [Test, Category('Unit'), Category('Services')]
+    procedure NameAndSemVer_ShouldValidate;
+    [Test, Category('Unit'), Category('Services')]
+    procedure Subject_ShouldRejectSpacesAndMisplacedGt;
+    [Test, Category('Unit'), Category('Services')]
+    procedure Config_InvalidName_ShouldRaise;
+    [Test, Category('Unit'), Category('Services')]
+    procedure PingJson_ShouldIncludeTypeAndIdentity;
+    [Test, Category('Integration'), Category('Services')]
+    procedure AddService_PingDiscovery_ShouldRespond;
+    [Test, Category('Integration'), Category('Services')]
+    procedure Endpoint_ShouldEchoAndStopUnsubscribes;
+  end;
+
   [TestFixture('NATS JetStream Object Store (requires nats-server -js)')]
   TDextNatsObjectStoreTests = class
   private
@@ -490,15 +533,29 @@ type
     [Test, Category('Unit'), Category('ObjectStore')]
     procedure WatchOptions_ShouldDefaultFalse;
     [Test, Category('Unit'), Category('ObjectStore')]
+    procedure GetOptions_ShouldDefaultShowDeletedFalse;
+    [Test, Category('Unit'), Category('ObjectStore')]
+    procedure ListOptions_ShouldDefaultShowDeletedFalse;
+    [Test, Category('Unit'), Category('ObjectStore')]
     procedure ObjectStoreConfig_ShouldMapToStreamConfig;
     [Test, Category('JetStream'), Category('ObjectStore')]
     procedure Store_CreatePutGetDelete_ShouldRoundTrip;
+    [Test, Category('JetStream'), Category('ObjectStore')]
+    procedure GetInfo_ShowDeleted_ShouldReturnTombstone;
+    [Test, Category('JetStream'), Category('ObjectStore')]
+    procedure Get_ShowDeleted_ShouldReturnEmptyAfterDelete;
+    [Test, Category('JetStream'), Category('ObjectStore')]
+    procedure Put_AfterDelete_ShouldOverwrite;
     [Test, Category('JetStream'), Category('ObjectStore')]
     procedure UpdateStore_ShouldChangeDescriptionMaxBytesAndTTL;
     [Test, Category('JetStream'), Category('ObjectStore'), Category('Negative')]
     procedure UpdateStore_MissingBucket_ShouldRaise;
     [Test, Category('JetStream'), Category('ObjectStore')]
     procedure Store_PutGet_StreamAndFile_ShouldRoundTrip;
+    [Test, Category('JetStream'), Category('ObjectStore')]
+    procedure GetResult_ShouldStreamChunksLazily;
+    [Test, Category('JetStream'), Category('ObjectStore')]
+    procedure GetResult_ShowDeleted_ShouldEofEmpty;
     [Test, Category('JetStream'), Category('ObjectStore')]
     procedure Store_PutOverwrite_ShouldReturnLatest;
     [Test, Category('JetStream'), Category('ObjectStore'), Category('Negative')]
@@ -987,6 +1044,41 @@ begin
   Should(info.Nonce).Be('abc123');
 end;
 
+procedure TDextNatsProtocolTests.Parser_ShouldDecodeInfoAccountAndLimitFields;
+var
+  info: TNatsServerInfo;
+begin
+  { Wire keys from modern nats-server Info JSON — account/domain/limit-ish surface. }
+  info := TNatsServerInfo.Parse(
+    '{"server_id":"NACC","server_name":"s1","version":"2.11.0","proto":1,' +
+    '"go":"go1.22.5","git_commit":"abcdef0","host":"0.0.0.0","port":4222,' +
+    '"ip":"10.0.0.9","headers":true,"max_payload":2097152,"client_id":42,' +
+    '"client_ip":"203.0.113.10","auth_required":true,"tls_required":false,' +
+    '"tls_verify":true,"tls_available":true,"jetstream":true,"api_lvl":1,' +
+    '"cluster":"c1","cluster_dynamic":true,"domain":"tenant-a",' +
+    '"remote_account":"ACC_ORDERS","acc_is_sys":false,"ldm":true,' +
+    '"connect_urls":["nats://a:4222"],' +
+    '"ws_connect_urls":["wss://a:8443"]}');
+  Should(info.ServerId).Be('NACC');
+  Should(info.GitCommit).Be('abcdef0');
+  Should(info.Ip).Be('10.0.0.9');
+  Should(info.MaxPayload).Be(2097152);
+  Should(info.ClientId).Be(42);
+  Should(info.ClientIp).Be('203.0.113.10');
+  Should(info.TlsVerify).BeTrue;
+  Should(info.JsApiLevel).Be(1);
+  Should(info.Cluster).Be('c1');
+  Should(info.ClusterDynamic).BeTrue;
+  Should(info.Domain).Be('tenant-a');
+  Should(info.RemoteAccount).Be('ACC_ORDERS');
+  Should(info.IsSystemAccount).BeFalse;
+  Should(info.LameDuckMode).BeTrue;
+  Should(Length(info.ConnectUrls)).Be(1);
+  Should(info.ConnectUrls[0]).Be('nats://a:4222');
+  Should(Length(info.WsConnectUrls)).Be(1);
+  Should(info.WsConnectUrls[0]).Be('wss://a:8443');
+end;
+
 procedure TDextNatsProtocolTests.Encode_ShouldBuildPubAndSubFrames;
 var
   pubBytes, subBytes: TBytes;
@@ -1303,6 +1395,55 @@ begin
   cfg := TNatsConsumerConfig.CreateDefault('C3', 's.*');
   json := cfg.ToJson;
   Should(json.Contains('headers_only')).BeFalse;
+end;
+
+procedure TDextNatsProtocolTests.ConsumerConfig_ShouldSerializeOrderedFields;
+var
+  cfg: TNatsConsumerConfig;
+  json: string;
+begin
+  cfg := TNatsConsumerConfig.CreateDefault;
+  cfg.Name := 'ord_1';
+  cfg.DeliverSubject := '_INBOX.ordered.1';
+  cfg.AckPolicy := apNone;
+  cfg.MaxAckPending := 0;
+  cfg.MaxDeliver := 1;
+  cfg.FlowControl := True;
+  cfg.IdleHeartbeat := Int64(5) * 1000000000;
+  cfg.InactiveThreshold := Int64(5) * 60 * 1000000000;
+  cfg.MemoryStorage := True;
+  cfg.NumReplicas := 1;
+  json := cfg.ToJson;
+  Should(json.Contains('"flow_control":true')).BeTrue;
+  Should(json.Contains('"idle_heartbeat":5000000000')).BeTrue;
+  Should(json.Contains('"inactive_threshold":300000000000')).BeTrue;
+  Should(json.Contains('"mem_storage":true')).BeTrue;
+  Should(json.Contains('"num_replicas":1')).BeTrue;
+  Should(json.Contains('"ack_policy":"none"')).BeTrue;
+  Should(json.Contains('"max_waiting"')).BeFalse;
+
+  cfg := TNatsConsumerConfig.CreateDefault('pull', 's.*');
+  json := cfg.ToJson;
+  Should(json.Contains('flow_control')).BeFalse;
+  Should(json.Contains('idle_heartbeat')).BeFalse;
+  Should(json.Contains('mem_storage')).BeFalse;
+  Should(json.Contains('num_replicas')).BeFalse;
+end;
+
+procedure TDextNatsProtocolTests.OrderedConsumerOptions_ShouldDefault;
+var
+  opts: TNatsOrderedConsumerOptions;
+begin
+  opts := TNatsOrderedConsumerOptions.CreateDefault('orders.*');
+  Should(opts.FilterSubject).Be('orders.*');
+  Should(Ord(opts.DeliverPolicy)).Be(Ord(dpAll));
+  Should(opts.OptStartSeq).Be(UInt64(0));
+  Should(opts.HeadersOnly).BeFalse;
+  Should(opts.NamePrefix).Be('');
+  Should(opts.IdleHeartbeat).Be(Int64(0));
+  Should(opts.InactiveThreshold).Be(Int64(0));
+  Should(opts.MaxResetAttempts).Be(0);
+  Should(Assigned(opts.OnError)).BeFalse;
 end;
 
 procedure TDextNatsProtocolTests.JsMsg_ShouldParseAckSubjectMetadata;
@@ -1674,6 +1815,9 @@ begin
     Exit;
   Should(FClient.Connected).BeTrue;
   Should(FClient.ServerInfo.ServerId).NotBeEmpty;
+  { Soft live checks on enriched INFO surface (fields optional per server build). }
+  Should(FClient.ServerInfo.MaxPayload).BeGreaterThan(0);
+  Should(FClient.ServerInfo.Version).NotBeEmpty;
 end;
 
 procedure TDextNatsIntegrationTests.Disconnect_ShouldJoinThreadsCleanly;
@@ -1883,6 +2027,47 @@ begin
   end;
 end;
 
+procedure TDextNatsIntegrationTests.UnsubscribeSubject_ShouldCancelAllOnSubject;
+var
+  subject: string;
+  hits: Integer;
+  received: TEvent;
+begin
+  if not EnsureServerOrFail then
+    Exit;
+  subject := UniqueSubject('dext.nats.test.unsubsubj');
+  hits := 0;
+  received := TEvent.Create(nil, True, False, '');
+  try
+    FClient.Subscribe(subject,
+      procedure(const AMsg: TNatsMsg)
+      begin
+        TInterlocked.Increment(hits);
+        received.SetEvent;
+      end);
+    FClient.Subscribe(subject,
+      procedure(const AMsg: TNatsMsg)
+      begin
+        TInterlocked.Increment(hits);
+        received.SetEvent;
+      end);
+
+    FClient.Publish(subject, 'a');
+    Should(received.WaitFor(3000) = wrSignaled).BeTrue;
+    Sleep(200); // both non-queue subscribers receive a copy
+    Should(hits).Be(2);
+
+    FClient.UnsubscribeSubject(subject);
+    FClient.Flush(2000);
+    received.ResetEvent;
+    FClient.Publish(subject, 'b');
+    Should(received.WaitFor(500) = wrSignaled).BeFalse;
+    Should(hits).Be(2);
+  finally
+    received.Free;
+  end;
+end;
+
 procedure TDextNatsIntegrationTests.Unsubscribe_MaxMsgs_ShouldAutoCancel;
 var
   subject: string;
@@ -2059,6 +2244,53 @@ begin
     Exit;
   Should(connected).BeTrue;
   Should(serverId).NotBeEmpty;
+end;
+
+procedure TDextNatsIntegrationTests.Events_OnDisconnected_ShouldFire;
+var
+  disconnected, reconnected: TEvent;
+begin
+  if LiveSkippedByEnv then
+    Exit;
+
+  // MaxPingsOutstanding=0 forces PingLoop to close the socket; RecvLoop reconnects.
+  RecreateClientForStalePingReconnect(400, 8 * 1024 * 1024);
+  disconnected := TEvent.Create(nil, True, False, '');
+  reconnected := TEvent.Create(nil, True, False, '');
+  try
+    FClient.OnDisconnected :=
+      procedure
+      begin
+        StabilizePingAfterForcedDisconnect;
+        disconnected.SetEvent;
+      end;
+    FClient.OnConnected :=
+      procedure(const AInfo: TNatsServerInfo; AIsReconnect: Boolean)
+      begin
+        if AIsReconnect then
+          reconnected.SetEvent;
+      end;
+
+    try
+      FClient.Connect(NatsTestHost, NatsTestPort);
+    except
+      on E: Exception do
+      begin
+        LiveSoftSkipOrFail(
+          Format('NATS server not reachable at %s:%d (%s). Start nats-server, ' +
+            'or omit DEXT_NATS_REQUIRE_LIVE for soft-skip.',
+            [NatsTestHost, NatsTestPort, E.Message]));
+        Exit;
+      end;
+    end;
+
+    Should(disconnected.WaitFor(5000) = wrSignaled).BeTrue;
+    Should(reconnected.WaitFor(10000) = wrSignaled).BeTrue;
+    Should(FClient.Connected).BeTrue;
+  finally
+    disconnected.Free;
+    reconnected.Free;
+  end;
 end;
 
 procedure TDextNatsIntegrationTests.WildcardSubscribe_ShouldMatch;
@@ -2461,6 +2693,74 @@ begin
     end;
   finally
     got.Free;
+  end;
+end;
+
+procedure TDextNatsJetStreamTests.OrderedConsumer_ShouldDeliverInOrder;
+var
+  stream, subject: string;
+  streamCfg: TNatsStreamConfig;
+  opts: TNatsOrderedConsumerOptions;
+  ordered: TDextNatsOrderedConsumer;
+  lock: TCriticalSection;
+  got: TEvent;
+  payloads: IList<string>;
+  seqs: IList<UInt64>;
+  i: Integer;
+begin
+  if not EnsureJetStreamOrFail then
+    Exit;
+  stream := UniqueName('DEXT_JS_ORD_S');
+  subject := JsUniqueSubject(stream);
+  payloads := TCollections.CreateList<string>;
+  seqs := TCollections.CreateList<UInt64>;
+  lock := TCriticalSection.Create;
+  got := TEvent.Create(nil, True, False, '');
+  try
+    streamCfg := TNatsStreamConfig.CreateDefault(stream, [subject]);
+    streamCfg.Storage := ssMemory;
+    FJs.CreateStream(streamCfg);
+    try
+      for i := 1 to 5 do
+        FJs.Publish(subject, Format('ord-%d', [i]));
+
+      opts := TNatsOrderedConsumerOptions.CreateDefault(subject);
+      opts.NamePrefix := 'dextord_' + UniqueName('p');
+      ordered := FJs.SubscribeOrdered(stream,
+        procedure(const AMsg: TNatsJsMsg)
+        begin
+          lock.Enter;
+          try
+            payloads.Add(AMsg.AsString);
+            seqs.Add(AMsg.StreamSequence);
+            if payloads.Count >= 5 then
+              got.SetEvent;
+          finally
+            lock.Leave;
+          end;
+        end,
+        opts);
+      try
+        Should(ordered.Active).BeTrue;
+        Should(ordered.ConsumerName <> '').BeTrue;
+        Should(got.WaitFor(8000) = wrSignaled).BeTrue;
+        Should(payloads.Count).Be(5);
+        for i := 0 to 4 do
+        begin
+          Should(payloads[i]).Be(Format('ord-%d', [i + 1]));
+          if i > 0 then
+            Should(seqs[i]).Be(seqs[i - 1] + 1);
+        end;
+        Should(ordered.LastStreamSequence).Be(UInt64(seqs[4]));
+      finally
+        ordered.Free;
+      end;
+    finally
+      FJs.DeleteStream(stream);
+    end;
+  finally
+    got.Free;
+    lock.Free;
   end;
 end;
 
@@ -4745,6 +5045,210 @@ begin
   end;
 end;
 
+{ TDextNatsServicesTests }
+
+function TDextNatsServicesTests.UniqueServiceName(const APrefix: string): string;
+begin
+  Result := APrefix + '_' + IntToHex(Random(MaxInt), 8);
+end;
+
+function TDextNatsServicesTests.EnsureServerOrFail: Boolean;
+begin
+  Result := False;
+  if LiveSkippedByEnv then
+    Exit;
+
+  try
+    FClient.Connect(NatsTestHost, NatsTestPort);
+  except
+    on E: Exception do
+    begin
+      Result := LiveSoftSkipOrFail(
+        Format('NATS server not reachable at %s:%d (%s). Start nats-server, ' +
+          'or omit DEXT_NATS_REQUIRE_LIVE for soft-skip.',
+          [NatsTestHost, NatsTestPort, E.Message]));
+      Exit;
+    end;
+  end;
+  Result := True;
+end;
+
+procedure TDextNatsServicesTests.SetUp;
+begin
+  FClient := TDextNatsClient.Create;
+end;
+
+procedure TDextNatsServicesTests.TearDown;
+begin
+  FreeAndNil(FClient);
+end;
+
+procedure TDextNatsServicesTests.ControlSubject_ShouldBuildAllKindAndInstance;
+begin
+  Should(NatsServiceControlSubject(svPing)).Be('$SRV.PING');
+  Should(NatsServiceControlSubject(svInfo, 'Echo')).Be('$SRV.INFO.Echo');
+  Should(NatsServiceControlSubject(svStats, 'Echo', 'abc123')).Be('$SRV.STATS.Echo.abc123');
+  Should(NatsServiceVerbToString(svPing)).Be('PING');
+end;
+
+procedure TDextNatsServicesTests.ControlSubject_IdWithoutName_ShouldRaise;
+begin
+  Should(
+    procedure
+    begin
+      NatsServiceControlSubject(svPing, '', 'only-id');
+    end).Throw(EDextNatsServiceError);
+end;
+
+procedure TDextNatsServicesTests.NameAndSemVer_ShouldValidate;
+begin
+  Should(NatsServiceIsValidName('EchoService')).BeTrue;
+  Should(NatsServiceIsValidName('echo_1-2')).BeTrue;
+  Should(NatsServiceIsValidName('')).BeFalse;
+  Should(NatsServiceIsValidName('bad.name')).BeFalse;
+  Should(NatsServiceIsValidSemVer('1.0.0')).BeTrue;
+  Should(NatsServiceIsValidSemVer('1.2.3-alpha.1+build')).BeTrue;
+  Should(NatsServiceIsValidSemVer('1.0')).BeFalse;
+  Should(NatsServiceIsValidSemVer('')).BeFalse;
+end;
+
+procedure TDextNatsServicesTests.Subject_ShouldRejectSpacesAndMisplacedGt;
+begin
+  Should(NatsServiceIsValidSubject('svc.echo')).BeTrue;
+  Should(NatsServiceIsValidSubject('svc.>')).BeTrue;
+  Should(NatsServiceIsValidSubject('svc echo')).BeFalse;
+  Should(NatsServiceIsValidSubject('svc.>x')).BeFalse;
+end;
+
+procedure TDextNatsServicesTests.Config_InvalidName_ShouldRaise;
+var
+  cfg: TNatsServiceConfig;
+begin
+  cfg := TNatsServiceConfig.CreateDefault('bad name', '1.0.0');
+  Should(
+    procedure
+    begin
+      cfg.Validate;
+    end).Throw(EDextNatsServiceError);
+
+  cfg := TNatsServiceConfig.CreateDefault('Good', 'not-semver');
+  Should(
+    procedure
+    begin
+      cfg.Validate;
+    end).Throw(EDextNatsServiceError);
+end;
+
+procedure TDextNatsServicesTests.PingJson_ShouldIncludeTypeAndIdentity;
+var
+  client: TDextNatsClient;
+  svc: TDextNatsService;
+  cfg: TNatsServiceConfig;
+  json: string;
+begin
+  client := TDextNatsClient.Create;
+  try
+    cfg := TNatsServiceConfig.CreateDefault('UnitPing', '1.2.3');
+    cfg.Description := 'unit';
+    svc := TDextNatsService.AddService(client, cfg);
+    try
+      json := svc.PingJson;
+      Should(json.Contains('"name":"UnitPing"')).BeTrue;
+      Should(json.Contains('"version":"1.2.3"')).BeTrue;
+      Should(json.Contains('"id":"' + svc.Id + '"')).BeTrue;
+      Should(json.Contains('"' + NATS_SRV_PING_RESPONSE_TYPE + '"')).BeTrue;
+      Should(json.Contains('"metadata":{')).BeTrue;
+
+      json := svc.InfoJson;
+      Should(json.Contains(NATS_SRV_INFO_RESPONSE_TYPE)).BeTrue;
+      Should(json.Contains('"description":"unit"')).BeTrue;
+      Should(json.Contains('"endpoints":[')).BeTrue;
+    finally
+      svc.Free;
+    end;
+  finally
+    client.Free;
+  end;
+end;
+
+procedure TDextNatsServicesTests.AddService_PingDiscovery_ShouldRespond;
+var
+  cfg: TNatsServiceConfig;
+  svc: TDextNatsService;
+  name: string;
+  reply: TNatsMsg;
+  body: string;
+begin
+  if not EnsureServerOrFail then
+    Exit;
+
+  name := UniqueServiceName('DextSrv');
+  cfg := TNatsServiceConfig.CreateDefault(name, '1.0.0');
+  cfg.Description := 'live ping';
+  svc := TDextNatsService.AddService(FClient, cfg);
+  try
+    FClient.Flush(2000);
+    reply := FClient.Request(NatsServiceControlSubject(svPing, name, svc.Id), '', 2000);
+    body := reply.AsString;
+    Should(body.Contains('"name":"' + name + '"')).BeTrue;
+    Should(body.Contains('"id":"' + svc.Id + '"')).BeTrue;
+    Should(body.Contains(NATS_SRV_PING_RESPONSE_TYPE)).BeTrue;
+
+    reply := FClient.Request(NatsServiceControlSubject(svInfo, name), '', 2000);
+    body := reply.AsString;
+    Should(body.Contains(NATS_SRV_INFO_RESPONSE_TYPE)).BeTrue;
+    Should(body.Contains('"description":"live ping"')).BeTrue;
+  finally
+    svc.Free;
+  end;
+end;
+
+procedure TDextNatsServicesTests.Endpoint_ShouldEchoAndStopUnsubscribes;
+var
+  cfg: TNatsServiceConfig;
+  epCfg: TNatsEndpointConfig;
+  svc: TDextNatsService;
+  name, subject: string;
+  reply: TNatsMsg;
+  pingSubj: string;
+begin
+  if not EnsureServerOrFail then
+    Exit;
+
+  name := UniqueServiceName('DextEcho');
+  subject := 'dext.svc.' + name.ToLowerInvariant + '.echo';
+  cfg := TNatsServiceConfig.CreateDefault(name, '0.1.0');
+  svc := TDextNatsService.AddService(FClient, cfg);
+  try
+    epCfg := TNatsEndpointConfig.CreateDefault('echo', subject);
+    svc.AddEndpoint(epCfg,
+      procedure(const ARequest: TNatsServiceRequest)
+      begin
+        ARequest.Respond(ARequest.Data);
+      end);
+    FClient.Flush(2000);
+
+    reply := FClient.Request(subject, 'hello-svc', 2000);
+    Should(reply.AsString).Be('hello-svc');
+
+    reply := FClient.Request(NatsServiceControlSubject(svStats, name, svc.Id), '', 2000);
+    Should(reply.AsString.Contains(NATS_SRV_STATS_RESPONSE_TYPE)).BeTrue;
+    Should(reply.AsString.Contains('"num_requests":1')).BeTrue;
+
+    pingSubj := NatsServiceControlSubject(svPing, name, svc.Id);
+    svc.Stop;
+    FClient.Flush(2000);
+
+    Should(
+      procedure
+      begin
+        FClient.Request(pingSubj, '', 1000);
+      end).Throw(EDextNatsNoResponders);
+  finally
+    svc.Free;
+  end;
+end;
+
 { TDextNatsObjectStoreTests }
 
 function TDextNatsObjectStoreTests.UniqueBucket(const APrefix: string): string;
@@ -4891,6 +5395,22 @@ begin
   opts := TNatsObjectStoreWatchOptions.CreateDefault;
   Should(opts.MetaOnly).BeFalse;
   Should(opts.UpdatesOnly).BeFalse;
+end;
+
+procedure TDextNatsObjectStoreTests.GetOptions_ShouldDefaultShowDeletedFalse;
+var
+  opts: TNatsObjectStoreGetOptions;
+begin
+  opts := TNatsObjectStoreGetOptions.CreateDefault;
+  Should(opts.ShowDeleted).BeFalse;
+end;
+
+procedure TDextNatsObjectStoreTests.ListOptions_ShouldDefaultShowDeletedFalse;
+var
+  opts: TNatsObjectStoreListOptions;
+begin
+  opts := TNatsObjectStoreListOptions.CreateDefault;
+  Should(opts.ShowDeleted).BeFalse;
 end;
 
 procedure TDextNatsObjectStoreTests.ObjectStoreConfig_ShouldMapToStreamConfig;
@@ -5081,6 +5601,96 @@ begin
   end;
 end;
 
+procedure TDextNatsObjectStoreTests.GetResult_ShouldStreamChunksLazily;
+var
+  cfg: TNatsObjectStoreConfig;
+  store: TDextNatsObjectStore;
+  bucket: string;
+  putInfo: TNatsObjectInfo;
+  payload, got: TBytes;
+  reader: TDextNatsObjectResult;
+  buf: array[0..4] of Byte;
+  n, total, i: Integer;
+begin
+  if not EnsureJetStreamOrFail then
+    Exit;
+
+  bucket := UniqueBucket('DEXTOBJLR');
+  cfg := TNatsObjectStoreConfig.CreateDefault(bucket);
+  cfg.ChunkSize := 8;
+  store := FOs.CreateStore(cfg);
+  try
+    SetLength(payload, 25);
+    for i := 0 to High(payload) do
+      payload[i] := Byte(i + 1);
+    putInfo := store.Put('lazy.bin', payload);
+    Should(Integer(putInfo.Chunks)).Be(4);
+
+    reader := store.GetResult('lazy.bin');
+    try
+      Should(reader.Info.Digest).Be(putInfo.Digest);
+      Should(reader.Size).Be(Int64(Length(payload)));
+      Should(reader.Position).Be(0);
+      SetLength(got, Length(payload));
+      total := 0;
+      while total < Length(payload) do
+      begin
+        n := reader.Read(buf[0], Length(buf));
+        Should(n).BeGreaterThan(0);
+        Move(buf[0], got[total], n);
+        Inc(total, n);
+      end;
+      Should(total).Be(Length(payload));
+      Should(reader.Position).Be(Int64(Length(payload)));
+      Should(reader.Read(buf[0], Length(buf))).Be(0);
+      Should(CompareMem(@got[0], @payload[0], Length(payload))).BeTrue;
+      Should(reader.Failed).BeFalse;
+    finally
+      reader.Free;
+    end;
+  finally
+    store.Free;
+    FOs.DeleteStore(bucket);
+  end;
+end;
+
+procedure TDextNatsObjectStoreTests.GetResult_ShowDeleted_ShouldEofEmpty;
+var
+  cfg: TNatsObjectStoreConfig;
+  store: TDextNatsObjectStore;
+  bucket: string;
+  opts: TNatsObjectStoreGetOptions;
+  reader: TDextNatsObjectResult;
+  buf: array[0..7] of Byte;
+begin
+  if not EnsureJetStreamOrFail then
+    Exit;
+
+  bucket := UniqueBucket('DEXTOBJLD');
+  cfg := TNatsObjectStoreConfig.CreateDefault(bucket);
+  store := FOs.CreateStore(cfg);
+  try
+    store.Put('tomb.bin', TEncoding.UTF8.GetBytes('soon-gone'));
+    store.Delete('tomb.bin');
+
+    opts := TNatsObjectStoreGetOptions.CreateDefault;
+    opts.ShowDeleted := True;
+    reader := store.GetResult('tomb.bin', opts);
+    try
+      Should(reader.Info.Deleted).BeTrue;
+      Should(reader.Info.Name).Be('tomb.bin');
+      Should(reader.Size).Be(0);
+      Should(reader.Read(buf[0], Length(buf))).Be(0);
+      Should(reader.Failed).BeFalse;
+    finally
+      reader.Free;
+    end;
+  finally
+    store.Free;
+    FOs.DeleteStore(bucket);
+  end;
+end;
+
 procedure TDextNatsObjectStoreTests.Store_PutOverwrite_ShouldReturnLatest;
 var
   cfg: TNatsObjectStoreConfig;
@@ -5129,6 +5739,121 @@ begin
   end;
 end;
 
+procedure TDextNatsObjectStoreTests.GetInfo_ShowDeleted_ShouldReturnTombstone;
+var
+  cfg: TNatsObjectStoreConfig;
+  store: TDextNatsObjectStore;
+  bucket: string;
+  opts: TNatsObjectStoreGetOptions;
+  info: TNatsObjectInfo;
+begin
+  if not EnsureJetStreamOrFail then
+    Exit;
+
+  bucket := UniqueBucket('DEXTOBJSD');
+  cfg := TNatsObjectStoreConfig.CreateDefault(bucket);
+  store := FOs.CreateStore(cfg);
+  try
+    store.Put('tomb.txt', TEncoding.UTF8.GetBytes('bye'));
+    store.Delete('tomb.txt');
+
+    Should(
+      procedure
+      begin
+        store.GetInfo('tomb.txt');
+      end).Throw(EDextNatsObjectStoreError);
+
+    opts := TNatsObjectStoreGetOptions.CreateDefault;
+    opts.ShowDeleted := True;
+    info := store.GetInfo('tomb.txt', opts);
+    Should(info.Name).Be('tomb.txt');
+    Should(info.Deleted).BeTrue;
+    Should(info.Size).Be(UInt64(0));
+    Should(Integer(info.Chunks)).Be(0);
+  finally
+    store.Free;
+    FOs.DeleteStore(bucket);
+  end;
+end;
+
+procedure TDextNatsObjectStoreTests.Get_ShowDeleted_ShouldReturnEmptyAfterDelete;
+var
+  cfg: TNatsObjectStoreConfig;
+  store: TDextNatsObjectStore;
+  bucket: string;
+  opts: TNatsObjectStoreGetOptions;
+  info: TNatsObjectInfo;
+  got: TBytes;
+  ms: TBytesStream;
+begin
+  if not EnsureJetStreamOrFail then
+    Exit;
+
+  bucket := UniqueBucket('DEXTOBJGD');
+  cfg := TNatsObjectStoreConfig.CreateDefault(bucket);
+  store := FOs.CreateStore(cfg);
+  try
+    store.Put('gone.bin', TEncoding.UTF8.GetBytes('payload'));
+    store.Delete('gone.bin');
+
+    Should(
+      procedure
+      begin
+        store.Get('gone.bin');
+      end).Throw(EDextNatsObjectStoreError);
+
+    opts := TNatsObjectStoreGetOptions.CreateDefault;
+    opts.ShowDeleted := True;
+    got := store.Get('gone.bin', info, opts);
+    Should(Length(got)).Be(0);
+    Should(info.Deleted).BeTrue;
+    Should(info.Name).Be('gone.bin');
+
+    ms := TBytesStream.Create;
+    try
+      info := store.Get('gone.bin', ms, opts);
+      Should(ms.Size).Be(0);
+      Should(info.Deleted).BeTrue;
+    finally
+      ms.Free;
+    end;
+  finally
+    store.Free;
+    FOs.DeleteStore(bucket);
+  end;
+end;
+
+procedure TDextNatsObjectStoreTests.Put_AfterDelete_ShouldOverwrite;
+var
+  cfg: TNatsObjectStoreConfig;
+  store: TDextNatsObjectStore;
+  bucket: string;
+  putInfo, getInfo: TNatsObjectInfo;
+  got: TBytes;
+begin
+  if not EnsureJetStreamOrFail then
+    Exit;
+
+  { Put has no public ShowDeleted option (nats.go); it already sees tombstones
+    via TryGetInfo so a re-Put after Delete replaces the name cleanly. }
+  bucket := UniqueBucket('DEXTOBJPD');
+  cfg := TNatsObjectStoreConfig.CreateDefault(bucket);
+  store := FOs.CreateStore(cfg);
+  try
+    store.Put('reuse.txt', TEncoding.UTF8.GetBytes('old'));
+    store.Delete('reuse.txt');
+    putInfo := store.Put('reuse.txt', TEncoding.UTF8.GetBytes('new'));
+    Should(putInfo.Deleted).BeFalse;
+    Should(putInfo.Size).Be(UInt64(3));
+    got := store.Get('reuse.txt', getInfo);
+    Should(TEncoding.UTF8.GetString(got)).Be('new');
+    Should(getInfo.Deleted).BeFalse;
+  finally
+    store.Free;
+    FOs.DeleteStore(bucket);
+  end;
+end;
+
 procedure TDextNatsObjectStoreTests.Store_ListAndKeys_ShouldReturnLiveObjects;
 var
   cfg: TNatsObjectStoreConfig;
@@ -5136,6 +5861,7 @@ var
   bucket: string;
   infos, withDeleted: IList<TNatsObjectInfo>;
   names: IList<string>;
+  listOpts: TNatsObjectStoreListOptions;
   i: Integer;
   sawA, sawB, sawDeleted: Boolean;
 begin
@@ -5190,6 +5916,11 @@ begin
       if (withDeleted[i].Name = 'gone.bin') and withDeleted[i].Deleted then
         sawDeleted := True;
     Should(sawDeleted).BeTrue;
+
+    listOpts := TNatsObjectStoreListOptions.CreateDefault;
+    listOpts.ShowDeleted := True;
+    withDeleted := store.List(listOpts);
+    Should(withDeleted.Count).Be(3);
   finally
     store.Free;
     FOs.DeleteStore(bucket);

@@ -1,7 +1,7 @@
 ﻿# برنامهٔ جامع تست — Dext.Nats (`TEST_PLAN`)
 
 > **هدف:** پوشش کامل لایهٔ پروتکل، کلاینت cleartext، JetStream (pull)، TLS، همزمانی، و مسیرهای خطا — بدون پیاده‌سازی در این سند.  
-> **وضعیت فعلی:** suite پیش‌فرض با سرور `-js` (Unit+Integration+JetStream+KeyValue+ObjectStore+DI+Observability؛ TLS/NKey soft-skip بدون env؛ Stress Explicit کنار). `DEXT_NATS_REQUIRE_LIVE=1` برای fail سخت. Fixture TLS: `Tests/tls/`؛ NKey: `Tests/nkey/`. KV: `TDextNatsKeyValueTests` (Put/Get/Delete/Purge/Keys/History/WatchAll+EndOfInitial/MetaOnly/UpdatesOnly/CAS Create+Update/per-key TTL Create expire). Object Store: Put/Get/Delete/List/Keys/WatchAll/UpdateMeta/UpdateStore/Seal/AddLink/AddBucketLink + streaming Put/Get (`TStream`, PutFile/GetFile, Put with meta).  
+> **وضعیت فعلی:** شکاف‌های عملی §۲.۳ / فاز T0–T5 بسته شده‌اند. suite پیش‌فرض با سرور `-js` (Unit+Integration+JetStream+KeyValue+ObjectStore+Services+DI+Observability؛ TLS/NKey soft-skip بدون env؛ Stress Explicit کنار). `DEXT_NATS_REQUIRE_LIVE=1` برای fail سخت. Fixture TLS: `Tests/tls/`؛ NKey: `Tests/nkey/`. KV: `TDextNatsKeyValueTests`؛ Object Store: Put/Get/GetResult/List/Watch*/UpdateMeta/Seal/links + streaming + ShowDeleted؛ Services: `TDextNatsServicesTests` (subject helpers + live soft-skip register/PING/endpoint). باقی‌ماندهٔ عمدی: soft-skip بدون سرور، Stress opt-in، ConnectUrls failover چندنود.  
 > **کامپایلر:** فقط Delphi 12 / Studio **23.0** (`dcc32`).  
 > **چارچوب:** `Dext.Testing` + `Should()`؛ فقط `Dext.Collections`.  
 > **مرجع تاریخی فازها:** `nats_complete_phased_d5d5e289.plan.md` (فاز ۱–۳ feature کامل شده؛ این سند فازهای *تست* بعدی است).
@@ -10,16 +10,18 @@
 
 ## ۱. خلاصهٔ اجرایی / Executive summary
 
-| لایه | وضعیت امروز | هدف این پلن |
-|------|-------------|-------------|
-| Unit (بدون سرور) | ۱۰ تست پروتکل/گزینه/JS parse | گسترش پارسر، encoders، headers، JSON helpers، Stream/Consumer ToJson/Parse، ack payload |
-| Integration cleartext | ۴ تست (connect / pub-sub / req-reply / 503) | queue groups، headers، reconnect/outbox، Flush/Ping، MaxPayload، Unsubscribe |
-| JetStream | ۱ تست round-trip Fetch+Ack | CRUD/update stream، dedup، consumer CRUD، batch Fetch، Nak/Term/InProgress، redelivery |
-| TLS | ۱ تست همیشه Ignore | env-gated handshake با `VerifyServerCertificate=False` |
-| Concurrency / stress | ندارد | multi-sub، claim-gate timeout race، ping stale disconnect |
-| Negative | جزئی (503، JS missing) | -ERR، timeout، stream not found، MaxPayload، parse ceiling |
+| لایه | وضعیت امروز | یادداشت |
+|------|-------------|---------|
+| Unit (بدون سرور) | پارسر / encode / headers / JSON / NKey vectors / JS+KV parse | همیشه اجرا؛ بدون TCP |
+| Integration cleartext | Connect، pub/sub، queue، headers، unsub(+subject)، Flush/Ping، MaxPayload، Request*، events، reconnect/outbox، negatives | soft-skip بدون سرور؛ سخت با `DEXT_NATS_REQUIRE_LIVE=1` |
+| JetStream | Fetch+Ack، push، CRUD/List، dedup، batch، Nak/Term/InProgress، errors، compression | نیاز `-js`؛ همان سیاست soft-skip |
+| KeyValue / ObjectStore | buckets/stores، Watch*، CAS/TTL، links/streaming/GetResult | روی JetStream |
+| Services (`$SRV.*`) | subject/SemVer helpers؛ live AddService+PING+endpoint+Stop | soft-skip بدون سرور (JetStream لازم نیست) |
+| TLS / NKey | env-gated (`DEXT_NATS_TLS_PORT` / `DEXT_NATS_NKEY_PORT`) | بدون env → soft-skip |
+| Stress | Explicit + `DEXT_NATS_RUN_STRESS=1` | خارج از CI پیش‌فرض |
+| DI / Observability | AddNats*، HealthCheck، Metrics، Logger | Unit؛ TearDown `DefaultProvider := nil` |
 
-**Demo** (`Demo/JetStreamSmokeTest`) مکمل دستی است، نه جایگزین suite.
+**Demo** (`Demo/JetStreamSmokeTest` و E2Eهای دیگر) مکمل دستی است، نه جایگزین suite.
 
 ---
 
@@ -42,6 +44,7 @@
 | ID | متد | پوشش |
 |----|-----|------|
 | U-01 | `Parser_ShouldDecodeInfoFrame` | INFO + `TNatsServerInfo.Parse` (connect_urls, max_payload, headers) |
+| U-01b | `Parser_ShouldDecodeInfoAccountAndLimitFields` | INFO domain / remote_account / ldm / api_lvl / ws_connect_urls / tls_verify / git_commit / cluster |
 | U-02 | `Parser_ShouldDecodeInfoTlsRequired` | `tls_required` |
 | U-03 | `Parser_ShouldDecodeMsgFrame` | MSG + payload |
 | U-04 | `Parser_ShouldDecodeHMsgWithStatusAndHeaders` | HMSG + status 503 + header GetValue |
@@ -50,24 +53,19 @@
 | U-07 | `ConnectOptions_ShouldDefaultNoResponders` | defaults + `ToJson` شامل `no_responders` |
 | U-08 | `ClientOptions_ShouldDefaultTlsDisabled` | `TDextNatsOptions.TLS` |
 | U-09 | `ConsumerConfig_ShouldSerializeDefaults` | `TNatsConsumerConfig.ToJson` |
+| U-09b | `ConsumerConfig_ShouldSerializeOrderedFields` | flow_control / idle_heartbeat / mem_storage / num_replicas |
+| U-09c | `OrderedConsumerOptions_ShouldDefault` | `TNatsOrderedConsumerOptions.CreateDefault` |
 | U-10 | `JsMsg_ShouldParseAckSubjectMetadata` | `TNatsJsMsg.FromNatsMsg` از `$JS.ACK.*` |
 
-#### `TDextNatsIntegrationTests` — cleartext `127.0.0.1:4222` — **۴**
+#### `TDextNatsIntegrationTests` — cleartext `127.0.0.1:4222` — **~۲۵**
 
-| ID | متد | پوشش |
-|----|-----|------|
-| I-01 | `Connect_ShouldHandshake` | Connect + `ServerInfo.ServerId` |
-| I-02 | `PublishSubscribe_ShouldDeliverPayload` | Publish string + Subscribe handler |
-| I-03 | `RequestReply_ShouldRoundTrip` | Request/Reply |
-| I-04 | `Request_NoResponders_ShouldRaise` | `EDextNatsNoResponders` |
+شامل I-01..I-18 هدف + negatives: handshake، Disconnect تمیز، pub/sub، request/503، **queue group**، **PublishWithHeaders / RequestWithHeaders**، Unsubscribe / **UnsubscribeSubject** / MaxMsgs، Flush/Ping، MaxPayload، RequestAsync(+builder)/FlushAsync، **OnConnected / OnDisconnected**، wildcard، binary، **Reconnect outbox + Resubscribe**، Connect closed-port، Publish قبل از Connect، handler→OnError، Request timeout.
 
-**سیاست skip:** `EnsureServerOrFail` بدون سرور **soft-skip** می‌کند (`Exit` بدون assert)؛ با `DEXT_NATS_REQUIRE_LIVE=1` fail سخت. `DEXT_NATS_SKIP_LIVE=1` همیشه soft-skip.
+**سیاست skip:** `EnsureServerOrFail` بدون سرور **soft-skip** می‌کند (`Exit` بدون assert)؛ با `DEXT_NATS_REQUIRE_LIVE=1` fail سخت. `DEXT_NATS_SKIP_LIVE=1` همیشه soft-skip. تست‌های reconnect/events قطع‌شده از `RecreateClientForStalePingReconnect` همان سیاست را دارند.
 
-#### `TDextNatsJetStreamTests` — نیاز به `nats-server -js` — **۱**
+#### `TDextNatsJetStreamTests` — نیاز به `nats-server -js` — **~۲۱**
 
-| ID | متد | پوشش |
-|----|-----|------|
-| J-01 | `Consumer_FetchAndAck_ShouldRoundTrip` | CreateStream (memory) → CreateConsumer → Publish(+MsgId) → Fetch(1) → Ack → empty Fetch → DeleteConsumer → DeleteStream |
+شامل J-01..J-13 هدف: Fetch+Ack، push SubscribePush، **ordered SubscribeOrdered**، stream/consumer CRUD+List، UpdateStream، dedup، Fetch batch، **Nak / Term / InProgress**، ExpectedStream mismatch، empty Fetch، StreamExists/GetStreamInfo missing، CreateStream ناسازگار، compression round-trip (S2 در صورت پشتیبانی سرور).
 
 **سیاست:** soft-skip اگر سرور نباشد یا `ServerInfo.Jetstream=false`؛ با `DEXT_NATS_REQUIRE_LIVE=1` fail سخت.
 
@@ -79,39 +77,20 @@
 | T-02 | `PublishSubscribe_Tls_ShouldDeliverWhenConfigured` | Pub/Sub روی TLS |
 | T-03 | `RequestReply_Tls_ShouldRoundTripWhenConfigured` | Request/Reply روی TLS |
 
-### ۲.۳ شکاف‌های مهم نسبت به API عمومی
+### ۲.۳ شکاف‌ها نسبت به API عمومی (وضعیت فعلی)
 
-**Protocol هنوز بدون تست اختصاصی:**
+**بسته شده در suite (فازهای T1–T5):** پارسر/encode/headers/JSON؛ queue؛ headers pub/req؛ Unsubscribe(+MaxMsgs)/`UnsubscribeSubject`؛ Flush/Ping؛ MaxPayload؛ RequestAsync؛ OnConnected/OnDisconnected/OnError؛ reconnect outbox + resubscribe؛ JS CRUD/List/dedup/batch؛ Nak/Term/InProgress؛ publish options mismatch؛ unit ack wire contract؛ Stress Explicit (S-01..S-05)؛ negatives اصلی.
 
-- `NatsEncodeConnect` / `NatsEncodeHPub` / `NatsEncodeUnsub` / `NatsEncodePing` / `NatsEncodePong`
-- `TNatsHeadersHelper` کامل (Add/SetValue/IndexOf/Count/Encode)
-- `NatsJsonEscape` / `NatsJsonGet*` / `NatsBoolStr` / `NatsNewInbox`
-- پارسر: PONG، +OK، -ERR، MSG با reply-to، HMSG با payload، fragmented Append، `Clear`، سقف `MaxFrameBytes` / `NATS_MAX_FRAME_BYTES`
-- `TNatsServerInfo.Parse`: `jetstream`, `auth_required`, `tls_available`, `nonce`
+**باقی‌مانده / محدودیت‌ها (عمداً یا سخت برای اتوماسیون محلی):**
 
-**Client بدون پوشش:**
-
-- Queue group، `PublishWithHeaders` / `RequestWithHeaders`، `RequestAsync`
-- `Unsubscribe` / `UnsubscribeSubject` / `MaxMsgs` auto-unsub
-- `Flush` / `Ping`، `NewInbox`
-- Reconnect + outbox + `ResendSubscriptions` + چرخش `ConnectUrls`
-- `EnsurePayloadAllowed` / MaxPayload
-- رویدادهای `OnConnected` / `OnDisconnected` / `OnError`
-- claim-gate race در timeout Request
-
-**JetStream بدون پوشش (در suite؛ بخشی در Demo):**
-
-- `UpdateStream`, `GetStreamInfo` standalone, `StreamExists` false path
-- Dedup `Duplicate=True` (Demo دارد، تست خودکار ندارد)
-- `Publish` با `TNatsJetStreamPublishOptions` (ExpectedStream / ExpectedLastSequence)
-- Nak / Term / InProgress + redelivery بعد از Nak / عدم redelivery بعد از Term
-- Fetch batch > 1، empty fetch / control msgs (408/404)
-- `TNatsStreamConfig.ToJson` / `TNatsStreamInfo.Parse` / `TNatsPublishAck.Parse` / error object → `EDextNatsJetStreamError`
-- encoding ack: `+ACK`, `+NAK`, `+NAK {"delay":...}`, `+TERM`, `+WPI` (قابل unit با spy یا با بررسی wire اگر helper جدا شود؛ فعلاً از طریق رفتار سرور)
-
-**عمداً خارج از scope (مطابق AGENTS.md):**
-
-- DI، observability، push consumers، KV/Object Store (NKey/JWT و README اضافه شده‌اند)
+| مورد | وضعیت |
+|------|--------|
+| Live Integration/JS/KV/OS | soft-skip بدون `nats-server`؛ سخت با `DEXT_NATS_REQUIRE_LIVE=1` |
+| Stress | `[Explicit]` — فقط با runner/`DEXT_NATS_RUN_STRESS=1` |
+| TLS / NKey | env-gated؛ بدون port → soft-skip حتی با REQUIRE_LIVE |
+| چرخش `ConnectUrls` (failover چندسروره) | فقط parse INFO در Unit؛ integration چندنود ندارد |
+| `ExpectedLastSequence` / همهٔ publish CAS options | ExpectedStream mismatch پوشش دارد؛ بقیه اختیاری |
+| InProgress / reconnect | زمان‌حساس؛ ممکن است flaky روی بار بالا |
 
 ---
 
@@ -148,6 +127,7 @@
 | U-18 | `Clear` بعد از دادهٔ ناقص → بدون frame زامبی | ADD | |
 | U-19 | سقف `MaxFrameBytes` → `EDextNatsProtocolError` (یا رفتار مستند) | ADD | |
 | U-20 | INFO با `jetstream:true` و `auth_required` | ADD | |
+| U-20b | INFO account/limit-ish (`domain`, `remote_account`, `ldm`, `api_lvl`, `ws_connect_urls`, …) | EXISTS | `Parser_ShouldDecodeInfoAccountAndLimitFields` |
 
 #### ۴.۱.۲ Encoders
 
@@ -200,20 +180,20 @@
 | I-02 | Pub/Sub payload | EXISTS | |
 | I-03 | Request/Reply | EXISTS | |
 | I-04 | No-responders 503 | EXISTS | |
-| I-05 | Queue group: دو subscriber یک queue → فقط یکی پیام را می‌گیرد | ADD | شمارش با `TInterlocked` |
-| I-06 | `PublishWithHeaders` + دریافت HMSG در handler | ADD | |
-| I-07 | `RequestWithHeaders` round-trip | ADD | |
-| I-08 | `Unsubscribe` فوری → پیام بعدی نرسد | ADD | |
-| I-09 | `Unsubscribe(..., MaxMsgs)` auto-cancel | ADD | |
-| I-10 | `Flush` بعد از Publish تضمین تحویل به سرور | ADD | |
-| I-11 | `Ping` + `Flush` (PONG path) | ADD | |
-| I-12 | `MaxPayload`: Publish بزرگ‌تر از `ServerInfo.MaxPayload` → exception واضح | ADD | ساخت `TBytes` oversized |
+| I-05 | Queue group: دو subscriber یک queue → فقط یکی پیام را می‌گیرد | EXISTS | `QueueGroup_ShouldDeliverToOneSubscriber` |
+| I-06 | `PublishWithHeaders` + دریافت HMSG در handler | EXISTS | |
+| I-07 | `RequestWithHeaders` round-trip | EXISTS | |
+| I-08 | `Unsubscribe` فوری → پیام بعدی نرسد | EXISTS | + `UnsubscribeSubject_ShouldCancelAllOnSubject` |
+| I-09 | `Unsubscribe(..., MaxMsgs)` auto-cancel | EXISTS | |
+| I-10 | `Flush` بعد از Publish تضمین تحویل به سرور | EXISTS | |
+| I-11 | `Ping` + `Flush` (PONG path) | EXISTS | |
+| I-12 | `MaxPayload`: Publish بزرگ‌تر از `ServerInfo.MaxPayload` → exception واضح | EXISTS | |
 | I-13 | Reconnect + outbox: قطع socket مصنوعی، Publish در حین disconnect، پس از reconnect پیام برسد | EXISTS | `MaxPingsOutstanding=0` → PingLoop socket close؛ Publish در `OnDisconnected` → outbox |
 | I-14 | Resubscribe بعد از reconnect | EXISTS | Publish تازه بعد از reconnect |
-| I-15 | `RequestAsync` reply و timeout callback | ADD | |
-| I-16 | `OnConnected` / `OnDisconnected` fire می‌شوند | ADD | |
-| I-17 | Wildcard subscribe `dext.nats.test.>` | ADD | اختیاری اما کم‌هزینه |
-| I-18 | Binary payload (bytes غیر UTF-8) | ADD | |
+| I-15 | `RequestAsync` reply و timeout callback | EXISTS | + builder Await/timeout |
+| I-16 | `OnConnected` / `OnDisconnected` fire می‌شوند | EXISTS | dedicated + reconnect helpers |
+| I-17 | Wildcard subscribe `dext.nats.test.>` | EXISTS | |
+| I-18 | Binary payload (bytes غیر UTF-8) | EXISTS | |
 
 **تخمین:** ۴ موجود + ~۱۲–۱۴ جدید.
 
@@ -226,18 +206,18 @@
 | ID | سناریو | وضعیت | منبع الهام |
 |----|--------|-------|------------|
 | J-01 | Fetch + Ack round-trip | EXISTS | — |
-| J-02 | Stream CRUD: Create → GetStreamInfo → StreamExists → Delete | ADD | Demo steps 5–6, 13 |
-| J-03 | `UpdateStream` (مثلاً تغییر subjects یا max_msgs) | ADD | API موجود |
-| J-04 | Dedup: دو Publish با یک `Nats-Msg-Id` → دوم `Duplicate=True`، Messages=1 | ADD | Demo steps 7–9 |
-| J-05 | Consumer CRUD: Create → GetConsumerInfo → Delete | ADD | بخشی در J-01 |
-| J-06 | Fetch batch (مثلاً ۳ پیام، batch=3) | ADD | |
-| J-07 | Nak → redelivery در Fetch بعدی | ADD | AckWait کوتاه در config |
-| J-08 | Term → دیگر redeliver نشود | ADD | |
-| J-09 | InProgress (+WPI) تمدید AckWait (timeout بلندتر قبل از redelivery) | ADD | زمان‌حساس؛ ممکن است flaky → timeoutهای محافظه‌کار |
-| J-10 | Publish options: `ExpectedStream` mismatch → `EDextNatsJetStreamError` | ADD | |
-| J-11 | Fetch خالی وقتی پیامی نیست (timeout expires) → Count=0 | ADD | جزئی در J-01 |
-| J-12 | StreamExists روی نام ناموجود → False (نه raise) | ADD | |
-| J-13 | GetStreamInfo ناموجود → raise با Code/ErrCode | ADD | |
+| J-02 | Stream CRUD: Create → GetStreamInfo → StreamExists → Delete | EXISTS | |
+| J-03 | `UpdateStream` (مثلاً تغییر subjects یا max_msgs) | EXISTS | |
+| J-04 | Dedup: دو Publish با یک `Nats-Msg-Id` → دوم `Duplicate=True`، Messages=1 | EXISTS | |
+| J-05 | Consumer CRUD: Create → GetConsumerInfo → Delete | EXISTS | |
+| J-06 | Fetch batch (مثلاً ۳ پیام، batch=3) | EXISTS | |
+| J-07 | Nak → redelivery در Fetch بعدی | EXISTS | AckWait کوتاه در config |
+| J-08 | Term → دیگر redeliver نشود | EXISTS | |
+| J-09 | InProgress (+WPI) تمدید AckWait (timeout بلندتر قبل از redelivery) | EXISTS | زمان‌حساس؛ ممکن است flaky → timeoutهای محافظه‌کار |
+| J-10 | Publish options: `ExpectedStream` mismatch → `EDextNatsJetStreamError` | EXISTS | |
+| J-11 | Fetch خالی وقتی پیامی نیست (timeout expires) → Count=0 | EXISTS | |
+| J-12 | StreamExists روی نام ناموجود → False (نه raise) | EXISTS | |
+| J-13 | GetStreamInfo ناموجود → raise با Code/ErrCode | EXISTS | |
 
 **تخمین:** ۱ موجود + ~۱۰–۱۲ جدید. Demo می‌ماند برای smoke دستی کامل.
 
@@ -268,9 +248,9 @@
 
 | ID | سناریو | وضعیت | ریسک |
 |----|--------|-------|------|
-| S-01 | چند subscription موازی روی subjectهای مختلف + publish همزمان | ADD | race روی FSubscriptions |
-| S-02 | چند Request همزمان از threadهای مختلف | ADD | claim gate / inbox |
-| S-03 | Request timeout درست وقتی reply دیر می‌رسد: بدون AV/double-free (claim gate) | ADD | timeout خیلی کوتاه + responder عمداً دیر |
+| S-01 | چند subscription موازی روی subjectهای مختلف + publish همزمان | EXISTS | Explicit + `DEXT_NATS_RUN_STRESS=1` |
+| S-02 | چند Request همزمان از threadهای مختلف | EXISTS | claim gate / inbox |
+| S-03 | Request timeout درست وقتی reply دیر می‌رسد: بدون AV/double-free (claim gate) | EXISTS | timeout خیلی کوتاه + responder عمداً دیر |
 | S-04 | `MaxPingsOutstanding` + `PingIntervalMs` کوتاه → stale → Disconnect socket از PingLoop → RecvLoop reconnect (اگر AllowReconnect) | EXISTS | Explicit؛ `MaxPingsOutstanding=0` برای القای stale قطعی |
 | S-05 | فشار Publish زیاد در حین reconnect با سقف `MaxPendingBufferBytes` | EXISTS | Explicit؛ buffer=32 → reject در `OnDisconnected` |
 
@@ -534,7 +514,7 @@ flowchart TD
 | API | تست‌ها |
 |-----|--------|
 | `TDextNatsFrameParser` | U-01..U-05, U-11..U-19 |
-| `TNatsServerInfo.Parse` | U-01, U-02, U-20 |
+| `TNatsServerInfo.Parse` | U-01, U-01b, U-02, U-20, U-20b |
 | `TNatsConnectOptions` | U-07, U-23 |
 | `TNatsHeadersHelper` | U-04, U-26, U-27 |
 | `NatsEncode*` | U-06, U-21..U-25 |
@@ -547,12 +527,12 @@ flowchart TD
 | Connect/Disconnect/Connected/ServerInfo | I-01, N-01, T-01 |
 | Publish / Subscribe | I-02, I-05, I-17, I-18, S-01 |
 | PublishWithHeaders | I-06 |
-| Unsubscribe* | I-08, I-09 |
+| Unsubscribe* / UnsubscribeSubject | I-08, I-09 |
 | Request* / RequestAsync / NoResponders | I-03, I-04, I-07, I-15, S-02, S-03, N-02 |
 | Flush / Ping | I-10, I-11, S-04 |
 | MaxPayload | I-12 |
 | Reconnect/outbox | I-13, I-14, S-05 |
-| Events | I-16, N-07 |
+| Events (OnConnected/OnDisconnected/OnError) | I-16, N-07 |
 | TLS options + upgrade | U-08, T-* |
 
 ### `Dext.Net.Nats.JetStream`

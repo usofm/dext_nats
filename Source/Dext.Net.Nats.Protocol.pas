@@ -83,25 +83,53 @@ type
     function Encode: TBytes;
   end;
 
-  /// <summary>Fields advertised by the server in its initial INFO message.</summary>
+  /// <summary>
+  ///   Fields advertised by the server in INFO (initial handshake and async topology
+  ///   refreshes). Only wire keys from the NATS client protocol / server Info JSON —
+  ///   no invented account-limit objects. Snapshot is exposed as
+  ///   <c>TDextNatsClient.ServerInfo</c>.
+  /// </summary>
   TNatsServerInfo = record
     ServerId: string;
     ServerName: string;
     Version: string;
     Proto: Integer;
     GoVersion: string;
+    /// <summary>Build hash from INFO <c>git_commit</c> (optional).</summary>
+    GitCommit: string;
     Host: string;
     Port: Integer;
+    /// <summary>Server-advertised IP from INFO <c>ip</c> (optional; often route-oriented).</summary>
+    Ip: string;
     HeadersSupported: Boolean;
+    /// <summary>Server max payload bytes (<c>max_payload</c>) — primary size limit on INFO.</summary>
     MaxPayload: Int64;
     ClientId: Int64;
     ClientIp: string;
     AuthRequired: Boolean;
     TlsRequired: Boolean;
+    /// <summary>INFO <c>tls_verify</c> — client cert required when true.</summary>
+    TlsVerify: Boolean;
     TlsAvailable: Boolean;
     Jetstream: Boolean;
+    /// <summary>JetStream API level from INFO <c>api_lvl</c> (0 when absent).</summary>
+    JsApiLevel: Integer;
     Nonce: string;
+    /// <summary>Cluster name from INFO <c>cluster</c>.</summary>
+    Cluster: string;
+    /// <summary>INFO <c>cluster_dynamic</c>.</summary>
+    ClusterDynamic: Boolean;
+    /// <summary>Configured NATS / JetStream domain (<c>domain</c>) when set.</summary>
+    Domain: string;
+    /// <summary>Remote account name this connection binds to (<c>remote_account</c>).</summary>
+    RemoteAccount: string;
+    /// <summary>True when the bound account is the system account (<c>acc_is_sys</c>).</summary>
+    IsSystemAccount: Boolean;
+    /// <summary>Lame Duck Mode (<c>ldm</c>) — server draining; clients should migrate.</summary>
+    LameDuckMode: Boolean;
     ConnectUrls: TArray<string>;
+    /// <summary>WebSocket connect URLs from INFO <c>ws_connect_urls</c>.</summary>
+    WsConnectUrls: TArray<string>;
     /// <summary>Parses a server INFO JSON payload (without the leading "INFO " token).</summary>
     class function Parse(const AJson: string): TNatsServerInfo; static;
   end;
@@ -695,8 +723,39 @@ var
   bytes: TBytes;
   span: TByteSpan;
   reader: TUtf8JsonReader;
-  urls: TArray<string>;
-  urlCount: Integer;
+
+  procedure ReadStringArray(var ADest: TArray<string>);
+  var
+    items: TArray<string>;
+    count: Integer;
+  begin
+    count := 0;
+    if reader.Read then
+    begin
+      if reader.TokenType = TJsonTokenType.StartArray then
+      begin
+        while reader.Read do
+        begin
+          if reader.TokenType = TJsonTokenType.EndArray then
+            Break;
+          if reader.TokenType = TJsonTokenType.StringValue then
+          begin
+            if count >= Length(items) then
+              SetLength(items, count + 4);
+            items[count] := reader.GetString;
+            Inc(count);
+          end
+          else if reader.TokenType in [TJsonTokenType.StartObject, TJsonTokenType.StartArray] then
+            reader.Skip;
+        end;
+      end
+      else if reader.TokenType in [TJsonTokenType.StartObject, TJsonTokenType.StartArray] then
+        reader.Skip;
+    end;
+    SetLength(items, count);
+    ADest := items;
+  end;
+
 begin
   Result := Default(TNatsServerInfo);
   if Trim(AJson) = '' then
@@ -707,7 +766,6 @@ begin
     raise EDextNatsProtocolError.Create('Empty INFO payload received from NATS server');
 
   span := TByteSpan.Create(@bytes[0], Length(bytes));
-  urlCount := 0;
   try
     reader := TUtf8JsonReader.Create(span);
     if (not reader.Read) or (reader.TokenType <> TJsonTokenType.StartObject) then
@@ -746,6 +804,11 @@ begin
         if reader.Read then
           Result.GoVersion := reader.GetString;
       end
+      else if reader.ValueSpanEquals('git_commit') then
+      begin
+        if reader.Read then
+          Result.GitCommit := reader.GetString;
+      end
       else if reader.ValueSpanEquals('host') then
       begin
         if reader.Read then
@@ -755,6 +818,11 @@ begin
       begin
         if reader.Read then
           Result.Port := reader.GetInt32;
+      end
+      else if reader.ValueSpanEquals('ip') then
+      begin
+        if reader.Read then
+          Result.Ip := reader.GetString;
       end
       else if reader.ValueSpanEquals('headers') then
       begin
@@ -786,6 +854,11 @@ begin
         if reader.Read then
           Result.TlsRequired := reader.GetBoolean;
       end
+      else if reader.ValueSpanEquals('tls_verify') then
+      begin
+        if reader.Read then
+          Result.TlsVerify := reader.GetBoolean;
+      end
       else if reader.ValueSpanEquals('tls_available') then
       begin
         if reader.Read then
@@ -796,36 +869,50 @@ begin
         if reader.Read then
           Result.Jetstream := reader.GetBoolean;
       end
+      else if reader.ValueSpanEquals('api_lvl') then
+      begin
+        if reader.Read then
+          Result.JsApiLevel := reader.GetInt32;
+      end
       else if reader.ValueSpanEquals('nonce') then
       begin
         if reader.Read then
           Result.Nonce := reader.GetString;
       end
-      else if reader.ValueSpanEquals('connect_urls') then
+      else if reader.ValueSpanEquals('cluster') then
       begin
         if reader.Read then
-        begin
-          if reader.TokenType = TJsonTokenType.StartArray then
-          begin
-            while reader.Read do
-            begin
-              if reader.TokenType = TJsonTokenType.EndArray then
-                Break;
-              if reader.TokenType = TJsonTokenType.StringValue then
-              begin
-                if urlCount >= Length(urls) then
-                  SetLength(urls, urlCount + 4);
-                urls[urlCount] := reader.GetString;
-                Inc(urlCount);
-              end
-              else if reader.TokenType in [TJsonTokenType.StartObject, TJsonTokenType.StartArray] then
-                reader.Skip;
-            end;
-          end
-          else if reader.TokenType in [TJsonTokenType.StartObject, TJsonTokenType.StartArray] then
-            reader.Skip;
-        end;
+          Result.Cluster := reader.GetString;
       end
+      else if reader.ValueSpanEquals('cluster_dynamic') then
+      begin
+        if reader.Read then
+          Result.ClusterDynamic := reader.GetBoolean;
+      end
+      else if reader.ValueSpanEquals('domain') then
+      begin
+        if reader.Read then
+          Result.Domain := reader.GetString;
+      end
+      else if reader.ValueSpanEquals('remote_account') then
+      begin
+        if reader.Read then
+          Result.RemoteAccount := reader.GetString;
+      end
+      else if reader.ValueSpanEquals('acc_is_sys') then
+      begin
+        if reader.Read then
+          Result.IsSystemAccount := reader.GetBoolean;
+      end
+      else if reader.ValueSpanEquals('ldm') then
+      begin
+        if reader.Read then
+          Result.LameDuckMode := reader.GetBoolean;
+      end
+      else if reader.ValueSpanEquals('connect_urls') then
+        ReadStringArray(Result.ConnectUrls)
+      else if reader.ValueSpanEquals('ws_connect_urls') then
+        ReadStringArray(Result.WsConnectUrls)
       else
       begin
         if reader.Read then
@@ -842,9 +929,6 @@ begin
       raise EDextNatsProtocolError.CreateFmt(
         'Malformed INFO payload received from NATS server: %s', [AJson]);
   end;
-
-  SetLength(urls, urlCount);
-  Result.ConnectUrls := urls;
 end;
 
 { TNatsConnectOptions }

@@ -13,9 +13,41 @@ Native [NATS](https://nats.io) client for the [Dext Framework](https://github.co
 | `Source/Dext.Net.Nats.pas` | `TDextNatsClient` — connect, pub/sub, request/reply, reconnect, `Drain`/`DrainAsync`/`IsDraining`, TLS, NKey/JWT, optional `ILogger` / metrics |
 | `Source/Dext.Net.Nats.DependencyInjection.pas` | `AddNatsClient` / configure / config bind (`Nats` section) / `AddNatsJetStream` |
 | `Source/Dext.Net.Nats.HealthChecks.pas` | `TNatsHealthCheck` / `AddNatsHealthCheck` (Connected probe) |
-| `Source/Dext.Net.Nats.JetStream.pas` | `TDextNatsJetStreamContext` — streams (`ListStreams` / `ListStreamNames`), pull/push consumers (`ListConsumers` / `ListConsumerNames`), Fetch, SubscribePush, Ack/Nak/Term |
+| `Source/Dext.Net.Nats.JetStream.pas` | `TDextNatsJetStreamContext` — streams (`ListStreams` / `ListStreamNames`), pull/push consumers (`ListConsumers` / `ListConsumerNames`), Fetch, SubscribePush, ordered SubscribeOrdered, Ack/Nak/Term |
 | `Source/Dext.Net.Nats.KeyValue.pas` | `TDextNatsKeyValue` — JetStream KV (Put/Get/Delete/Purge, Keys, History, Watch/WatchAll, CAS Create/Update) |
-| `Source/Dext.Net.Nats.ObjectStore.pas` | Object Store (`CreateStore` / `UpdateStore`/`UpdateObjectStore` / `Put` / `Get` / `Delete` / `List` / `Keys`, `Watch`/`WatchAll` with EndOfInitial + MetaOnly/UpdatesOnly, `UpdateMeta`, `Seal`, `AddLink` / `AddBucketLink`, streaming `Put`/`Get` via `TStream` + `PutFile`/`GetFile`) |
+| `Source/Dext.Net.Nats.ObjectStore.pas` | Object Store (`CreateStore` / `UpdateStore`/`UpdateObjectStore` / `Put` / `Get` / `GetResult` / `Delete` / `List` / `Keys`, `Watch`/`WatchAll` with EndOfInitial + MetaOnly/UpdatesOnly, `UpdateMeta`, `Seal`, `AddLink` / `AddBucketLink`, streaming `Put`/`Get` via `TStream` + `PutFile`/`GetFile`, lazy `TDextNatsObjectResult`) |
+| `Source/Dext.Net.Nats.Services.pas` | NATS Services API MVP — `TDextNatsService` (`AddService` / `AddEndpoint` / `Stop`, auto `$SRV.PING\|INFO\|STATS`) |
+
+### NATS Services (MVP)
+
+```delphi
+uses Dext.Net.Nats, Dext.Net.Nats.Services;
+
+var
+  Client: TDextNatsClient;
+  Svc: TDextNatsService;
+  Cfg: TNatsServiceConfig;
+begin
+  Client := TDextNatsClient.Create;
+  try
+    Client.Connect('127.0.0.1', 4222);
+    Cfg := TNatsServiceConfig.CreateDefault('EchoService', '1.0.0');
+    Svc := TDextNatsService.AddService(Client, Cfg);
+    try
+      Svc.AddEndpoint('echo',
+        procedure(const ARequest: TNatsServiceRequest)
+        begin
+          ARequest.Respond(ARequest.Data);
+        end);
+      // Discover: Request('$SRV.PING.EchoService', '') / INFO / STATS
+    finally
+      Svc.Free; // Stop + UNSUB
+    end;
+  finally
+    Client.Free;
+  end;
+end;
+```
 
 ## Quick start
 
@@ -30,6 +62,7 @@ begin
   Client := TDextNatsClient.Create;
   try
     Client.Connect('127.0.0.1', 4222);
+    // Client.ServerInfo — last INFO snapshot (MaxPayload, Domain, RemoteAccount, LameDuckMode, …)
 
     Client.Subscribe('orders.>',
       procedure(const AMsg: TNatsMsg)
@@ -48,6 +81,7 @@ begin
     Js := TDextNatsJetStreamContext.Create(Client);
     try
       // Stream/consumer admin (incl. ListStreams / ListConsumers) + Fetch/Ack —
+      // Ordered: Ord := Js.SubscribeOrdered(Stream, Handler, TNatsOrderedConsumerOptions.CreateDefault(Filter));
       // see Demo/JetStreamSmokeTest
     finally
       Js.Free;
@@ -61,6 +95,7 @@ begin
     // Store.PutFile('invoice.pdf', 'C:\data\invoice.pdf');      // chunked from file
     // Store.GetFile('invoice.pdf', 'C:\out\invoice.pdf');
     // Store.Put(Meta, SomeStream); Store.Get('invoice.pdf', OutStream);
+    // Reader := Store.GetResult('invoice.pdf'); // lazy TDextNatsObjectResult (Free when done)
     // Store.AddLink('label.png', Store.GetInfo('invoice.pdf')); // Get follows
     // Store.AddBucketLink('other', OtherStore);                 // Get raises
     // Watcher := Store.WatchAll(procedure(const Info: TNatsObjectInfo)
