@@ -276,6 +276,7 @@ parsing frames anywhere else.
       IncludeHistory / IgnoreDeletes / ResumeFromRevision options),
       CAS Create / Update (`Nats-Expected-Last-Subject-Sequence`),
       per-key TTL (`LimitMarkerTTL` + `Create`/`Purge` with `Nats-TTL`; NATS 2.11+)
+- [x] Release **1.0.0** — `CHANGELOG.md`, README version line, git tag `v1.0.0`
 
 ## Working style expected of an agent here
 

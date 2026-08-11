@@ -1,6 +1,8 @@
 ﻿# Dext.Nats
 
-Native [NATS](https://nats.io) client for the [Dext Framework](https://github.com/) (Delphi 12 / Studio 23.0). Built on `Dext.Net.Tcp` with optional TLS via `Dext.Net.Security`, plus JetStream pull consumers.
+**Version:** [1.0.0](CHANGELOG.md) (2026-08-11)
+
+Native [NATS](https://nats.io) client for the [Dext Framework](https://github.com/) (Delphi 12 / Studio 23.0). Built on `Dext.Net.Tcp` with optional TLS via `Dext.Net.Security`, plus JetStream (KV / Object Store).
 
 ## Units
 

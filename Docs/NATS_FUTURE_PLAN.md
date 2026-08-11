@@ -70,8 +70,8 @@
 
 ### P2 — کیفیت ریلیز و عملیات
 
-- [ ] **Versioning** — برچسب semver (`v1.0.0`)، changelog کوتاه، هم‌خوانی با bump Dext در صورت نیاز
-- [ ] **CI** — job build Delphi 12 + suite پیش‌فرض؛ اختیاری service container `nats-server -js` با `DEXT_NATS_REQUIRE_LIVE=1`؛ stress فقط env-gated (طبق [`TEST_PLAN.md`](TEST_PLAN.md) §۷.۴)
+- [x] **Versioning** — `CHANGELOG.md` + semver **1.0.0** + git tag `v1.0.0` (local; push tag when publishing).
+- [ ] **CI** — job build Delphi 12 + suite پیش‌فرض؛ اختیاری service container `nats-server -js` با `DEXT_NATS_REQUIRE_LIVE=1`؛ stress فقط env-gated (طبق [`TEST_PLAN.md`](TEST_PLAN.md) §۷.۴). *تا آن زمان: دستور بازتولید در README کافی است برای Done معیار ۶.*
 - [ ] **پوشش تست باز از TEST_PLAN** — صف/headers/reconnect/outbox، JS Nak/Term/InProgress، stress Explicit؛ بستن gapهای §۲.۳ که هنوز soft-skip یا غایب‌اند
 - [ ] **Push / publish ریلیز** — پکیج یا subtree برای مصرف‌کننده‌های Dext؛ README نصب؛ بدون force-push به `main`
 
@@ -92,8 +92,8 @@
 2. **P0 §۳** committed باشد (shutdown 10004، compression/placement، یادداشت [`MQTT_VS_NATS.md`](MQTT_VS_NATS.md)). B2B Agent فقط سند است و برای برچسب 1.0 کتابخانه اجباری نیست.
 3. [`TEST_PLAN.md`](TEST_PLAN.md): مسیرهای Integration اصلی (Disconnect تمیز، pub/sub، request، JS Fetch+Ack، KV Put/Get، OS Put/Get) بدون fail روی `nats-server -js` محلی.
 4. README و `AGENTS.md` با API واقعی هم‌خوان باشند (بدون وعدهٔ قابلیت uncommitted).
-5. برچسب git `v1.0.0` + یادداشت کوتاه «چه پشتیبانی می‌شود / چه پشتیبانی نمی‌شود».
-6. CI حداقلی (build + unit؛ live اختیاری) یا دستور بازتولید مستند در README.
+5. برچسب git `v1.0.0` + [`CHANGELOG.md`](../CHANGELOG.md) («چه پشتیبانی می‌شود / چه پشتیبانی نمی‌شود»).
+6. CI حداقلی (build + unit؛ live اختیاری) **یا** دستور بازتولید مستند در README (فعلاً README کافی است؛ workflow خودکار هنوز باز است).
 
 آیتم‌های P1 (show-deleted، lazy ObjectResult، Services، ordered) **الزامی برای 1.0 نیستند** مگر صریحاً به این لیست اضافه شوند.
 
