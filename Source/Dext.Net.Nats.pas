@@ -676,6 +676,11 @@ var
 begin
   if Length(ABuffer) = 0 then
     Exit(0);
+  // Intentional Disconnect sets FClosing before closing the socket. Skip Receive so we
+  // do not raise EDextSocketError on the recv thread. Do not key off FRunning — the
+  // connect handshake calls ReceiveBytes before FRunning becomes True.
+  if FClosing then
+    Exit(0);
 
   if not FTlsActive then
     Exit(FTcpClient.Receive(ABuffer, ATimeoutMs));
@@ -1274,13 +1279,26 @@ begin
   begin
     n := 0;
     try
+      // PingLoop may only Disconnect the socket; detect the closed flag here and
+      // drive reconnect. Soft recv results (timeout / WSAEINTR) return n=0.
+      if not FTcpClient.Connected then
+      begin
+        if not FRunning then
+          Break;
+        HandleConnectionLost('TCP connection closed');
+        if not FRunning then
+          Break;
+        Continue;
+      end;
       n := ReceiveBytes(buf, 200);
     except
       on E: Exception do
       begin
         n := 0;
-        if FRunning then
-          HandleConnectionLost(E.Message);
+        // Disconnect sets FRunning=False before closing; swallow teardown errors.
+        if not FRunning then
+          Break;
+        HandleConnectionLost(E.Message);
       end;
     end;
 

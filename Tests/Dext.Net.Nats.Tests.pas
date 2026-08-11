@@ -189,6 +189,12 @@ type
 
     [Test, Category('Integration')]
     procedure Connect_ShouldHandshake;
+    /// <summary>
+    /// Intentional Disconnect must join RecvLoop/PingLoop without leaving a
+    /// first-chance EDextSocketError (WSAEINTR 10004) on the receive thread.
+    /// </summary>
+    [Test, Category('Integration')]
+    procedure Disconnect_ShouldJoinThreadsCleanly;
     [Test, Category('Integration')]
     procedure PublishSubscribe_ShouldDeliverPayload;
     [Test, Category('Integration')]
@@ -1619,6 +1625,24 @@ begin
     Exit;
   Should(FClient.Connected).BeTrue;
   Should(FClient.ServerInfo.ServerId).NotBeEmpty;
+end;
+
+procedure TDextNatsIntegrationTests.Disconnect_ShouldJoinThreadsCleanly;
+var
+  i: Integer;
+begin
+  if not EnsureServerOrFail then
+    Exit;
+  // Repeated connect/disconnect exercises the recv-thread vs closesocket race
+  // that previously raised EDextSocketError 10004 (WSAEINTR) under the debugger.
+  for i := 1 to 5 do
+  begin
+    Should(FClient.Connected).BeTrue;
+    FClient.Disconnect;
+    Should(FClient.Connected).BeFalse;
+    if i < 5 then
+      FClient.Connect(NatsTestHost, NatsTestPort);
+  end;
 end;
 
 procedure TDextNatsIntegrationTests.PublishSubscribe_ShouldDeliverPayload;

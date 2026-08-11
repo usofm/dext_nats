@@ -102,8 +102,9 @@ begin
   if Assigned(FClient) then
   begin
     try
-      if FClient.Connected then
-        FClient.Disconnect;
+      // Always Disconnect (joins RecvLoop/PingLoop) even if Connected is already false
+      // after a connection loss — Destroy would do this, but do it explicitly first.
+      FClient.Disconnect;
     except
       { ignore teardown errors }
     end;
