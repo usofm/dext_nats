@@ -555,12 +555,16 @@ type
     procedure AddGroup_ShouldPrefixEndpointSubjectsInInfo;
     [Test, Category('Unit'), Category('Services')]
     procedure GroupConfig_InvalidPrefix_ShouldRaise;
+    [Test, Category('Unit'), Category('Services')]
+    procedure DoneHandler_ShouldFireOnceOnStop;
     [Test, Category('Integration'), Category('Services')]
     procedure AddService_PingDiscovery_ShouldRespond;
     [Test, Category('Integration'), Category('Services')]
     procedure Endpoint_ShouldEchoAndStopUnsubscribes;
     [Test, Category('Integration'), Category('Services')]
     procedure AddGroup_NestedEndpoint_ShouldRespond;
+    [Test, Category('Integration'), Category('Services')]
+    procedure EndpointError_ShouldFireErrorHandler;
   end;
 
   [TestFixture('NATS JetStream Object Store (requires nats-server -js)')]
@@ -6302,6 +6306,46 @@ begin
     end).Throw(EDextNatsServiceError);
 end;
 
+procedure TDextNatsServicesTests.DoneHandler_ShouldFireOnceOnStop;
+var
+  client: TDextNatsClient;
+  svc: TDextNatsService;
+  cfg: TNatsServiceConfig;
+  doneCount: Integer;
+  doneName, doneId: string;
+begin
+  doneCount := 0;
+  doneName := '';
+  doneId := '';
+  client := TDextNatsClient.Create;
+  try
+    cfg := TNatsServiceConfig.CreateDefault('UnitDone', '1.0.0');
+    cfg.DoneHandler :=
+      procedure(const AService: TDextNatsService)
+      begin
+        Inc(doneCount);
+        doneName := AService.Name;
+        doneId := AService.Id;
+      end;
+    svc := TDextNatsService.AddService(client, cfg);
+    try
+      Should(svc.Stopped).BeFalse;
+      svc.Stop;
+      Should(svc.Stopped).BeTrue;
+      Should(doneCount).Be(1);
+      Should(doneName).Be('UnitDone');
+      Should(doneId).Be(svc.Id);
+      svc.Stop;
+      Should(doneCount).Be(1);
+    finally
+      svc.Free;
+    end;
+    Should(doneCount).Be(1);
+  finally
+    client.Free;
+  end;
+end;
+
 procedure TDextNatsServicesTests.AddService_PingDiscovery_ShouldRespond;
 var
   cfg: TNatsServiceConfig;
@@ -6410,6 +6454,66 @@ begin
 
     reply := FClient.Request(NatsServiceControlSubject(svInfo, name, svc.Id), '', 2000);
     Should(reply.AsString.Contains('"subject":"dext.calc.v1.add"')).BeTrue;
+  finally
+    svc.Free;
+  end;
+end;
+
+procedure TDextNatsServicesTests.EndpointError_ShouldFireErrorHandler;
+var
+  cfg: TNatsServiceConfig;
+  epCfg: TNatsEndpointConfig;
+  svc: TDextNatsService;
+  name, subject: string;
+  reply: TNatsMsg;
+  errCount: Integer;
+  errSubject, errDesc: string;
+  doneFired: Boolean;
+begin
+  if not EnsureServerOrFail then
+    Exit;
+
+  errCount := 0;
+  errSubject := '';
+  errDesc := '';
+  doneFired := False;
+  name := UniqueServiceName('DextErr');
+  subject := 'dext.svc.' + name.ToLowerInvariant + '.boom';
+  cfg := TNatsServiceConfig.CreateDefault(name, '0.3.0');
+  cfg.ErrorHandler :=
+    procedure(const AService: TDextNatsService; const AError: TNatsServiceErrorInfo)
+    begin
+      Inc(errCount);
+      errSubject := AError.Subject;
+      errDesc := AError.Description;
+    end;
+  cfg.DoneHandler :=
+    procedure(const AService: TDextNatsService)
+    begin
+      doneFired := True;
+    end;
+  svc := TDextNatsService.AddService(FClient, cfg);
+  try
+    epCfg := TNatsEndpointConfig.CreateDefault('boom', subject);
+    svc.AddEndpoint(epCfg,
+      procedure(const ARequest: TNatsServiceRequest)
+      begin
+        ARequest.RespondError(503, 'endpoint-down');
+      end);
+    FClient.Flush(2000);
+
+    reply := FClient.Request(subject, 'x', 2000);
+    Should(reply.Headers.GetValue(NATS_SRV_ERROR_HEADER)).Be('endpoint-down');
+    Should(errCount).Be(1);
+    Should(errSubject).Be(subject);
+    Should(errDesc).Be('endpoint-down');
+
+    reply := FClient.Request(NatsServiceControlSubject(svStats, name, svc.Id), '', 2000);
+    Should(reply.AsString.Contains('"num_errors":1')).BeTrue;
+
+    svc.Stop;
+    Should(doneFired).BeTrue;
+    Should(FClient.Connected).BeTrue;
   finally
     svc.Free;
   end;

@@ -16,7 +16,7 @@ Native [NATS](https://nats.io) client for the [Dext Framework](https://github.co
 | `Source/Dext.Net.Nats.JetStream.pas` | `TDextNatsJetStreamContext` — streams (`ListStreams` / `ListStreamNames`), pull/push consumers (`ListConsumers` / `ListConsumerNames`), Fetch, SubscribePush, ordered SubscribeOrdered, Ack/Nak/Term |
 | `Source/Dext.Net.Nats.KeyValue.pas` | `TDextNatsKeyValue` — JetStream KV (Put/Get/GetRevision/Delete/Purge, Keys/ListKeysFiltered, History, Watch/WatchFiltered/WatchAll, Config(), CAS Create/Update; bucket Compression/Placement) |
 | `Source/Dext.Net.Nats.ObjectStore.pas` | Object Store (`CreateStore` / `UpdateStore`/`UpdateObjectStore` / `Put` / `Get` / `GetResult` / `Delete` / `List` / `Keys`, `Watch`/`WatchAll` with EndOfInitial + MetaOnly/UpdatesOnly, `UpdateMeta`, `Seal`, `AddLink` / `AddBucketLink`, streaming `Put`/`Get` via `TStream` + `PutFile`/`GetFile`, lazy `TDextNatsObjectResult`) |
-| `Source/Dext.Net.Nats.Services.pas` | NATS Services API — `TDextNatsService` (`AddService` / `AddEndpoint` / `AddGroup` / `Stop`, auto `$SRV.PING\|INFO\|STATS`) |
+| `Source/Dext.Net.Nats.Services.pas` | NATS Services API — `TDextNatsService` (`AddService` / `AddEndpoint` / `AddGroup` / `Stop` + Done/Error handlers, auto `$SRV.PING\|INFO\|STATS`) |
 
 ### NATS Services
 
@@ -33,6 +33,16 @@ begin
   try
     Client.Connect('127.0.0.1', 4222);
     Cfg := TNatsServiceConfig.CreateDefault('EchoService', '1.0.0');
+    Cfg.DoneHandler :=
+      procedure(const AService: TDextNatsService)
+      begin
+        // after Stop UNSUB + Flush
+      end;
+    Cfg.ErrorHandler :=
+      procedure(const AService: TDextNatsService; const AError: TNatsServiceErrorInfo)
+      begin
+        // RespondError / handler exception / discovery publish failure
+      end;
     Svc := TDextNatsService.AddService(Client, Cfg);
     try
       Svc.AddEndpoint('echo',
@@ -48,7 +58,7 @@ begin
         end);
       // Discover: Request('$SRV.PING.EchoService', '') / INFO / STATS
     finally
-      Svc.Free; // Stop + UNSUB (owns groups — do not Free Grp)
+      Svc.Free; // Stop: UNSUB service SIDs + Flush + DoneHandler (owns groups — do not Free Grp)
     end;
   finally
     Client.Free;

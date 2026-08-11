@@ -29,11 +29,12 @@
 {  queue group (default "q", inherit/override on group and endpoint),       }
 {  PING/INFO/STATS at all/kind/instance subjects, basic stats               }
 {  (num_requests / num_errors / processing_time), Respond / RespondError    }
-{  headers, graceful Stop (UNSUB).                                          }
+{  headers, DoneHandler / ErrorHandler, graceful Stop (UNSUB all service    }
+{  SIDs + best-effort Flush — does not client.Drain / disconnect).          }
 {                                                                           }
-{  Gaps vs full nats.go micro: custom StatsHandler data, DoneHandler /      }
-{  ErrorHandler, schema JSON, connection-closed auto-stop, subscription     }
-{  Drain (Stop uses Unsubscribe), metadata immutability enforcement.        }
+{  Gaps vs full nats.go micro: custom StatsHandler data, schema JSON,       }
+{  connection-closed auto-stop, per-subscription Drain (client has no       }
+{  sub.Drain; Stop uses Unsubscribe + Flush), metadata immutability.        }
 {                                                                           }
 {***************************************************************************}
 unit Dext.Net.Nats.Services;
@@ -69,8 +70,29 @@ type
   TNatsServiceVerb = (svPing, svStats, svInfo);
 
   TNatsServiceRequest = class;
+  TDextNatsService = class;
+
   /// <summary>Endpoint request handler. Runs on the client's receive thread — do not block with Request.</summary>
   TNatsServiceHandler = reference to procedure(const ARequest: TNatsServiceRequest);
+
+  /// <summary>
+  ///   Error context for <see cref="TNatsServiceErrorHandler"/> (nats.go <c>NATSError</c>):
+  ///   subject plus description.
+  /// </summary>
+  TNatsServiceErrorInfo = record
+    Subject: string;
+    Description: string;
+    class function Create(const ASubject, ADescription: string): TNatsServiceErrorInfo; static;
+  end;
+
+  /// <summary>Invoked once after <see cref="TDextNatsService.Stop"/> finishes teardown (nats.go DoneHandler).</summary>
+  TNatsServiceDoneHandler = reference to procedure(const AService: TDextNatsService);
+  /// <summary>
+  ///   Invoked on endpoint <c>RespondError</c>, handler exceptions, or discovery publish
+  ///   failures (nats.go ErrorHandler). Runs on the calling thread (often the receive thread).
+  /// </summary>
+  TNatsServiceErrorHandler = reference to procedure(const AService: TDextNatsService;
+    const AError: TNatsServiceErrorInfo);
 
   /// <summary>
   ///   Request context for a service endpoint. Call <see cref="Respond"/> or
@@ -122,7 +144,11 @@ type
     QueueGroup: string;
     /// <summary>When True, endpoints subscribe without a queue group.</summary>
     QueueGroupDisabled: Boolean;
-    /// <summary>Defaults: empty description, queue "q", metadata nil.</summary>
+    /// <summary>Optional callback after Stop completes (Unsubscribe + Flush).</summary>
+    DoneHandler: TNatsServiceDoneHandler;
+    /// <summary>Optional callback for endpoint / discovery errors.</summary>
+    ErrorHandler: TNatsServiceErrorHandler;
+    /// <summary>Defaults: empty description, queue "q", metadata nil, handlers nil.</summary>
     class function CreateDefault(const AName, AVersion: string): TNatsServiceConfig; static;
     /// <summary>Raises <see cref="EDextNatsServiceError"/> when name/version/queue are invalid.</summary>
     procedure Validate;
@@ -162,7 +188,6 @@ type
     procedure Validate;
   end;
 
-  TDextNatsService = class;
   TDextNatsServiceGroup = class;
 
   /// <summary>
@@ -228,6 +253,8 @@ type
     FDiscoverySids: IList<Integer>;
     FStartedUtc: TDateTime;
     FStopped: Boolean;
+    FDoneHandler: TNatsServiceDoneHandler;
+    FErrorHandler: TNatsServiceErrorHandler;
     function ResolveQueueGroup(const ACustomQueue: string; ACustomDisabled: Boolean;
       const AParentQueue: string; AParentDisabled: Boolean): string;
     procedure ResolveQueueGroupEx(const ACustomQueue: string; ACustomDisabled: Boolean;
@@ -243,6 +270,7 @@ type
     procedure SubscribeDiscoverySubject(AVerb: TNatsServiceVerb; const ASubject: string);
     procedure HandleDiscovery(AVerb: TNatsServiceVerb; const AMsg: TNatsMsg);
     procedure HandleEndpoint(AEndpoint: TEndpointState; const AMsg: TNatsMsg);
+    procedure FireErrorHandler(const ASubject, ADescription: string);
     function BuildPingJson: string;
     function BuildInfoJson: string;
     function BuildStatsJson: string;
@@ -272,7 +300,12 @@ type
     /// <summary>Creates a subject-prefix group with queue override options.</summary>
     function AddGroup(const AConfig: TNatsGroupConfig): TDextNatsServiceGroup; overload;
 
-    /// <summary>Unsubscribes discovery + endpoint subscriptions. Idempotent.</summary>
+    /// <summary>
+    ///   Marks the service stopped, clears endpoint handlers, UNSUBs discovery + endpoint
+    ///   SIDs, best-effort <c>Flush</c> when connected (orderly service teardown — does
+    ///   <b>not</b> call <c>TDextNatsClient.Drain</c> / disconnect). Invokes DoneHandler
+    ///   once. Idempotent. Do not call from a receive-thread handler if Flush may block.
+    /// </summary>
     procedure Stop;
     /// <summary>Resets per-endpoint counters and the started timestamp.</summary>
     procedure Reset;
@@ -502,6 +535,14 @@ begin
   SrvWriteMetadataObject(AWriter, AMetadata);
 end;
 
+{ TNatsServiceErrorInfo }
+
+class function TNatsServiceErrorInfo.Create(const ASubject, ADescription: string): TNatsServiceErrorInfo;
+begin
+  Result.Subject := ASubject;
+  Result.Description := ADescription;
+end;
+
 { TNatsServiceConfig }
 
 class function TNatsServiceConfig.CreateDefault(const AName, AVersion: string): TNatsServiceConfig;
@@ -513,6 +554,8 @@ begin
   Result.Metadata := nil;
   Result.QueueGroup := NATS_SRV_DEFAULT_QUEUE;
   Result.QueueGroupDisabled := False;
+  Result.DoneHandler := nil;
+  Result.ErrorHandler := nil;
 end;
 
 procedure TNatsServiceConfig.Validate;
@@ -684,6 +727,8 @@ begin
   FGroups := TCollections.CreateList<TDextNatsServiceGroup>;
   FDiscoverySids := TCollections.CreateList<Integer>;
   FStopped := False;
+  FDoneHandler := cfg.DoneHandler;
+  FErrorHandler := cfg.ErrorHandler;
   FStartedUtc := Now;
   SubscribeDiscovery;
 end;
@@ -807,6 +852,25 @@ begin
   end;
 end;
 
+procedure TDextNatsService.FireErrorHandler(const ASubject, ADescription: string);
+var
+  handler: TNatsServiceErrorHandler;
+begin
+  FLock.Enter;
+  try
+    handler := FErrorHandler;
+  finally
+    FLock.Leave;
+  end;
+  if not Assigned(handler) then
+    Exit;
+  try
+    handler(Self, TNatsServiceErrorInfo.Create(ASubject, ADescription));
+  except
+    { never let ErrorHandler tear down the receive path }
+  end;
+end;
+
 procedure TDextNatsService.HandleDiscovery(AVerb: TNatsServiceVerb; const AMsg: TNatsMsg);
 var
   json: string;
@@ -836,7 +900,8 @@ begin
   try
     FClient.Publish(AMsg.ReplyTo, TEncoding.UTF8.GetBytes(json));
   except
-    { discovery best-effort }
+    on E: Exception do
+      FireErrorHandler(AMsg.Subject, E.Message);
   end;
 end;
 
@@ -848,6 +913,8 @@ var
   elapsed: Int64;
   hadException: Boolean;
   exceptMsg: string;
+  errDesc: string;
+  fireErr: Boolean;
 begin
   FLock.Enter;
   try
@@ -863,6 +930,8 @@ begin
 
   hadException := False;
   exceptMsg := '';
+  fireErr := False;
+  errDesc := '';
   req := TNatsServiceRequest.Create(FClient, AMsg);
   sw := TStopwatch.StartNew;
   try
@@ -894,17 +963,24 @@ begin
       begin
         Inc(AEndpoint.NumErrors);
         AEndpoint.LastError := req.ErrorDescription;
+        fireErr := True;
+        errDesc := req.ErrorDescription;
       end
       else if hadException then
       begin
         Inc(AEndpoint.NumErrors);
         AEndpoint.LastError := exceptMsg;
+        fireErr := True;
+        errDesc := exceptMsg;
       end;
     finally
       FLock.Leave;
     end;
     req.Free;
   end;
+
+  if fireErr then
+    FireErrorHandler(AMsg.Subject, errDesc);
 end;
 
 procedure TDextNatsService.AddEndpoint(const AName: string; const AHandler: TNatsServiceHandler);
@@ -1081,12 +1157,15 @@ var
   i: Integer;
   sids: TArray<Integer>;
   n: Integer;
+  doneHandler: TNatsServiceDoneHandler;
 begin
+  doneHandler := nil;
   FLock.Enter;
   try
     if FStopped then
       Exit;
     FStopped := True;
+    doneHandler := FDoneHandler;
 
     n := FDiscoverySids.Count + FEndpoints.Count;
     SetLength(sids, n);
@@ -1108,6 +1187,7 @@ begin
     FLock.Leave;
   end;
 
+  { Service-local drain: UNSUB our SIDs only — never client.Drain (would disconnect). }
   for i := 0 to High(sids) do
   begin
     try
@@ -1115,6 +1195,21 @@ begin
     except
       { connection may already be closed }
     end;
+  end;
+
+  if FClient.Connected then
+  try
+    { Flush so the server has processed UNSUBs (orderly stop). Skip if disconnected. }
+    FClient.Flush;
+  except
+    { timeout / closed — teardown still complete }
+  end;
+
+  if Assigned(doneHandler) then
+  try
+    doneHandler(Self);
+  except
+    { never raise out of Stop }
   end;
 end;
 

@@ -7,6 +7,7 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/); versioning f
 
 ### Added
 
+- **NATS Services DoneHandler / ErrorHandler + drain-on-Stop:** `TNatsServiceConfig.DoneHandler` / `ErrorHandler` (`TNatsServiceDoneHandler`, `TNatsServiceErrorHandler`, `TNatsServiceErrorInfo`) — Done fires once after Stop; Error on `RespondError`, handler exceptions, and discovery publish failures. `Stop` UNSUBs service SIDs then best-effort `Flush` when connected (does not call `client.Drain` / disconnect). Unit + live soft-skip tests.
 - **NATS Services AddGroup:** `TDextNatsService.AddGroup` / `TDextNatsServiceGroup` (nats.go micro subject-prefix groups) — nested `AddGroup`, group `AddEndpoint` joins `Prefix.endpoint` (or `Prefix.Subject`), queue inherit/override via `TNatsGroupConfig.QueueGroup` / `QueueGroupDisabled`. Groups owned by the service. Unit + live soft-skip tests.
 - **JetStream stream Mirror / Sources / RePublish:** `TNatsStreamConfig` gains `Mirror` / `Sources` / `RePublish` / `MirrorDirect` (`TNatsStreamSource`, `TNatsRePublish`, `TNatsExternalStream`, `TNatsSubjectTransform`) with Dext.Json.Utf8 ToJson/Parse round-trip for STREAM.CREATE/UPDATE/INFO. KV bucket create/Config pass these through (mirror clears subjects + sets `mirror_direct`; no auto `KV_` rename / source transform injection). Unit serialize/parse + live soft-skip RePublish/Mirror create tests.
 - **KV ListKeysFiltered / multi-filter Keys:** `ListKeysFiltered` and `Keys(filters)` list live PUT keys matching search patterns (`*` / trailing `>`; multi-filter via consumer `filter_subjects`); empty filters = all keys. Reuses `ValidateSearchKey` from `WatchFiltered` and the existing last_per_subject pull path.
@@ -41,7 +42,7 @@ First production-oriented release of the native NATS client for the Dext Framewo
 
 ### Not supported / deferred (not blocking 1.0)
 
-- Full nats.go micro parity beyond Services (StatsHandler schema depth, Done/Error handlers, sub Drain on Stop) — see `Docs/NATS_FUTURE_PLAN.md`
+- Full nats.go micro parity beyond Services (StatsHandler schema depth, connection-closed auto-stop, per-sub Drain) — see `Docs/NATS_FUTURE_PLAN.md`
 - Account JWT/claims limit objects and dedicated `OnLameDuckMode` (INFO `ldm` is on `ServerInfo.LameDuckMode`; full account limits are not on INFO wire)
 - Modern nats.go pull `jetstream.OrderedConsumer` / multi-filter / `OptStartTime` (push ADR-17 helper is present)
 - B2B Agent / `TNatsManager` product (design only: `Docs/NATS_B2B_AGENT_PLAN.md`)

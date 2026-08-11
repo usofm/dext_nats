@@ -1,7 +1,7 @@
 ﻿# برنامهٔ جامع تست — Dext.Nats (`TEST_PLAN`)
 
 > **هدف:** پوشش کامل لایهٔ پروتکل، کلاینت cleartext، JetStream (pull)، TLS، همزمانی، و مسیرهای خطا — بدون پیاده‌سازی در این سند.  
-> **وضعیت فعلی:** شکاف‌های عملی §۲.۳ / فاز T0–T5 بسته شده‌اند. suite پیش‌فرض با سرور `-js` (Unit+Integration+JetStream+KeyValue+ObjectStore+Services+DI+Observability؛ TLS/NKey soft-skip بدون env؛ Stress Explicit کنار). `DEXT_NATS_REQUIRE_LIVE=1` برای fail سخت. Fixture TLS: `Tests/tls/`؛ NKey: `Tests/nkey/`. KV: `TDextNatsKeyValueTests` (incl. GetRevision + Compression/Placement map unit)؛ Object Store: Put/Get/GetResult/List/Watch*/UpdateMeta/Seal/links + streaming + ShowDeleted؛ Services: `TDextNatsServicesTests` (subject helpers + AddGroup prefix/INFO unit + live soft-skip register/PING/endpoint/nested group). باقی‌ماندهٔ عمدی: soft-skip بدون سرور، Stress opt-in، ConnectUrls failover چندنود.  
+> **وضعیت فعلی:** شکاف‌های عملی §۲.۳ / فاز T0–T5 بسته شده‌اند. suite پیش‌فرض با سرور `-js` (Unit+Integration+JetStream+KeyValue+ObjectStore+Services+DI+Observability؛ TLS/NKey soft-skip بدون env؛ Stress Explicit کنار). `DEXT_NATS_REQUIRE_LIVE=1` برای fail سخت. Fixture TLS: `Tests/tls/`؛ NKey: `Tests/nkey/`. KV: `TDextNatsKeyValueTests` (incl. GetRevision + Compression/Placement map unit)؛ Object Store: Put/Get/GetResult/List/Watch*/UpdateMeta/Seal/links + streaming + ShowDeleted؛ Services: `TDextNatsServicesTests` (subject helpers + AddGroup + DoneHandler unit + live soft-skip register/PING/endpoint/nested group/ErrorHandler). باقی‌ماندهٔ عمدی: soft-skip بدون سرور، Stress opt-in، ConnectUrls failover چندنود.  
 > **کامپایلر:** فقط Delphi 12 / Studio **23.0** (`dcc32`).  
 > **چارچوب:** `Dext.Testing` + `Should()`؛ فقط `Dext.Collections`.  
 > **مرجع تاریخی فازها:** `nats_complete_phased_d5d5e289.plan.md` (فاز ۱–۳ feature کامل شده؛ این سند فازهای *تست* بعدی است).
@@ -16,7 +16,7 @@
 | Integration cleartext | Connect، pub/sub، queue، headers، unsub(+subject)، Flush/Ping، MaxPayload، Request*، events، reconnect/outbox، negatives | soft-skip بدون سرور؛ سخت با `DEXT_NATS_REQUIRE_LIVE=1` |
 | JetStream | Fetch+Ack، push، CRUD/List، dedup، batch، Nak/Term/InProgress، errors، compression | نیاز `-js`؛ همان سیاست soft-skip |
 | KeyValue / ObjectStore | buckets/stores، Watch*، CAS/TTL، links/streaming/GetResult | روی JetStream |
-| Services (`$SRV.*`) | subject/SemVer helpers؛ live AddService+PING+endpoint+Stop | soft-skip بدون سرور (JetStream لازم نیست) |
+| Services (`$SRV.*`) | subject/SemVer helpers؛ DoneHandler unit؛ live AddService+PING+endpoint+ErrorHandler+Stop | soft-skip بدون سرور (JetStream لازم نیست) |
 | TLS / NKey | env-gated (`DEXT_NATS_TLS_PORT` / `DEXT_NATS_NKEY_PORT`) | بدون env → soft-skip |
 | Stress | Explicit + `DEXT_NATS_RUN_STRESS=1` | خارج از CI پیش‌فرض |
 | Benchmark | Explicit + `DEXT_NATS_RUN_BENCH=1` | خارج از CI پیش‌فرض؛ گزارش ops/sec / msgs/sec (نه gate) |
