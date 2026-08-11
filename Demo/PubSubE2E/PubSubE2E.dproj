@@ -6,7 +6,7 @@
         <FrameworkType>None</FrameworkType>
         <MainSource>PubSubE2E.dpr</MainSource>
         <Platform Condition="'$(Platform)'==''">Win32</Platform>
-        <ProjectGuid>{A1B2C3D4-E5F6-4789-A012-3456789ABCDE}</ProjectGuid>
+        <ProjectGuid>{C753E756-3C8F-430D-AF6F-05A2AB61E16B}</ProjectGuid>
         <ProjectName Condition="'$(ProjectName)'==''">PubSubE2E</ProjectName>
         <ProjectVersion>20.4</ProjectVersion>
         <TargetedPlatforms>1</TargetedPlatforms>
@@ -105,17 +105,10 @@
                 <Excluded_Packages/>
             </Delphi.Personality>
             <Platforms>
-                <Platform value="Android">False</Platform>
-                <Platform value="Android64">False</Platform>
-                <Platform value="Linux64">False</Platform>
                 <Platform value="OSX64">False</Platform>
                 <Platform value="OSXARM64">False</Platform>
                 <Platform value="Win32">True</Platform>
                 <Platform value="Win64">False</Platform>
-                <Platform value="Win64x">False</Platform>
-                <Platform value="WinARM64EC">False</Platform>
-                <Platform value="iOSDevice64">False</Platform>
-                <Platform value="iOSSimARM64">False</Platform>
             </Platforms>
         </BorlandProject>
         <ProjectFileVersion>12</ProjectFileVersion>
