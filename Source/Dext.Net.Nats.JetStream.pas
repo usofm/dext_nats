@@ -19,7 +19,8 @@
 {***************************************************************************}
 {                                                                           }
 {  JetStream layer for the NATS client. Stream admin (create/update/info/   }
-{  delete, PurgeStream / STREAM.PURGE, ListStreams / ListStreamNames),      }
+{  delete, PurgeStream / STREAM.PURGE, ListStreams / ListStreamNames;       }
+{  stream config includes compression/placement/mirror/sources/republish),  }
 {  dedup'd publish with a                                                   }
 {  Nats-Msg-Id header, pull-consumer admin (create/info/delete,             }
 {  ListConsumers / ListConsumerNames), Fetch, push SubscribePush on         }
@@ -79,6 +80,72 @@ type
     function IsSet: Boolean;
   end;
 
+  /// <summary>
+  ///   Subject rewrite (JSON <c>src</c>/<c>dest</c>) used by stream sources and
+  ///   republish. Matches nats.go <c>SubjectTransformConfig</c> /
+  ///   <c>RePublish</c> field names.
+  /// </summary>
+  TNatsSubjectTransform = record
+    /// <summary>Optional source subject pattern (JSON "src").</summary>
+    Source: string;
+    /// <summary>Destination subject pattern (JSON "dest").</summary>
+    Destination: string;
+    /// <summary>True when Destination is non-empty.</summary>
+    function IsSet: Boolean;
+  end;
+
+  /// <summary>
+  ///   Republish stored messages onto another subject (STREAM.CREATE "republish").
+  ///   Emitted only when <see cref="IsSet"/>.
+  /// </summary>
+  TNatsRePublish = record
+    /// <summary>Optional source subject filter (JSON "src").</summary>
+    Source: string;
+    /// <summary>Destination subject pattern (JSON "dest").</summary>
+    Destination: string;
+    /// <summary>When True, republish headers only (JSON "headers_only").</summary>
+    HeadersOnly: Boolean;
+    /// <summary>True when Destination is non-empty.</summary>
+    function IsSet: Boolean;
+  end;
+
+  /// <summary>
+  ///   Cross-account / cross-domain stream source qualifier (JSON "external").
+  ///   nats.go <c>ExternalStream</c>.
+  /// </summary>
+  TNatsExternalStream = record
+    /// <summary>API subject prefix importing the remote JetStream API (JSON "api").</summary>
+    ApiPrefix: string;
+    /// <summary>Optional deliver subject prefix (JSON "deliver").</summary>
+    DeliverPrefix: string;
+    /// <summary>True when ApiPrefix or DeliverPrefix is non-empty.</summary>
+    function IsSet: Boolean;
+  end;
+
+  /// <summary>
+  ///   Upstream stream reference for mirror or sources (JSON "mirror" /
+  ///   "sources[]"). nats.go <c>StreamSource</c>.
+  /// </summary>
+  TNatsStreamSource = record
+    /// <summary>Upstream stream name (JSON "name").</summary>
+    Name: string;
+    /// <summary>Optional start sequence (JSON "opt_start_seq"). 0 = omit.</summary>
+    OptStartSeq: UInt64;
+    /// <summary>
+    ///   Optional RFC3339 start time (JSON "opt_start_time"). Empty = omit.
+    ///   Stored as the wire string for create/update/info round-trip.
+    /// </summary>
+    OptStartTime: string;
+    /// <summary>Optional single filter subject (JSON "filter_subject").</summary>
+    FilterSubject: string;
+    /// <summary>Optional subject transforms (JSON "subject_transforms").</summary>
+    SubjectTransforms: TArray<TNatsSubjectTransform>;
+    /// <summary>Optional external/domain qualifier (JSON "external").</summary>
+    ExternalStream: TNatsExternalStream;
+    /// <summary>True when Name is non-empty.</summary>
+    function IsSet: Boolean;
+  end;
+
   /// <summary>Consumer acknowledgement policy.</summary>
   TNatsAckPolicy = (apNone, apAll, apExplicit);
   /// <summary>Which messages a consumer starts from.</summary>
@@ -117,6 +184,25 @@ type
     Compression: TNatsStoreCompression;
     /// <summary>Optional placement; omitted from JSON when <see cref="TNatsPlacement.IsSet"/> is False.</summary>
     Placement: TNatsPlacement;
+    /// <summary>
+    ///   Optional 1:1 mirror of another stream (JSON "mirror"). Subjects must be
+    ///   empty when set. Omitted when <see cref="TNatsStreamSource.IsSet"/> is False.
+    /// </summary>
+    Mirror: TNatsStreamSource;
+    /// <summary>
+    ///   When True, emits <c>mirror_direct</c> (direct get through a mirror to the
+    ///   origin). nats.go sets this for KV mirrored buckets.
+    /// </summary>
+    MirrorDirect: Boolean;
+    /// <summary>
+    ///   Optional list of source streams (JSON "sources"). Omitted when empty.
+    /// </summary>
+    Sources: TArray<TNatsStreamSource>;
+    /// <summary>
+    ///   Optional republish after store (JSON "republish"). Omitted when
+    ///   <see cref="TNatsRePublish.IsSet"/> is False.
+    /// </summary>
+    RePublish: TNatsRePublish;
     /// <summary>Sensible defaults: limits retention, file storage, unlimited limits, 2 minute dedup window.</summary>
     class function CreateDefault(const AName: string; const ASubjects: TArray<string>): TNatsStreamConfig; static;
     /// <summary>Serializes the record to the JSON body expected by STREAM.CREATE / STREAM.UPDATE.</summary>
@@ -788,6 +874,9 @@ begin
 end;
 
 procedure NatsJSParseStreamConfigObject(var AReader: TUtf8JsonReader; out AConfig: TNatsStreamConfig); forward;
+procedure NatsJSWriteStreamSource(var AWriter: TUtf8JsonWriter; const ASource: TNatsStreamSource); forward;
+procedure NatsJSParseStreamSourceObject(var AReader: TUtf8JsonReader; out ASource: TNatsStreamSource); forward;
+procedure NatsJSParseRePublishObject(var AReader: TUtf8JsonReader; out ARePublish: TNatsRePublish); forward;
 
 /// <summary>Reader is positioned on StartObject of a stream_info / stream_create response body.</summary>
 procedure NatsJSParseStreamInfoObject(var AReader: TUtf8JsonReader; out AInfo: TNatsStreamInfo);
@@ -1302,6 +1391,258 @@ begin
   Result := (Cluster <> '') or (Length(Tags) > 0);
 end;
 
+function TNatsSubjectTransform.IsSet: Boolean;
+begin
+  Result := Destination <> '';
+end;
+
+function TNatsRePublish.IsSet: Boolean;
+begin
+  Result := Destination <> '';
+end;
+
+function TNatsExternalStream.IsSet: Boolean;
+begin
+  Result := (ApiPrefix <> '') or (DeliverPrefix <> '');
+end;
+
+function TNatsStreamSource.IsSet: Boolean;
+begin
+  Result := Name <> '';
+end;
+
+procedure NatsJSWriteStreamSource(var AWriter: TUtf8JsonWriter; const ASource: TNatsStreamSource);
+var
+  i: Integer;
+begin
+  AWriter.WriteStartObject;
+  AWriter.WritePropertyName('name');
+  AWriter.WriteString(ASource.Name);
+  if ASource.OptStartSeq > 0 then
+  begin
+    AWriter.WritePropertyName('opt_start_seq');
+    AWriter.WriteNumber(Int64(ASource.OptStartSeq));
+  end;
+  if ASource.OptStartTime <> '' then
+  begin
+    AWriter.WritePropertyName('opt_start_time');
+    AWriter.WriteString(ASource.OptStartTime);
+  end;
+  if ASource.FilterSubject <> '' then
+  begin
+    AWriter.WritePropertyName('filter_subject');
+    AWriter.WriteString(ASource.FilterSubject);
+  end;
+  if Length(ASource.SubjectTransforms) > 0 then
+  begin
+    AWriter.WritePropertyName('subject_transforms');
+    AWriter.WriteStartArray;
+    for i := 0 to High(ASource.SubjectTransforms) do
+      if ASource.SubjectTransforms[i].IsSet then
+      begin
+        AWriter.WriteStartObject;
+        if ASource.SubjectTransforms[i].Source <> '' then
+        begin
+          AWriter.WritePropertyName('src');
+          AWriter.WriteString(ASource.SubjectTransforms[i].Source);
+        end;
+        AWriter.WritePropertyName('dest');
+        AWriter.WriteString(ASource.SubjectTransforms[i].Destination);
+        AWriter.WriteEndObject;
+      end;
+    AWriter.WriteEndArray;
+  end;
+  if ASource.ExternalStream.IsSet then
+  begin
+    AWriter.WritePropertyName('external');
+    AWriter.WriteStartObject;
+    AWriter.WritePropertyName('api');
+    AWriter.WriteString(ASource.ExternalStream.ApiPrefix);
+    if ASource.ExternalStream.DeliverPrefix <> '' then
+    begin
+      AWriter.WritePropertyName('deliver');
+      AWriter.WriteString(ASource.ExternalStream.DeliverPrefix);
+    end;
+    AWriter.WriteEndObject;
+  end;
+  AWriter.WriteEndObject;
+end;
+
+procedure NatsJSParseSubjectTransformObject(var AReader: TUtf8JsonReader;
+  out ATransform: TNatsSubjectTransform);
+begin
+  ATransform := Default(TNatsSubjectTransform);
+  while AReader.Read do
+  begin
+    if AReader.TokenType = TJsonTokenType.EndObject then
+      Break;
+    if AReader.TokenType <> TJsonTokenType.PropertyName then
+      Continue;
+    if AReader.ValueSpanEquals('src') then
+    begin
+      if AReader.Read and (AReader.TokenType = TJsonTokenType.StringValue) then
+        ATransform.Source := AReader.GetString
+      else
+        NatsJSSkipValue(AReader);
+    end
+    else if AReader.ValueSpanEquals('dest') then
+    begin
+      if AReader.Read and (AReader.TokenType = TJsonTokenType.StringValue) then
+        ATransform.Destination := AReader.GetString
+      else
+        NatsJSSkipValue(AReader);
+    end
+    else
+      NatsJSHandlePropValue(AReader);
+  end;
+end;
+
+procedure NatsJSParseExternalStreamObject(var AReader: TUtf8JsonReader;
+  out AExternal: TNatsExternalStream);
+begin
+  AExternal := Default(TNatsExternalStream);
+  while AReader.Read do
+  begin
+    if AReader.TokenType = TJsonTokenType.EndObject then
+      Break;
+    if AReader.TokenType <> TJsonTokenType.PropertyName then
+      Continue;
+    if AReader.ValueSpanEquals('api') then
+    begin
+      if AReader.Read and (AReader.TokenType = TJsonTokenType.StringValue) then
+        AExternal.ApiPrefix := AReader.GetString
+      else
+        NatsJSSkipValue(AReader);
+    end
+    else if AReader.ValueSpanEquals('deliver') then
+    begin
+      if AReader.Read and (AReader.TokenType = TJsonTokenType.StringValue) then
+        AExternal.DeliverPrefix := AReader.GetString
+      else
+        NatsJSSkipValue(AReader);
+    end
+    else
+      NatsJSHandlePropValue(AReader);
+  end;
+end;
+
+procedure NatsJSParseStreamSourceObject(var AReader: TUtf8JsonReader; out ASource: TNatsStreamSource);
+var
+  transforms: TArray<TNatsSubjectTransform>;
+  transform: TNatsSubjectTransform;
+begin
+  ASource := Default(TNatsStreamSource);
+  SetLength(transforms, 0);
+  while AReader.Read do
+  begin
+    if AReader.TokenType = TJsonTokenType.EndObject then
+      Break;
+    if AReader.TokenType <> TJsonTokenType.PropertyName then
+      Continue;
+    if AReader.ValueSpanEquals('name') then
+    begin
+      if AReader.Read and (AReader.TokenType = TJsonTokenType.StringValue) then
+        ASource.Name := AReader.GetString
+      else
+        NatsJSSkipValue(AReader);
+    end
+    else if AReader.ValueSpanEquals('opt_start_seq') then
+    begin
+      if AReader.Read and (AReader.TokenType = TJsonTokenType.Number) then
+        ASource.OptStartSeq := UInt64(AReader.GetInt64)
+      else
+        NatsJSSkipValue(AReader);
+    end
+    else if AReader.ValueSpanEquals('opt_start_time') then
+    begin
+      if AReader.Read and (AReader.TokenType = TJsonTokenType.StringValue) then
+        ASource.OptStartTime := AReader.GetString
+      else
+        NatsJSSkipValue(AReader);
+    end
+    else if AReader.ValueSpanEquals('filter_subject') then
+    begin
+      if AReader.Read and (AReader.TokenType = TJsonTokenType.StringValue) then
+        ASource.FilterSubject := AReader.GetString
+      else
+        NatsJSSkipValue(AReader);
+    end
+    else if AReader.ValueSpanEquals('subject_transforms') then
+    begin
+      if AReader.Read and (AReader.TokenType = TJsonTokenType.StartArray) then
+      begin
+        SetLength(transforms, 0);
+        while AReader.Read do
+        begin
+          if AReader.TokenType = TJsonTokenType.EndArray then
+            Break;
+          if AReader.TokenType = TJsonTokenType.StartObject then
+          begin
+            NatsJSParseSubjectTransformObject(AReader, transform);
+            if transform.IsSet then
+            begin
+              SetLength(transforms, Length(transforms) + 1);
+              transforms[High(transforms)] := transform;
+            end;
+          end
+          else
+            NatsJSSkipValue(AReader);
+        end;
+        ASource.SubjectTransforms := transforms;
+      end
+      else
+        NatsJSSkipValue(AReader);
+    end
+    else if AReader.ValueSpanEquals('external') then
+    begin
+      if AReader.Read and (AReader.TokenType = TJsonTokenType.StartObject) then
+        NatsJSParseExternalStreamObject(AReader, ASource.ExternalStream)
+      else
+        NatsJSSkipValue(AReader);
+    end
+    else
+      NatsJSHandlePropValue(AReader);
+  end;
+end;
+
+procedure NatsJSParseRePublishObject(var AReader: TUtf8JsonReader; out ARePublish: TNatsRePublish);
+begin
+  ARePublish := Default(TNatsRePublish);
+  while AReader.Read do
+  begin
+    if AReader.TokenType = TJsonTokenType.EndObject then
+      Break;
+    if AReader.TokenType <> TJsonTokenType.PropertyName then
+      Continue;
+    if AReader.ValueSpanEquals('src') then
+    begin
+      if AReader.Read and (AReader.TokenType = TJsonTokenType.StringValue) then
+        ARePublish.Source := AReader.GetString
+      else
+        NatsJSSkipValue(AReader);
+    end
+    else if AReader.ValueSpanEquals('dest') then
+    begin
+      if AReader.Read and (AReader.TokenType = TJsonTokenType.StringValue) then
+        ARePublish.Destination := AReader.GetString
+      else
+        NatsJSSkipValue(AReader);
+    end
+    else if AReader.ValueSpanEquals('headers_only') then
+    begin
+      if AReader.Read then
+      begin
+        if AReader.TokenType in [TJsonTokenType.TrueValue, TJsonTokenType.FalseValue] then
+          ARePublish.HeadersOnly := AReader.GetBoolean
+        else
+          NatsJSSkipValue(AReader);
+      end;
+    end
+    else
+      NatsJSHandlePropValue(AReader);
+  end;
+end;
+
 { TNatsStreamConfig }
 
 class function TNatsStreamConfig.CreateDefault(const AName: string; const ASubjects: TArray<string>): TNatsStreamConfig;
@@ -1442,6 +1783,43 @@ begin
     end;
     jw.WriteEndObject;
   end;
+  if Mirror.IsSet then
+  begin
+    jw.WritePropertyName('mirror');
+    NatsJSWriteStreamSource(jw, Mirror);
+  end;
+  if MirrorDirect then
+  begin
+    jw.WritePropertyName('mirror_direct');
+    jw.WriteBoolean(True);
+  end;
+  if Length(Sources) > 0 then
+  begin
+    jw.WritePropertyName('sources');
+    jw.WriteStartArray;
+    for i := 0 to High(Sources) do
+      if Sources[i].IsSet then
+        NatsJSWriteStreamSource(jw, Sources[i]);
+    jw.WriteEndArray;
+  end;
+  if RePublish.IsSet then
+  begin
+    jw.WritePropertyName('republish');
+    jw.WriteStartObject;
+    if RePublish.Source <> '' then
+    begin
+      jw.WritePropertyName('src');
+      jw.WriteString(RePublish.Source);
+    end;
+    jw.WritePropertyName('dest');
+    jw.WriteString(RePublish.Destination);
+    if RePublish.HeadersOnly then
+    begin
+      jw.WritePropertyName('headers_only');
+      jw.WriteBoolean(True);
+    end;
+    jw.WriteEndObject;
+  end;
   jw.WriteEndObject;
   Result := TEncoding.UTF8.GetString(w.ToBytes);
 end;
@@ -1495,6 +1873,8 @@ end;
 procedure NatsJSParseStreamConfigObject(var AReader: TUtf8JsonReader; out AConfig: TNatsStreamConfig);
 var
   subjects: TArray<string>;
+  sources: TArray<TNatsStreamSource>;
+  src: TNatsStreamSource;
   s: string;
 begin
   AConfig := Default(TNatsStreamConfig);
@@ -1508,6 +1888,7 @@ begin
   AConfig.Discard := sdOld;
   AConfig.Compression := scNone;
   SetLength(subjects, 0);
+  SetLength(sources, 0);
 
   while AReader.Read do
   begin
@@ -1720,6 +2101,56 @@ begin
     begin
       if AReader.Read and (AReader.TokenType = TJsonTokenType.StartObject) then
         NatsJSParsePlacementObject(AReader, AConfig.Placement)
+      else
+        NatsJSSkipValue(AReader);
+    end
+    else if AReader.ValueSpanEquals('mirror') then
+    begin
+      if AReader.Read and (AReader.TokenType = TJsonTokenType.StartObject) then
+        NatsJSParseStreamSourceObject(AReader, AConfig.Mirror)
+      else
+        NatsJSSkipValue(AReader);
+    end
+    else if AReader.ValueSpanEquals('mirror_direct') then
+    begin
+      if AReader.Read then
+      begin
+        if AReader.TokenType in [TJsonTokenType.TrueValue, TJsonTokenType.FalseValue] then
+          AConfig.MirrorDirect := AReader.GetBoolean
+        else
+          NatsJSSkipValue(AReader);
+      end;
+    end
+    else if AReader.ValueSpanEquals('sources') then
+    begin
+      if AReader.Read and (AReader.TokenType = TJsonTokenType.StartArray) then
+      begin
+        SetLength(sources, 0);
+        while AReader.Read do
+        begin
+          if AReader.TokenType = TJsonTokenType.EndArray then
+            Break;
+          if AReader.TokenType = TJsonTokenType.StartObject then
+          begin
+            NatsJSParseStreamSourceObject(AReader, src);
+            if src.IsSet then
+            begin
+              SetLength(sources, Length(sources) + 1);
+              sources[High(sources)] := src;
+            end;
+          end
+          else
+            NatsJSSkipValue(AReader);
+        end;
+        AConfig.Sources := sources;
+      end
+      else
+        NatsJSSkipValue(AReader);
+    end
+    else if AReader.ValueSpanEquals('republish') then
+    begin
+      if AReader.Read and (AReader.TokenType = TJsonTokenType.StartObject) then
+        NatsJSParseRePublishObject(AReader, AConfig.RePublish)
       else
         NatsJSSkipValue(AReader);
     end

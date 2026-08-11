@@ -26,8 +26,9 @@
 {  Watch). CAS Create/Update use Nats-Expected-Last-Subject-Sequence.       }
 {  GetRevision / TryGetRevision via STREAM.MSG.GET (includes tombstones).   }
 {  PurgeDeletes removes DEL/PURGE markers via STREAM.PURGE (age threshold). }
-{  Bucket config maps Compression / Placement onto KV_* STREAM.CREATE      }
-{  (nats.go KeyValueConfig; Compression=true → scS2).                       }
+{  Bucket config maps Compression / Placement / Mirror / Sources /          }
+{  RePublish onto KV_* STREAM.CREATE (nats.go KeyValueConfig;               }
+{  Compression=true → scS2; mirror clears subjects + mirror_direct).        }
 {  Per-key TTL (NATS 2.11+, ADR-48): bucket LimitMarkerTTL enables          }
 {  allow_msg_ttl + subject_delete_marker_ttl; Create/Purge accept Nats-TTL. }
 {  Watch delivers an EndOfInitial marker (nats.go nil-entry equivalent)     }
@@ -37,8 +38,7 @@
 {  Watch / WatchFiltered accept NATS subject wildcards (* / >) on keys;     }
 {  multi-filter uses consumer filter_subjects. Keys / ListKeysFiltered       }
 {  reuse the same search-key validation + last_per_subject pull. Config() / }
-{  Status.Config round-trip bucket settings from STREAM.INFO                }
-{  (no Mirror/Sources/RePublish).                                           }
+{  Status.Config round-trip bucket settings from STREAM.INFO.               }
 {                                                                           }
 {***************************************************************************}
 unit Dext.Net.Nats.KeyValue;
@@ -123,13 +123,29 @@ type
     Compression: TNatsStoreCompression;
     /// <summary>Maps to stream <see cref="TNatsStreamConfig.Placement"/> when <see cref="TNatsPlacement.IsSet"/>.</summary>
     Placement: TNatsPlacement;
+    /// <summary>
+    ///   Optional mirror of another stream/bucket (nats.go <c>KeyValueConfig.Mirror</c>).
+    ///   Passed through to <see cref="TNatsStreamConfig.Mirror"/>.
+    /// </summary>
+    Mirror: TNatsStreamSource;
+    /// <summary>
+    ///   Optional source streams (nats.go <c>KeyValueConfig.Sources</c>).
+    ///   Passed through to <see cref="TNatsStreamConfig.Sources"/>.
+    /// </summary>
+    Sources: TArray<TNatsStreamSource>;
+    /// <summary>
+    ///   Optional republish after store (nats.go <c>KeyValueConfig.RePublish</c>).
+    ///   Passed through to <see cref="TNatsStreamConfig.RePublish"/>.
+    /// </summary>
+    RePublish: TNatsRePublish;
     /// <summary>Defaults: history=1, file storage, unlimited size, 1 replica, no compression/placement.</summary>
     class function CreateDefault(const ABucket: string): TNatsKeyValueConfig; static;
     /// <summary>Maps this bucket config onto a <see cref="TNatsStreamConfig"/> for STREAM.CREATE.</summary>
     function ToStreamConfig: TNatsStreamConfig;
     /// <summary>
     ///   Rebuilds bucket config from a KV_* stream config (nats.go
-    ///   <c>KeyValueBucketStatus.Config</c>). Omits Mirror/Sources/RePublish/Metadata.
+    ///   <c>KeyValueBucketStatus.Config</c>). Includes Mirror/Sources/RePublish;
+    ///   omits Metadata.
     /// </summary>
     class function FromStreamConfig(const ABucket: string;
       const AStream: TNatsStreamConfig): TNatsKeyValueConfig; static;
@@ -375,8 +391,8 @@ type
     /// <summary>Current bucket status from STREAM.INFO (includes <c>Config</c>).</summary>
     function Status: TNatsKeyValueStatus;
     /// <summary>
-    ///   Current bucket config from STREAM.INFO (nats.go <c>Status.Config()</c>).
-    ///   Mirror/Sources/RePublish are not surfaced.
+    ///   Current bucket config from STREAM.INFO (nats.go <c>Status.Config()</c>),
+    ///   including Mirror/Sources/RePublish when present on the stream.
     /// </summary>
     function Config: TNatsKeyValueConfig;
 
@@ -501,12 +517,21 @@ begin
     Result.NumReplicas := 1;
   Result.Compression := Compression;
   Result.Placement := Placement;
+  Result.Mirror := Mirror;
+  Result.Sources := Sources;
+  Result.RePublish := RePublish;
   Result.Discard := sdNew;
   Result.AllowDirect := True;
   Result.DenyDelete := True;
   Result.AllowRollup := True;
   Result.MaxMsgs := -1;
   Result.MaxConsumers := -1;
+  { Mirror streams must not declare subjects (nats.go mapStreamConfig). }
+  if Mirror.IsSet then
+  begin
+    SetLength(Result.Subjects, 0);
+    Result.MirrorDirect := True;
+  end;
   if LimitMarkerTTL > 0 then
   begin
     Result.AllowMsgTTL := True;
@@ -540,6 +565,9 @@ begin
     Result.NumReplicas := AStream.NumReplicas;
   Result.Compression := AStream.Compression;
   Result.Placement := AStream.Placement;
+  Result.Mirror := AStream.Mirror;
+  Result.Sources := AStream.Sources;
+  Result.RePublish := AStream.RePublish;
 end;
 
 { TNatsKeyValueStatus }

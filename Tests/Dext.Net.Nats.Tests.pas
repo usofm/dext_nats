@@ -176,9 +176,13 @@ type
     [Test, Category('Unit')]
     procedure StreamConfig_ShouldSerializeCompressionAndPlacement;
     [Test, Category('Unit')]
+    procedure StreamConfig_ShouldSerializeMirrorSourcesRePublish;
+    [Test, Category('Unit')]
     procedure StreamPurgeRequest_ShouldSerializeOptionalFields;
     [Test, Category('Unit')]
     procedure StreamInfo_ShouldParseCompressionAndPlacement;
+    [Test, Category('Unit')]
+    procedure StreamInfo_ShouldParseMirrorSourcesRePublish;
     [Test, Category('Unit')]
     procedure KeyValueConfig_ShouldMapToStreamConfig;
     [Test, Category('Unit')]
@@ -330,6 +334,10 @@ type
     procedure CreateStream_IncompatibleDuplicate_ShouldRaise;
     [Test, Category('JetStream')]
     procedure Stream_CreateWithCompression_ShouldRoundTrip;
+    [Test, Category('JetStream')]
+    procedure Stream_CreateWithRePublish_ShouldRoundTrip;
+    [Test, Category('JetStream')]
+    procedure Stream_CreateWithMirror_ShouldRoundTrip;
   end;
 
   [TestFixture('NATS JetStream Key-Value (requires nats-server -js)')]
@@ -1741,6 +1749,47 @@ begin
   Should(cfg.Placement.IsSet).BeTrue;
 end;
 
+procedure TDextNatsProtocolTests.StreamConfig_ShouldSerializeMirrorSourcesRePublish;
+var
+  cfg: TNatsStreamConfig;
+  json: string;
+  xform: TNatsSubjectTransform;
+begin
+  cfg := TNatsStreamConfig.CreateDefault('DEST', ['dest.>']);
+  json := cfg.ToJson;
+  Should(json.Contains('"mirror"')).BeFalse;
+  Should(json.Contains('"sources"')).BeFalse;
+  Should(json.Contains('"republish"')).BeFalse;
+  Should(json.Contains('"mirror_direct"')).BeFalse;
+  Should(cfg.Mirror.IsSet).BeFalse;
+  Should(cfg.RePublish.IsSet).BeFalse;
+
+  cfg.Mirror.Name := 'ORIGIN';
+  cfg.Mirror.FilterSubject := 'orders.>';
+  cfg.Mirror.OptStartSeq := 7;
+  cfg.Mirror.OptStartTime := '2024-01-02T03:04:05Z';
+  cfg.Mirror.ExternalStream.ApiPrefix := '$JS.other.API';
+  cfg.Mirror.ExternalStream.DeliverPrefix := 'deliver.prefix';
+  cfg.MirrorDirect := True;
+  xform.Source := 'a.>';
+  xform.Destination := 'b.>';
+  cfg.Sources := [Default(TNatsStreamSource)];
+  cfg.Sources[0].Name := 'S1';
+  cfg.Sources[0].SubjectTransforms := [xform];
+  cfg.RePublish.Source := 'foo.>';
+  cfg.RePublish.Destination := 'bar.>';
+  cfg.RePublish.HeadersOnly := True;
+  json := cfg.ToJson;
+  Should(json.Contains(
+    '"mirror":{"name":"ORIGIN","opt_start_seq":7,"opt_start_time":"2024-01-02T03:04:05Z",' +
+    '"filter_subject":"orders.>","external":{"api":"$JS.other.API","deliver":"deliver.prefix"}}')).BeTrue;
+  Should(json.Contains('"mirror_direct":true')).BeTrue;
+  Should(json.Contains(
+    '"sources":[{"name":"S1","subject_transforms":[{"src":"a.>","dest":"b.>"}]}]')).BeTrue;
+  Should(json.Contains(
+    '"republish":{"src":"foo.>","dest":"bar.>","headers_only":true}')).BeTrue;
+end;
+
 procedure TDextNatsProtocolTests.StreamPurgeRequest_ShouldSerializeOptionalFields;
 var
   req: TNatsStreamPurgeRequest;
@@ -1787,6 +1836,38 @@ begin
   Should(info.Config.Placement.IsSet).BeFalse;
 end;
 
+procedure TDextNatsProtocolTests.StreamInfo_ShouldParseMirrorSourcesRePublish;
+var
+  info: TNatsStreamInfo;
+begin
+  info := TNatsStreamInfo.Parse(
+    '{"config":{"name":"DEST","subjects":[],' +
+    '"mirror":{"name":"ORIGIN","opt_start_seq":3,"opt_start_time":"2024-06-01T00:00:00Z",' +
+    '"filter_subject":"x.>","external":{"api":"$JS.X.API","deliver":"d.pre"}},' +
+    '"mirror_direct":true,' +
+    '"sources":[{"name":"S1","subject_transforms":[{"src":"in.>","dest":"out.>"}]}],' +
+    '"republish":{"src":"a.>","dest":"b.>","headers_only":true}},' +
+    '"state":{"messages":0,"bytes":0,"first_seq":0,"last_seq":0,"consumer_count":0}}');
+  Should(info.Config.Name).Be('DEST');
+  Should(info.Config.Mirror.IsSet).BeTrue;
+  Should(info.Config.Mirror.Name).Be('ORIGIN');
+  Should(info.Config.Mirror.OptStartSeq).Be(UInt64(3));
+  Should(info.Config.Mirror.OptStartTime).Be('2024-06-01T00:00:00Z');
+  Should(info.Config.Mirror.FilterSubject).Be('x.>');
+  Should(info.Config.Mirror.ExternalStream.ApiPrefix).Be('$JS.X.API');
+  Should(info.Config.Mirror.ExternalStream.DeliverPrefix).Be('d.pre');
+  Should(info.Config.MirrorDirect).BeTrue;
+  Should(Length(info.Config.Sources)).Be(1);
+  Should(info.Config.Sources[0].Name).Be('S1');
+  Should(Length(info.Config.Sources[0].SubjectTransforms)).Be(1);
+  Should(info.Config.Sources[0].SubjectTransforms[0].Source).Be('in.>');
+  Should(info.Config.Sources[0].SubjectTransforms[0].Destination).Be('out.>');
+  Should(info.Config.RePublish.IsSet).BeTrue;
+  Should(info.Config.RePublish.Source).Be('a.>');
+  Should(info.Config.RePublish.Destination).Be('b.>');
+  Should(info.Config.RePublish.HeadersOnly).BeTrue;
+end;
+
 procedure TDextNatsProtocolTests.KeyValueConfig_ShouldMapToStreamConfig;
 var
   kv: TNatsKeyValueConfig;
@@ -1823,6 +1904,19 @@ begin
   json := stream.ToJson;
   Should(json.Contains('"compression":"s2"')).BeTrue;
   Should(json.Contains('"placement":{"cluster":"east","tags":["kv:hot"]}')).BeTrue;
+
+  kv := TNatsKeyValueConfig.CreateDefault('MIRROR_SRC');
+  kv.Mirror.Name := 'KV_ORIGIN';
+  kv.RePublish.Destination := 'kv.out.>';
+  stream := kv.ToStreamConfig;
+  Should(stream.Mirror.Name).Be('KV_ORIGIN');
+  Should(stream.MirrorDirect).BeTrue;
+  Should(Length(stream.Subjects)).Be(0);
+  Should(stream.RePublish.Destination).Be('kv.out.>');
+  json := stream.ToJson;
+  Should(json.Contains('"mirror":{"name":"KV_ORIGIN"}')).BeTrue;
+  Should(json.Contains('"mirror_direct":true')).BeTrue;
+  Should(json.Contains('"republish":{"dest":"kv.out.>"}')).BeTrue;
 end;
 
 procedure TDextNatsProtocolTests.KeyValueConfig_FromStreamConfig_ShouldRoundTrip;
@@ -1842,6 +1936,10 @@ begin
   kv.Compression := scS2;
   kv.Placement.Cluster := 'west';
   kv.Placement.Tags := ['kv'];
+  kv.Mirror.Name := 'KV_UPSTREAM';
+  kv.Sources := [Default(TNatsStreamSource)];
+  kv.Sources[0].Name := 'KV_OTHER';
+  kv.RePublish.Destination := 'mirror.out.>';
   stream := kv.ToStreamConfig;
   back := TNatsKeyValueConfig.FromStreamConfig('ROUND', stream);
   Should(back.Bucket).Be('ROUND');
@@ -1857,6 +1955,10 @@ begin
   Should(back.Placement.Cluster).Be('west');
   Should(Length(back.Placement.Tags)).Be(1);
   Should(back.Placement.Tags[0]).Be('kv');
+  Should(back.Mirror.Name).Be('KV_UPSTREAM');
+  Should(Length(back.Sources)).Be(1);
+  Should(back.Sources[0].Name).Be('KV_OTHER');
+  Should(back.RePublish.Destination).Be('mirror.out.>');
 end;
 
 procedure TDextNatsProtocolTests.KeyValueConfig_LimitMarkerTTL_ShouldEnableMsgTTL;
@@ -3537,6 +3639,84 @@ begin
     Should(Ord(info.Config.Compression)).Be(Ord(scS2));
   finally
     FJs.DeleteStream(stream);
+  end;
+end;
+
+procedure TDextNatsJetStreamTests.Stream_CreateWithRePublish_ShouldRoundTrip;
+var
+  stream, subject, dest: string;
+  cfg: TNatsStreamConfig;
+  info: TNatsStreamInfo;
+begin
+  if not EnsureJetStreamOrFail then
+    Exit;
+  stream := UniqueName('DEXT_JS_RP');
+  subject := JsUniqueSubject(stream);
+  dest := subject + '.rp';
+  cfg := TNatsStreamConfig.CreateDefault(stream, [subject]);
+  cfg.Storage := ssMemory;
+  cfg.RePublish.Source := subject;
+  cfg.RePublish.Destination := dest;
+  try
+    info := FJs.CreateStream(cfg);
+  except
+    on E: EDextNatsJetStreamError do
+    begin
+      LiveSoftSkipOrFail(
+        Format('Stream republish unsupported by server (%s).', [E.Message]));
+      Exit;
+    end;
+  end;
+  try
+    Should(info.Config.RePublish.IsSet).BeTrue;
+    Should(info.Config.RePublish.Destination).Be(dest);
+    info := FJs.GetStreamInfo(stream);
+    Should(info.Config.RePublish.Source).Be(subject);
+    Should(info.Config.RePublish.Destination).Be(dest);
+  finally
+    FJs.DeleteStream(stream);
+  end;
+end;
+
+procedure TDextNatsJetStreamTests.Stream_CreateWithMirror_ShouldRoundTrip;
+var
+  origin, mirror, subject: string;
+  cfg, mcfg: TNatsStreamConfig;
+  info: TNatsStreamInfo;
+begin
+  if not EnsureJetStreamOrFail then
+    Exit;
+  origin := UniqueName('DEXT_JS_MORI');
+  mirror := UniqueName('DEXT_JS_MIRR');
+  subject := JsUniqueSubject(origin);
+  cfg := TNatsStreamConfig.CreateDefault(origin, [subject]);
+  cfg.Storage := ssMemory;
+  FJs.CreateStream(cfg);
+  try
+    mcfg := TNatsStreamConfig.CreateDefault(mirror, []);
+    mcfg.Storage := ssMemory;
+    mcfg.Mirror.Name := origin;
+    mcfg.MirrorDirect := True;
+    try
+      info := FJs.CreateStream(mcfg);
+    except
+      on E: EDextNatsJetStreamError do
+      begin
+        LiveSoftSkipOrFail(
+          Format('Stream mirror unsupported by server (%s).', [E.Message]));
+        Exit;
+      end;
+    end;
+    try
+      Should(info.Config.Mirror.IsSet).BeTrue;
+      Should(info.Config.Mirror.Name).Be(origin);
+      info := FJs.GetStreamInfo(mirror);
+      Should(info.Config.Mirror.Name).Be(origin);
+    finally
+      FJs.DeleteStream(mirror);
+    end;
+  finally
+    FJs.DeleteStream(origin);
   end;
 end;
 

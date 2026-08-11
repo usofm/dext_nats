@@ -55,6 +55,7 @@ Source/
                                 IncludeHistory / IgnoreDeletes),
                                 Config()/Status.Config stream read-back, CAS
                                 Create/Update, bucket Compression/Placement,
+                                Mirror/Sources/RePublish pass-through,
                                 per-key TTL via LimitMarkerTTL + Create/Purge
                                 Nats-TTL; NATS 2.11+ / ADR-48). Composition over
                                 JetStream.
@@ -235,7 +236,8 @@ parsing frames anywhere else.
 - [x] JetStream (`Dext.Net.Nats.JetStream.pas`): stream admin
  (create/update/info/delete, `PurgeStream` / `$JS.API.STREAM.PURGE`,
  `ListStreams` / `ListStreamNames` via `$JS.API.STREAM.LIST` / `STREAM.NAMES`;
- stream config includes `compression` / `placement`), consumer admin including
+ stream config includes `compression` / `placement` / `mirror` /
+ `sources` / `republish` / `mirror_direct`), consumer admin including
  `ListConsumers` / `ListConsumerNames` (`CONSUMER.LIST` / `CONSUMER.NAMES`),
  dedup'd publish with a `Nats-Msg-Id` header, Fetch, Ack/Nak/Term/InProgress,
  push `SubscribePush` on `deliver_subject`, and ordered `SubscribeOrdered`
@@ -303,6 +305,7 @@ parsing frames anywhere else.
       UpdatesOnly / IncludeHistory / IgnoreDeletes / ResumeFromRevision),
       `Config` / `Status.Config` from STREAM.INFO, CAS Create / Update
       (`Nats-Expected-Last-Subject-Sequence`), bucket `Compression` / `Placement`,
+      `Mirror` / `Sources` / `RePublish` pass-through on stream config,
       per-key TTL (`LimitMarkerTTL` + `Create`/`Purge` with `Nats-TTL`; NATS 2.11+)
 - [x] Release **1.0.0** — `CHANGELOG.md`, README version line, git tag `v1.0.0`
 - [x] NATS Services API MVP (`Dext.Net.Nats.Services.pas`): AddService /
