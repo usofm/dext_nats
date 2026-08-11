@@ -254,7 +254,7 @@ Output\Win32\Debug\Dext.Net.Nats.Tests.exe
 | `DEXT_NATS_NKEY_PORT=4224` | Enable NKey tests (`DEXT_NATS_NKEY_SEED` or `*_SEED_FILE` / `DEXT_NATS_CREDS_FILE`) |
 | `DEXT_NATS_RUN_STRESS=1` | Run Explicit stress tests |
 
-Full matrix and IDs: [`Docs/TEST_PLAN.md`](Docs/TEST_PLAN.md).
+Full matrix and IDs: [`Docs/TEST_PLAN.md`](Docs/TEST_PLAN.md). Forward plan after the completed Dext roadmap: [`Docs/NATS_FUTURE_PLAN.md`](Docs/NATS_FUTURE_PLAN.md).
 
 ## Manual E2E demos
 

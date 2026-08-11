@@ -98,6 +98,8 @@ Demo/
                                 modeled on nats.delphi.marmot Demos/VCLDemo.
                                 Plain `nats-server`; use `-js` for JS/KV/OS.
 Tests/                          Dext.Testing-based unit + integration tests.
+Docs/                           Roadmap (`NATS_DEXT_ROADMAP.md`), test matrix
+                                (`TEST_PLAN.md`), forward plan (`NATS_FUTURE_PLAN.md`).
 Dext.Nats.groupproj             Delphi project group: Tests + all Demo/*.dproj.
 LICENSE                         Apache 2.0.
 ```
