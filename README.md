@@ -70,7 +70,7 @@ begin
 end;
 ```
 
-Object Store buckets are JetStream streams (`OBJ_<bucket>`, subjects `$O.<bucket>.{C,M}.*`). `UpdateStore` / `UpdateObjectStore` maps mutable `TNatsObjectStoreConfig` fields (description, max bytes, TTL/`MaxAge`, storage, replicas) onto `STREAM.UPDATE`; compression/placement are not exposed yet. `Watch` / `WatchAll` push on meta subjects (`last_per_subject` + updates) and deliver an `EndOfInitial` marker when the snapshot is done — check `AInfo.IsEndOfInitial` or `Watcher.InitialDone`. Optional `TNatsObjectStoreWatchOptions.MetaOnly` (`headers_only`; name from subject, no ObjectInfo JSON) / `UpdatesOnly` (`deliver_policy=new`; no marker).
+Object Store buckets are JetStream streams (`OBJ_<bucket>`, subjects `$O.<bucket>.{C,M}.*`). `UpdateStore` / `UpdateObjectStore` maps mutable `TNatsObjectStoreConfig` fields (description, max bytes, TTL/`MaxAge`, storage, replicas, `Compression`, `Placement`) onto `STREAM.UPDATE`. Stream config also accepts `TNatsStoreCompression` (`scS2` → `"compression":"s2"`) and `TNatsPlacement` (`cluster` / `tags`). `Watch` / `WatchAll` push on meta subjects (`last_per_subject` + updates) and deliver an `EndOfInitial` marker when the snapshot is done — check `AInfo.IsEndOfInitial` or `Watcher.InitialDone`. Optional `TNatsObjectStoreWatchOptions.MetaOnly` (`headers_only`; name from subject, no ObjectInfo JSON) / `UpdatesOnly` (`deliver_policy=new`; no marker).
 
 ### JetStream Key-Value
 

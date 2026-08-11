@@ -213,14 +213,15 @@ parsing frames anywhere else.
       keepalive, Drain/DrainAsync/IsDraining — now using `Dext.Collections` throughout
 - [x] JetStream (`Dext.Net.Nats.JetStream.pas`): stream admin
  (create/update/info/delete, `ListStreams` / `ListStreamNames` via
- `$JS.API.STREAM.LIST` / `STREAM.NAMES`), consumer admin including
+ `$JS.API.STREAM.LIST` / `STREAM.NAMES`; stream config includes
+ `compression` / `placement`), consumer admin including
  `ListConsumers` / `ListConsumerNames` (`CONSUMER.LIST` / `CONSUMER.NAMES`),
  dedup'd publish with a `Nats-Msg-Id` header, Fetch, Ack/Nak/Term/InProgress,
  and push `SubscribePush` on `deliver_subject`
 - [x] Object Store (`Dext.Net.Nats.ObjectStore.pas`): CreateStore / OpenStore /
       UpdateStore / UpdateObjectStore (STREAM.UPDATE on OBJ_*; description /
-      max_bytes / MaxAge TTL / storage / replicas; compression/placement deferred —
-      not on `TNatsStreamConfig`), DeleteStore, Put / Get / Delete, List /
+      max_bytes / MaxAge TTL / storage / replicas / compression / placement),
+      DeleteStore, Put / Get / Delete, List /
       ListObjects / Keys (meta filter `$O.<bucket>.M.>`, `last_per_subject`),
       Watch / WatchAll (push `last_per_subject` on meta subjects + EndOfInitial
       marker via NumPending; `TNatsObjectStoreWatchOptions.MetaOnly` /
@@ -231,8 +232,7 @@ parsing frames anywhere else.
       following), streaming Put/Get (`TStream`, `PutFile` / `GetFile`,
       `Put(TNatsObjectMeta, TStream)` chunked SHA-256 without loading whole
       payload into one `TBytes`);
-      deferred vs nats.go: lazy ObjectResult reader, Get/Put show-deleted opts,
-      stream compression / placement
+      deferred vs nats.go: lazy ObjectResult reader, Get/Put show-deleted opts
 - [x] Unit/integration tests in `Tests/Dext.Net.Nats.Tests.pas` (use `Dext.Testing`)
 - [x] Console demo projects (`.dpr`/`.dproj`): `Demo/PubSubE2E/` (core one-way
   pub/sub), `Demo/RequestReplyE2E/` (request/reply + no-responders),

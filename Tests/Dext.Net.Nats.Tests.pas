@@ -159,6 +159,10 @@ type
     [Test, Category('Unit')]
     procedure StreamConfig_ShouldSerializeKvFlags;
     [Test, Category('Unit')]
+    procedure StreamConfig_ShouldSerializeCompressionAndPlacement;
+    [Test, Category('Unit')]
+    procedure StreamInfo_ShouldParseCompressionAndPlacement;
+    [Test, Category('Unit')]
     procedure KeyValueConfig_ShouldMapToStreamConfig;
     [Test, Category('Unit')]
     procedure KeyValueConfig_LimitMarkerTTL_ShouldEnableMsgTTL;
@@ -295,6 +299,8 @@ type
     procedure DeleteConsumer_Missing_ShouldRaise;
     [Test, Category('JetStream'), Category('Negative')]
     procedure CreateStream_IncompatibleDuplicate_ShouldRaise;
+    [Test, Category('JetStream')]
+    procedure Stream_CreateWithCompression_ShouldRoundTrip;
   end;
 
   [TestFixture('NATS JetStream Key-Value (requires nats-server -js)')]
@@ -1437,6 +1443,49 @@ begin
   Should(json.Contains('"subject_delete_marker_ttl":2000000000')).BeTrue;
   Should(json.Contains('"discard":"new"')).BeTrue;
   Should(json.Contains('"description":"kv demo"')).BeTrue;
+end;
+
+procedure TDextNatsProtocolTests.StreamConfig_ShouldSerializeCompressionAndPlacement;
+var
+  cfg: TNatsStreamConfig;
+  json: string;
+begin
+  cfg := TNatsStreamConfig.CreateDefault('COMP', ['comp.>']);
+  json := cfg.ToJson;
+  Should(json.Contains('"compression"')).BeFalse;
+  Should(json.Contains('"placement"')).BeFalse;
+  Should(cfg.Placement.IsSet).BeFalse;
+
+  cfg.Compression := scS2;
+  cfg.Placement.Cluster := 'east';
+  cfg.Placement.Tags := ['region:us-east', 'disk:ssd'];
+  json := cfg.ToJson;
+  Should(json.Contains('"compression":"s2"')).BeTrue;
+  Should(json.Contains('"placement":{"cluster":"east","tags":["region:us-east","disk:ssd"]}')).BeTrue;
+  Should(cfg.Placement.IsSet).BeTrue;
+end;
+
+procedure TDextNatsProtocolTests.StreamInfo_ShouldParseCompressionAndPlacement;
+var
+  info: TNatsStreamInfo;
+begin
+  info := TNatsStreamInfo.Parse(
+    '{"config":{"name":"S2","subjects":["s.>"],"compression":"s2",' +
+    '"placement":{"cluster":"west","tags":["az:1","ssd"]}},' +
+    '"state":{"messages":0,"bytes":0,"first_seq":0,"last_seq":0,"consumer_count":0}}');
+  Should(info.Config.Name).Be('S2');
+  Should(Ord(info.Config.Compression)).Be(Ord(scS2));
+  Should(info.Config.Placement.Cluster).Be('west');
+  Should(Length(info.Config.Placement.Tags)).Be(2);
+  Should(info.Config.Placement.Tags[0]).Be('az:1');
+  Should(info.Config.Placement.Tags[1]).Be('ssd');
+  Should(info.Config.Placement.IsSet).BeTrue;
+
+  info := TNatsStreamInfo.Parse(
+    '{"config":{"name":"NONE","subjects":["n.>"],"compression":"none"},' +
+    '"state":{"messages":0,"bytes":0,"first_seq":0,"last_seq":0,"consumer_count":0}}');
+  Should(Ord(info.Config.Compression)).Be(Ord(scNone));
+  Should(info.Config.Placement.IsSet).BeFalse;
 end;
 
 procedure TDextNatsProtocolTests.KeyValueConfig_ShouldMapToStreamConfig;
@@ -2868,6 +2917,45 @@ begin
       begin
         FJs.CreateStream(cfg);
       end).Throw(EDextNatsJetStreamError);
+  finally
+    FJs.DeleteStream(stream);
+  end;
+end;
+
+procedure TDextNatsJetStreamTests.Stream_CreateWithCompression_ShouldRoundTrip;
+var
+  stream, subject: string;
+  cfg: TNatsStreamConfig;
+  info: TNatsStreamInfo;
+begin
+  if not EnsureJetStreamOrFail then
+    Exit;
+  stream := UniqueName('DEXT_JS_COMP');
+  subject := JsUniqueSubject(stream);
+  cfg := TNatsStreamConfig.CreateDefault(stream, [subject]);
+  { File storage required for S2 compression on typical nats-server builds. }
+  cfg.Storage := ssFile;
+  cfg.Compression := scS2;
+  try
+    info := FJs.CreateStream(cfg);
+  except
+    on E: EDextNatsJetStreamError do
+    begin
+      LiveSoftSkipOrFail(
+        Format('Stream compression unsupported by server (%s). Need nats-server with S2.',
+          [E.Message]));
+      Exit;
+    end;
+  end;
+  try
+    Should(Ord(info.Config.Compression)).Be(Ord(scS2));
+    info := FJs.GetStreamInfo(stream);
+    Should(Ord(info.Config.Compression)).Be(Ord(scS2));
+    cfg.Description := 'compressed';
+    cfg.Compression := scS2;
+    info := FJs.UpdateStream(cfg);
+    Should(info.Config.Description).Be('compressed');
+    Should(Ord(info.Config.Compression)).Be(Ord(scS2));
   finally
     FJs.DeleteStream(stream);
   end;
@@ -4817,6 +4905,9 @@ begin
   os.Storage := ssMemory;
   os.NumReplicas := 1;
   os.ChunkSize := 0;
+  os.Compression := scS2;
+  os.Placement.Cluster := 'east';
+  os.Placement.Tags := ['obj:ssd'];
   stream := os.ToStreamConfig;
   Should(stream.Name).Be('OBJ_INVOICES');
   Should(Length(stream.Subjects)).Be(2);
@@ -4830,6 +4921,10 @@ begin
   Should(Ord(stream.Discard)).Be(Ord(sdNew));
   Should(stream.AllowRollup).BeTrue;
   Should(stream.AllowDirect).BeTrue;
+  Should(Ord(stream.Compression)).Be(Ord(scS2));
+  Should(stream.Placement.Cluster).Be('east');
+  Should(Length(stream.Placement.Tags)).Be(1);
+  Should(stream.Placement.Tags[0]).Be('obj:ssd');
   Should(os.EffectiveChunkSize).Be(NATS_OBJ_DEFAULT_CHUNK_SIZE);
 
   os.MaxBytes := 0;

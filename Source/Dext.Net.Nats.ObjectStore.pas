@@ -26,7 +26,8 @@
 {  UpdateMeta, Seal, AddLink / AddBucketLink.                               }
 {  Streaming Put/Get: TStream + PutFile/GetFile (chunked, no full TBytes).  }
 {  Get follows object links (same or other bucket); bucket links raise.     }
-{  UpdateStore maps mutable bucket fields onto STREAM.UPDATE (OBJ_*). }
+{  UpdateStore maps mutable bucket fields (incl. compression/placement) onto }
+{  STREAM.UPDATE (OBJ_*).                                              }
 {  TDextNatsObjectStoreContext wraps a TDextNatsJetStreamContext (or        }
 {  creates one from TDextNatsClient); it does not own the client.           }
 {                                                                           }
@@ -58,8 +59,6 @@ type
   /// <summary>
   ///   Configuration used to create or update an Object Store bucket (OBJ_ stream).
   ///   Maps to STREAM.CREATE / STREAM.UPDATE via <see cref="ToStreamConfig"/>.
-  ///   Compression and placement are not exposed yet (no fields on
-  ///   <see cref="TNatsStreamConfig"/>).
   /// </summary>
   TNatsObjectStoreConfig = record
     /// <summary>Bucket name (restricted-term: A-Z a-z 0-9 _ -). Becomes stream OBJ_&lt;Bucket&gt;.</summary>
@@ -76,11 +75,16 @@ type
     NumReplicas: Integer;
     /// <summary>Chunk size for Put; 0 = <see cref="NATS_OBJ_DEFAULT_CHUNK_SIZE"/>. Not a stream field.</summary>
     ChunkSize: Integer;
+    /// <summary>Maps to stream <see cref="TNatsStreamConfig.Compression"/> (e.g. <c>scS2</c>).</summary>
+    Compression: TNatsStoreCompression;
+    /// <summary>Maps to stream <see cref="TNatsStreamConfig.Placement"/> when <see cref="TNatsPlacement.IsSet"/>.</summary>
+    Placement: TNatsPlacement;
     /// <summary>Sensible defaults: file storage, 1 replica, 128 KiB chunks.</summary>
     class function CreateDefault(const ABucket: string): TNatsObjectStoreConfig; static;
     /// <summary>
     ///   Builds the OBJ_&lt;bucket&gt; stream config (subjects, discard=new, allow_rollup,
-    ///   allow_direct, description / max_bytes / max_age / storage / replicas).
+    ///   allow_direct, description / max_bytes / max_age / storage / replicas /
+    ///   compression / placement).
     /// </summary>
     function ToStreamConfig: TNatsStreamConfig;
     /// <summary>Resolved Put chunk size (default when ChunkSize &lt;= 0).</summary>
@@ -612,6 +616,7 @@ begin
   Result.Storage := ssFile;
   Result.NumReplicas := 1;
   Result.ChunkSize := NATS_OBJ_DEFAULT_CHUNK_SIZE;
+  Result.Compression := scNone;
 end;
 
 function TNatsObjectStoreConfig.EffectiveChunkSize: Integer;
@@ -644,6 +649,8 @@ begin
   Result.MaxAge := Self.MaxAge;
   Result.Storage := Self.Storage;
   Result.NumReplicas := resolvedReplicas;
+  Result.Compression := Self.Compression;
+  Result.Placement := Self.Placement;
 end;
 
 { TNatsObjectMeta }

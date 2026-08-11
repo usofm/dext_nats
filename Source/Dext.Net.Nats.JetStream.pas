@@ -57,6 +57,24 @@ type
   TNatsStreamStorage = (ssFile, ssMemory);
   /// <summary>What the server does when a stream's limits are reached.</summary>
   TNatsStreamDiscard = (sdOld, sdNew);
+  /// <summary>
+  ///   On-disk message block compression (STREAM.CREATE "compression").
+  ///   <c>scNone</c> omits the field; <c>scS2</c> emits <c>"s2"</c> (nats.go S2Compression).
+  /// </summary>
+  TNatsStoreCompression = (scNone, scS2);
+
+  /// <summary>
+  ///   Cluster placement directives (STREAM.CREATE "placement").
+  ///   Emitted only when <see cref="IsSet"/> (cluster and/or tags).
+  /// </summary>
+  TNatsPlacement = record
+    /// <summary>Target cluster name (JSON "cluster").</summary>
+    Cluster: string;
+    /// <summary>Server tags that must all match (JSON "tags").</summary>
+    Tags: TArray<string>;
+    /// <summary>True when Cluster is non-empty or Tags has at least one entry.</summary>
+    function IsSet: Boolean;
+  end;
 
   /// <summary>Consumer acknowledgement policy.</summary>
   TNatsAckPolicy = (apNone, apAll, apExplicit);
@@ -92,6 +110,10 @@ type
     SubjectDeleteMarkerTTL: Int64;
     /// <summary>When True, emits sealed (stream rejects further publishes / subject changes).</summary>
     Sealed: Boolean;
+    /// <summary>Storage compression; <c>scNone</c> omits JSON "compression".</summary>
+    Compression: TNatsStoreCompression;
+    /// <summary>Optional placement; omitted from JSON when <see cref="TNatsPlacement.IsSet"/> is False.</summary>
+    Placement: TNatsPlacement;
     /// <summary>Sensible defaults: limits retention, file storage, unlimited limits, 2 minute dedup window.</summary>
     class function CreateDefault(const AName: string; const ASubjects: TArray<string>): TNatsStreamConfig; static;
     /// <summary>Serializes the record to the JSON body expected by STREAM.CREATE / STREAM.UPDATE.</summary>
@@ -1086,6 +1108,13 @@ begin
   inherited CreateFmt('NATS JetStream API error %d (code %d): %s', [AErrCode, ACode, ADescription]);
 end;
 
+{ TNatsPlacement }
+
+function TNatsPlacement.IsSet: Boolean;
+begin
+  Result := (Cluster <> '') or (Length(Tags) > 0);
+end;
+
 { TNatsStreamConfig }
 
 class function TNatsStreamConfig.CreateDefault(const AName: string; const ASubjects: TArray<string>): TNatsStreamConfig;
@@ -1103,6 +1132,7 @@ begin
   Result.Discard := sdOld;
   Result.NumReplicas := 1;
   Result.DuplicateWindow := 120000000000;
+  Result.Compression := scNone;
 end;
 
 function TNatsStreamConfig.ToJson: string;
@@ -1204,8 +1234,75 @@ begin
     jw.WritePropertyName('sealed');
     jw.WriteBoolean(True);
   end;
+  if Compression = scS2 then
+  begin
+    jw.WritePropertyName('compression');
+    jw.WriteString('s2');
+  end;
+  if Placement.IsSet then
+  begin
+    jw.WritePropertyName('placement');
+    jw.WriteStartObject;
+    jw.WritePropertyName('cluster');
+    jw.WriteString(Placement.Cluster);
+    if Length(Placement.Tags) > 0 then
+    begin
+      jw.WritePropertyName('tags');
+      jw.WriteStartArray;
+      for i := 0 to High(Placement.Tags) do
+        jw.WriteString(Placement.Tags[i]);
+      jw.WriteEndArray;
+    end;
+    jw.WriteEndObject;
+  end;
   jw.WriteEndObject;
   Result := TEncoding.UTF8.GetString(w.ToBytes);
+end;
+
+procedure NatsJSParsePlacementObject(var AReader: TUtf8JsonReader; out APlacement: TNatsPlacement);
+var
+  tags: TArray<string>;
+begin
+  APlacement := Default(TNatsPlacement);
+  SetLength(tags, 0);
+  while AReader.Read do
+  begin
+    if AReader.TokenType = TJsonTokenType.EndObject then
+      Break;
+    if AReader.TokenType <> TJsonTokenType.PropertyName then
+      Continue;
+    if AReader.ValueSpanEquals('cluster') then
+    begin
+      if AReader.Read and (AReader.TokenType = TJsonTokenType.StringValue) then
+        APlacement.Cluster := AReader.GetString
+      else
+        NatsJSSkipValue(AReader);
+    end
+    else if AReader.ValueSpanEquals('tags') then
+    begin
+      if AReader.Read and (AReader.TokenType = TJsonTokenType.StartArray) then
+      begin
+        SetLength(tags, 0);
+        while AReader.Read do
+        begin
+          if AReader.TokenType = TJsonTokenType.EndArray then
+            Break;
+          if AReader.TokenType = TJsonTokenType.StringValue then
+          begin
+            SetLength(tags, Length(tags) + 1);
+            tags[High(tags)] := AReader.GetString;
+          end
+          else
+            NatsJSSkipValue(AReader);
+        end;
+        APlacement.Tags := tags;
+      end
+      else
+        NatsJSSkipValue(AReader);
+    end
+    else
+      NatsJSHandlePropValue(AReader);
+  end;
 end;
 
 procedure NatsJSParseStreamConfigObject(var AReader: TUtf8JsonReader; out AConfig: TNatsStreamConfig);
@@ -1222,6 +1319,7 @@ begin
   AConfig.Retention := srLimits;
   AConfig.Storage := ssFile;
   AConfig.Discard := sdOld;
+  AConfig.Compression := scNone;
   SetLength(subjects, 0);
 
   while AReader.Read do
@@ -1418,6 +1516,25 @@ begin
         else
           NatsJSSkipValue(AReader);
       end;
+    end
+    else if AReader.ValueSpanEquals('compression') then
+    begin
+      if AReader.Read and (AReader.TokenType = TJsonTokenType.StringValue) then
+      begin
+        if SameText(AReader.GetString, 's2') then
+          AConfig.Compression := scS2
+        else
+          AConfig.Compression := scNone;
+      end
+      else
+        NatsJSSkipValue(AReader);
+    end
+    else if AReader.ValueSpanEquals('placement') then
+    begin
+      if AReader.Read and (AReader.TokenType = TJsonTokenType.StartObject) then
+        NatsJSParsePlacementObject(AReader, AConfig.Placement)
+      else
+        NatsJSSkipValue(AReader);
     end
     else
       NatsJSHandlePropValue(AReader);
