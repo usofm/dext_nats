@@ -58,6 +58,7 @@
 - [x] **Shutdown / WSAEINTR 10004** — landed: dext_nats `afa22e5` (FClosing skip + clean RecvLoop join; `Disconnect_ShouldJoinThreadsCleanly`) + Dext Tcp `7061f861`.
 - [x] **Stream compression + placement** — landed: `ca3d4f5` (`TNatsStoreCompression` / `TNatsPlacement` on `TNatsStreamConfig` + Object Store map; soft-skip live S2 coverage).
 - [ ] **یادداشت معماری MQTT vs NATS** — پیش‌نویس `Dext.Net.Mqtt vs Dext.Net.Nats.md` (untracked) را پالایش و در `Docs/` ثبت کن؛ MQTT همچنان غیرهدف پیاده‌سازی است.
+- [ ] **B2B Agent / TNatsManager** — پیش‌نویس در [`NATS_B2B_AGENT_PLAN.md`](NATS_B2B_AGENT_PLAN.md) (مسیر legacy Agent + اپ جدید + امنیت RouteId)؛ پیاده‌سازی تا قطعی شدن Outbox/DB معوق.
 
 ### P1 — هم‌ترازی با nats.go (شکاف‌های اعلام‌شده)
 
