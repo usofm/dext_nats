@@ -1,7 +1,7 @@
 ﻿# برنامهٔ جامع تست — Dext.Nats (`TEST_PLAN`)
 
 > **هدف:** پوشش کامل لایهٔ پروتکل، کلاینت cleartext، JetStream (pull)، TLS، همزمانی، و مسیرهای خطا — بدون پیاده‌سازی در این سند.  
-> **وضعیت فعلی:** شکاف‌های عملی §۲.۳ / فاز T0–T5 بسته شده‌اند. suite پیش‌فرض با سرور `-js` (Unit+Integration+JetStream+KeyValue+ObjectStore+Services+DI+Observability؛ TLS/NKey soft-skip بدون env؛ Stress Explicit کنار). `DEXT_NATS_REQUIRE_LIVE=1` برای fail سخت. Fixture TLS: `Tests/tls/`؛ NKey: `Tests/nkey/`. KV: `TDextNatsKeyValueTests`؛ Object Store: Put/Get/GetResult/List/Watch*/UpdateMeta/Seal/links + streaming + ShowDeleted؛ Services: `TDextNatsServicesTests` (subject helpers + live soft-skip register/PING/endpoint). باقی‌ماندهٔ عمدی: soft-skip بدون سرور، Stress opt-in، ConnectUrls failover چندنود.  
+> **وضعیت فعلی:** شکاف‌های عملی §۲.۳ / فاز T0–T5 بسته شده‌اند. suite پیش‌فرض با سرور `-js` (Unit+Integration+JetStream+KeyValue+ObjectStore+Services+DI+Observability؛ TLS/NKey soft-skip بدون env؛ Stress Explicit کنار). `DEXT_NATS_REQUIRE_LIVE=1` برای fail سخت. Fixture TLS: `Tests/tls/`؛ NKey: `Tests/nkey/`. KV: `TDextNatsKeyValueTests` (incl. GetRevision + Compression/Placement map unit)؛ Object Store: Put/Get/GetResult/List/Watch*/UpdateMeta/Seal/links + streaming + ShowDeleted؛ Services: `TDextNatsServicesTests` (subject helpers + live soft-skip register/PING/endpoint). باقی‌ماندهٔ عمدی: soft-skip بدون سرور، Stress opt-in، ConnectUrls failover چندنود.  
 > **کامپایلر:** فقط Delphi 12 / Studio **23.0** (`dcc32`).  
 > **چارچوب:** `Dext.Testing` + `Should()`؛ فقط `Dext.Collections`.  
 > **مرجع تاریخی فازها:** `nats_complete_phased_d5d5e289.plan.md` (فاز ۱–۳ feature کامل شده؛ این سند فازهای *تست* بعدی است).
@@ -58,6 +58,7 @@
 | U-09c | `OrderedConsumerOptions_ShouldDefault` | `TNatsOrderedConsumerOptions.CreateDefault` |
 | U-10 | `JsMsg_ShouldParseAckSubjectMetadata` | `TNatsJsMsg.FromNatsMsg` از `$JS.ACK.*` |
 | U-10b | `Msg_PayloadSpan_ShouldViewOwnedBytes` / `JsMsg_PayloadSpan_ShouldViewOwnedBytes` | PERF-04 `PayloadSpan` zero-copy + lifetime (keep `TBytes`) |
+| U-11 | `KeyValueConfig_ShouldMapToStreamConfig` | KV history/direct/rollup + Compression/Placement → STREAM.CREATE JSON |
 
 #### `TDextNatsIntegrationTests` — cleartext `127.0.0.1:4222` — **~۲۵**
 

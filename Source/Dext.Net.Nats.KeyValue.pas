@@ -24,6 +24,9 @@
 {  composition and does not own its lifetime. Keys / History / Watch(All)   }
 {  use ephemeral JetStream consumers (pull for Keys/History, push for       }
 {  Watch). CAS Create/Update use Nats-Expected-Last-Subject-Sequence.       }
+{  GetRevision / TryGetRevision via STREAM.MSG.GET (includes tombstones).   }
+{  Bucket config maps Compression / Placement onto KV_* STREAM.CREATE      }
+{  (nats.go KeyValueConfig; Compression=true → scS2).                       }
 {  Per-key TTL (NATS 2.11+, ADR-48): bucket LimitMarkerTTL enables          }
 {  allow_msg_ttl + subject_delete_marker_ttl; Create/Purge accept Nats-TTL. }
 {  Watch delivers an EndOfInitial marker (nats.go nil-entry equivalent)     }
@@ -100,7 +103,15 @@ type
     LimitMarkerTTL: Int64;
     Storage: TNatsStreamStorage;
     NumReplicas: Integer;
-    /// <summary>Defaults: history=1, file storage, unlimited size, 1 replica.</summary>
+    /// <summary>
+    ///   Maps to stream <see cref="TNatsStreamConfig.Compression"/> (e.g. <c>scS2</c>).
+    ///   nats.go <c>KeyValueConfig.Compression</c> is a bool that enables S2 — use
+    ///   <c>scS2</c> here for the same effect; <c>scNone</c> omits the field.
+    /// </summary>
+    Compression: TNatsStoreCompression;
+    /// <summary>Maps to stream <see cref="TNatsStreamConfig.Placement"/> when <see cref="TNatsPlacement.IsSet"/>.</summary>
+    Placement: TNatsPlacement;
+    /// <summary>Defaults: history=1, file storage, unlimited size, 1 replica, no compression/placement.</summary>
     class function CreateDefault(const ABucket: string): TNatsKeyValueConfig; static;
     /// <summary>Maps this bucket config onto a <see cref="TNatsStreamConfig"/> for STREAM.CREATE.</summary>
     function ToStreamConfig: TNatsStreamConfig;
@@ -294,6 +305,16 @@ type
     function Get(const AKey: string): TNatsKeyValueEntry;
     /// <summary>Like Get but returns False instead of raising when the key is missing/deleted.</summary>
     function TryGet(const AKey: string; out AEntry: TNatsKeyValueEntry): Boolean;
+    /// <summary>
+    ///   Returns the entry at stream sequence <c>ARevision</c> for AKey (nats.go
+    ///   <c>GetRevision</c>). Includes DEL/PURGE markers. Raises
+    ///   <see cref="EDextNatsKeyNotFound"/> when the sequence is missing or belongs
+    ///   to another subject/key.
+    /// </summary>
+    function GetRevision(const AKey: string; ARevision: UInt64): TNatsKeyValueEntry;
+    /// <summary>Like GetRevision but returns False instead of raising when missing/mismatched.</summary>
+    function TryGetRevision(const AKey: string; ARevision: UInt64;
+      out AEntry: TNatsKeyValueEntry): Boolean;
     /// <summary>Writes a DEL marker (history retained up to bucket History).</summary>
     procedure Delete(const AKey: string);
     /// <summary>Writes a PURGE rollup marker (prior revisions removed for the key).</summary>
@@ -369,6 +390,7 @@ begin
   Result.LimitMarkerTTL := 0;
   Result.Storage := ssFile;
   Result.NumReplicas := 1;
+  Result.Compression := scNone;
 end;
 
 function TNatsKeyValueConfig.ToStreamConfig: TNatsStreamConfig;
@@ -402,6 +424,8 @@ begin
   Result.NumReplicas := NumReplicas;
   if Result.NumReplicas <= 0 then
     Result.NumReplicas := 1;
+  Result.Compression := Compression;
+  Result.Placement := Placement;
   Result.Discard := sdNew;
   Result.AllowDirect := True;
   Result.DenyDelete := True;
@@ -807,6 +831,43 @@ function TDextNatsKeyValue.Get(const AKey: string): TNatsKeyValueEntry;
 begin
   if not TryGet(AKey, Result) then
     raise EDextNatsKeyNotFound.CreateFmt('KV key not found: %s.%s', [FBucket, AKey]);
+end;
+
+function TDextNatsKeyValue.TryGetRevision(const AKey: string; ARevision: UInt64;
+  out AEntry: TNatsKeyValueEntry): Boolean;
+var
+  msg: TNatsStoredMsg;
+  expectedSubject: string;
+begin
+  AEntry := Default(TNatsKeyValueEntry);
+  ValidateKeyName(AKey);
+  if ARevision = 0 then
+    Exit(False);
+  expectedSubject := SubjectForKey(FBucket, AKey);
+  try
+    msg := FJs.GetMessage(FStreamName, ARevision);
+  except
+    on E: EDextNatsJetStreamError do
+    begin
+      { 10037 = message not found; 404 = stream/message missing }
+      if (E.ErrCode = 10037) or (E.Code = 404) then
+        Exit(False)
+      else
+        raise;
+    end;
+  end;
+  { Sequence belongs to another key/subject — treat as not found (nats.go). }
+  if not SameText(msg.Subject, expectedSubject) then
+    Exit(False);
+  AEntry := EntryFromStored(AKey, msg);
+  Result := True;
+end;
+
+function TDextNatsKeyValue.GetRevision(const AKey: string; ARevision: UInt64): TNatsKeyValueEntry;
+begin
+  if not TryGetRevision(AKey, ARevision, Result) then
+    raise EDextNatsKeyNotFound.CreateFmt(
+      'KV revision not found: %s.%s @ %s', [FBucket, AKey, UIntToStr(ARevision)]);
 end;
 
 procedure TDextNatsKeyValue.Delete(const AKey: string);

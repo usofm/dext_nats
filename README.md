@@ -12,9 +12,9 @@ Native [NATS](https://nats.io) client for the [Dext Framework](https://github.co
 | `Source/Dext.Net.Nats.NKeys.pas` | NKey seed / `.creds` parse, Ed25519 nonce signing, CONNECT `jwt`/`nkey`/`sig` |
 | `Source/Dext.Net.Nats.pas` | `TDextNatsClient` — connect, pub/sub, request/reply, reconnect, `Drain`/`DrainAsync`/`IsDraining`, TLS, NKey/JWT, optional `ILogger` / metrics |
 | `Source/Dext.Net.Nats.DependencyInjection.pas` | `AddNatsClient` / configure / config bind (`Nats` section) / `AddNatsJetStream` |
-| `Source/Dext.Net.Nats.HealthChecks.pas` | `TNatsHealthCheck` / `AddNatsHealthCheck` (Connected probe) |
+| `Source/Dext.Net.Nats.HealthChecks.pas` | `TNatsHealthCheck` / `AddNatsHealthCheck` (Connected; optional Flush via `TNatsHealthCheckOptions`) |
 | `Source/Dext.Net.Nats.JetStream.pas` | `TDextNatsJetStreamContext` — streams (`ListStreams` / `ListStreamNames`), pull/push consumers (`ListConsumers` / `ListConsumerNames`), Fetch, SubscribePush, ordered SubscribeOrdered, Ack/Nak/Term |
-| `Source/Dext.Net.Nats.KeyValue.pas` | `TDextNatsKeyValue` — JetStream KV (Put/Get/Delete/Purge, Keys, History, Watch/WatchAll, CAS Create/Update) |
+| `Source/Dext.Net.Nats.KeyValue.pas` | `TDextNatsKeyValue` — JetStream KV (Put/Get/GetRevision/Delete/Purge, Keys, History, Watch/WatchAll, CAS Create/Update; bucket Compression/Placement) |
 | `Source/Dext.Net.Nats.ObjectStore.pas` | Object Store (`CreateStore` / `UpdateStore`/`UpdateObjectStore` / `Put` / `Get` / `GetResult` / `Delete` / `List` / `Keys`, `Watch`/`WatchAll` with EndOfInitial + MetaOnly/UpdatesOnly, `UpdateMeta`, `Seal`, `AddLink` / `AddBucketLink`, streaming `Put`/`Get` via `TStream` + `PutFile`/`GetFile`, lazy `TDextNatsObjectResult`) |
 | `Source/Dext.Net.Nats.Services.pas` | NATS Services API MVP — `TDextNatsService` (`AddService` / `AddEndpoint` / `Stop`, auto `$SRV.PING\|INFO\|STATS`) |
 
@@ -249,13 +249,14 @@ AddNatsClient(Services.Unwrap,
 
 - **Logger:** set `Client.Logger` (or register `ILoggerFactory` before resolve — DI attaches category `Dext.Net.Nats`). Never logs secrets.
 - **Metrics:** set `Options.EnableMetrics := True` to also publish `nats.msgs.received|published`, `nats.reconnects`, `nats.errors`, `nats.connected` via `TMetrics`. Always available locally as `Client.Metrics`.
-- **Health:** `AddNatsHealthCheck` + `TNatsHealthCheck.CheckHealth` (Healthy when `Connected`). Web apps can map the result onto `Dext.HealthChecks.IHealthCheck`.
+- **Health:** `AddNatsHealthCheck` + `TNatsHealthCheck.CheckHealth` — default is Connected-only. Opt in to a short PING/PONG Flush with `TNatsHealthCheckOptions.CreateWithFlush` / `FlushTimeoutMs` (or `AddNatsHealthCheck(..., AOptions)`). Timeout or Flush error → Unhealthy (never raises). Web apps can map the result onto `Dext.HealthChecks.IHealthCheck`.
 
 ```delphi
 Client.Logger := LoggerFactory.CreateLogger('Dext.Net.Nats');
 Client.Options.EnableMetrics := True;
 // ...
-Check := TNatsHealthCheck.Create(Client);
+Check := TNatsHealthCheck.Create(Client); // Connected-only
+// Check := TNatsHealthCheck.Create(Client, TNatsHealthCheckOptions.CreateWithFlush(500));
 try
   Res := Check.CheckHealth;
 finally

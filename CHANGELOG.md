@@ -7,6 +7,7 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/); versioning f
 
 ### Added
 
+- **KV GetRevision + bucket Compression/Placement:** `GetRevision` / `TryGetRevision` (STREAM.MSG.GET; includes DEL/PURGE; wrong-subject → not found, nats.go parity). `TNatsKeyValueConfig.Compression` / `Placement` map onto KV_* `STREAM.CREATE` (`scS2` ≡ nats.go `Compression: true`).
 - **Opt-in throughput benchmarks:** `TDextNatsBenchmarkTests` — formal encode (`Encode_Throughput_ShouldReportOpsPerSec`) and live pub/sub (`PubSub_Throughput_ShouldReportMsgsPerSec`) harness next to `Encode_MicroBenchmark_*`; gated with Explicit + `DEXT_NATS_RUN_BENCH=1`; soft-skips without `nats-server` on the live path; prints ops/sec / msgs/sec (soft floors only — not a CI perf gate). `Encode_MicroBenchmark_PubAndCachedPing` now also prints ops/sec.
 - **Health check Flush probe (HLTH P2b):** `TNatsHealthCheckOptions` (`FlushTimeoutMs`, `CreateDefault` / `CreateWithFlush`) + `AddNatsHealthCheck(..., AOptions)`. Default remains Connected-only; when `FlushTimeoutMs > 0`, healthy = connected and short PING/PONG `Flush` within that budget (timeout/error → Unhealthy, never raises; does not fall back to `RequestTimeoutMs`).
 - **Payload `TByteSpan` view (PERF-04):** `TNatsMsg.PayloadSpan` / `TNatsJsMsg.PayloadSpan` — zero-copy view over owned `Payload: TBytes` with documented lifetime (handler / record scope; keep `Payload` or `ToBytes` to retain). Stable `TBytes` API unchanged.

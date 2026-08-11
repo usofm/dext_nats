@@ -19,10 +19,13 @@ jobs:
           set -e
           test -f Source/Dext.Net.Nats.pas
           test -f Source/Dext.Net.Nats.Protocol.pas
+          test -f Source/Dext.Net.Nats.NKeys.pas
           test -f Source/Dext.Net.Nats.JetStream.pas
           test -f Source/Dext.Net.Nats.KeyValue.pas
           test -f Source/Dext.Net.Nats.ObjectStore.pas
           test -f Source/Dext.Net.Nats.Services.pas
+          test -f Source/Dext.Net.Nats.DependencyInjection.pas
+          test -f Source/Dext.Net.Nats.HealthChecks.pas
           test -f Tests/Dext.Net.Nats.Tests.dproj
           test -f Dext.Nats.groupproj
           test -f CHANGELOG.md
@@ -32,6 +35,8 @@ jobs:
           test -f Docs/MQTT_VS_NATS.md
           grep -q '1.0.0' CHANGELOG.md
           grep -q 'Version:' README.md
+          grep -q 'FlushTimeoutMs' Source/Dext.Net.Nats.HealthChecks.pas
+          grep -q 'GetRevision' Source/Dext.Net.Nats.KeyValue.pas
 
       - name: Remind Delphi build is local
         run: |

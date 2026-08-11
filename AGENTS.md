@@ -48,9 +48,10 @@ Source/
                                 (ADR-17 TDextNatsOrderedConsumer),
                                 Ack/Nak/Term/InProgress via $JS.API.*.
   Dext.Net.Nats.KeyValue.pas    TDextNatsKeyValue: JetStream KV buckets
-                                (CreateBucket/Put/Get/Delete/Purge, Keys/ListKeys,
-                                History, Watch/WatchAll (EndOfInitial marker,
-                                MetaOnly / UpdatesOnly), CAS Create/Update,
+                                (CreateBucket/Put/Get/GetRevision/Delete/Purge,
+                                Keys/ListKeys, History, Watch/WatchAll
+                                (EndOfInitial marker, MetaOnly / UpdatesOnly),
+                                CAS Create/Update, bucket Compression/Placement,
                                 per-key TTL via LimitMarkerTTL + Create/Purge
                                 Nats-TTL; NATS 2.11+ / ADR-48). Composition over
                                 JetStream.
@@ -289,12 +290,13 @@ parsing frames anywhere else.
 - [x] Async `RequestAsync`/`FlushAsync` via `TAsyncBuilder` (roadmap SPEC-ASYNC-01);
       callback `RequestAsync` overload retained
 - [x] JetStream Key-Value (`Dext.Net.Nats.KeyValue.pas` / SPEC-KV-01):
-      CreateBucket / DeleteBucket / BucketExists / Put / Get / Delete / Purge,
-      Keys / ListKeys, History, Watch / WatchAll (push last_per_subject +
-      EndOfInitial marker via NumPending; MetaOnly / UpdatesOnly /
-      IncludeHistory / IgnoreDeletes / ResumeFromRevision options),
+      CreateBucket / DeleteBucket / BucketExists / Put / Get / GetRevision /
+      Delete / Purge, Keys / ListKeys, History, Watch / WatchAll (push
+      last_per_subject + EndOfInitial marker via NumPending; MetaOnly /
+      UpdatesOnly / IncludeHistory / IgnoreDeletes / ResumeFromRevision),
       CAS Create / Update (`Nats-Expected-Last-Subject-Sequence`),
-      per-key TTL (`LimitMarkerTTL` + `Create`/`Purge` with `Nats-TTL`; NATS 2.11+)
+      bucket `Compression` / `Placement`, per-key TTL (`LimitMarkerTTL` +
+      `Create`/`Purge` with `Nats-TTL`; NATS 2.11+)
 - [x] Release **1.0.0** — `CHANGELOG.md`, README version line, git tag `v1.0.0`
 - [x] NATS Services API MVP (`Dext.Net.Nats.Services.pas`): AddService /
       AddEndpoint / Stop / Reset, `$SRV.PING|INFO|STATS`, Respond /

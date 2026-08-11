@@ -73,13 +73,14 @@
 - [x] **Versioning** — `CHANGELOG.md` + semver **1.0.0** + git tag `v1.0.0` (local; push tag when publishing).
 - [x] **CI** — `.github/workflows/ci.yml` structure checks on hosted runners; full Delphi suite remains **local / self-hosted** (reproduce commands in README). Live/`DEXT_NATS_REQUIRE_LIVE` not in hosted CI.
 - [x] **پوشش تست باز از TEST_PLAN** — صف/headers/reconnect/outbox، JS Nak/Term/InProgress، stress Explicit، و gapهای عملی §۲.۳ در suite بسته شده‌اند (live همچنان soft-skip بدون سرور؛ Stress/`Explicit` با `DEXT_NATS_RUN_STRESS=1`؛ TLS/NKey env-gated). ConnectUrls failover چندسروره هنوز بدون تست یکپارچه است.
-- [ ] **Push / publish ریلیز** — پکیج یا subtree برای مصرف‌کننده‌های Dext؛ `git push` + `git push --tags` وقتی آمادهٔ انتشار؛ بدون force-push به `main`
+- [ ] **Push / publish ریلیز** — پکیج یا subtree برای مصرف‌کننده‌های Dext؛ `git push` + `git push --tags` وقتی آمادهٔ انتشار؛ بدون force-push به `main`.
+  **Local note (2026-08-11):** `main` is ahead of `origin/main` with post-1.0 commits; tag `v1.0.0` exists **locally** (at release commit) and must not be force-moved. Agents must **not** push until the user explicitly says push / push tags.
 
 ### P3 — بعد از 1.0 (اختیاری)
 
 - [x] Payload view با `TByteSpan` عمر مشخص (PERF-04 اختیاری از roadmap) — `TNatsMsg.PayloadSpan` / `TNatsJsMsg.PayloadSpan`؛ `Payload: TBytes` پایدار می‌ماند
 - [x] Health check عمیق‌تر با `Flush` کوتاه (HLTH P2b) — `TNatsHealthCheckOptions.FlushTimeoutMs` / `CreateWithFlush`; default Connected-only
-- [ ] KV/OS parity بیشتر با nats.go در صورت ADR جدید سرور
+- [ ] **KV/OS parity (remaining vs nats.go)** — landed recently: KV `Compression`/`Placement` on `TNatsKeyValueConfig`, `GetRevision`/`TryGetRevision`. Still deferred (no ADR required; choose explicitly later): `PurgeDeletes`, `WatchFiltered` / multi-filter Keys, `Mirror`/`Sources`/`RePublish`, bucket `Config()` round-trip, OS Watch `IgnoreDeletes` / IncludeHistory, full micro Services gaps (already listed under P1 Services).
 - [x] Benchmark رسمی throughput کنار `Encode_MicroBenchmark_*` — `TDextNatsBenchmarkTests` (`Encode_Throughput_*` / `PubSub_Throughput_*`); Explicit + `DEXT_NATS_RUN_BENCH=1`; live soft-skip بدون سرور؛ گزارش ops/sec و msgs/sec (نه CI gate)
 
 ---

@@ -349,6 +349,10 @@ type
     procedure Keys_ShouldListLiveKeysOnly;
     [Test, Category('JetStream'), Category('KeyValue')]
     procedure History_ShouldReturnRevisions;
+    [Test, Category('JetStream'), Category('KeyValue')]
+    procedure GetRevision_ShouldReturnHistoricalPutAndTombstone;
+    [Test, Category('JetStream'), Category('KeyValue'), Category('Negative')]
+    procedure GetRevision_WrongKeyOrMissing_ShouldRaise;
     [Test, Category('Unit'), Category('KeyValue')]
     procedure Entry_EndOfInitialMarker_ShouldNotBePut;
     [Test, Category('Unit'), Category('KeyValue')]
@@ -1726,6 +1730,7 @@ procedure TDextNatsProtocolTests.KeyValueConfig_ShouldMapToStreamConfig;
 var
   kv: TNatsKeyValueConfig;
   stream: TNatsStreamConfig;
+  json: string;
 begin
   kv := TNatsKeyValueConfig.CreateDefault('INVENTORY');
   kv.History := 10;
@@ -1742,6 +1747,21 @@ begin
   Should(stream.SubjectDeleteMarkerTTL).Be(0);
   Should(Ord(stream.Discard)).Be(Ord(sdNew));
   Should(Ord(stream.Storage)).Be(Ord(ssMemory));
+  Should(Ord(stream.Compression)).Be(Ord(scNone));
+  Should(stream.Placement.IsSet).BeFalse;
+  json := stream.ToJson;
+  Should(json.Contains('"compression"')).BeFalse;
+  Should(json.Contains('"placement"')).BeFalse;
+
+  kv.Compression := scS2;
+  kv.Placement.Cluster := 'east';
+  kv.Placement.Tags := ['kv:hot'];
+  stream := kv.ToStreamConfig;
+  Should(Ord(stream.Compression)).Be(Ord(scS2));
+  Should(stream.Placement.IsSet).BeTrue;
+  json := stream.ToJson;
+  Should(json.Contains('"compression":"s2"')).BeTrue;
+  Should(json.Contains('"placement":{"cluster":"east","tags":["kv:hot"]}')).BeTrue;
 end;
 
 procedure TDextNatsProtocolTests.KeyValueConfig_LimitMarkerTTL_ShouldEnableMsgTTL;
@@ -3588,6 +3608,86 @@ begin
     Should(hist[2].AsString).Be('three');
     Should(hist[0].IsPut).BeTrue;
     Should(Int64(hist[2].Revision) > Int64(hist[0].Revision)).BeTrue;
+  finally
+    kv.Free;
+    TDextNatsKeyValue.DeleteBucket(FJs, bucket);
+  end;
+end;
+
+procedure TDextNatsKeyValueTests.GetRevision_ShouldReturnHistoricalPutAndTombstone;
+var
+  bucket: string;
+  cfg: TNatsKeyValueConfig;
+  kv: TDextNatsKeyValue;
+  rev1, rev2, delRev: UInt64;
+  entry: TNatsKeyValueEntry;
+  hist: IList<TNatsKeyValueEntry>;
+begin
+  if not EnsureJetStreamOrFail then
+    Exit;
+
+  bucket := UniqueBucket('DEXTKVREV');
+  cfg := TNatsKeyValueConfig.CreateDefault(bucket);
+  cfg.Storage := ssMemory;
+  cfg.History := 5;
+  kv := TDextNatsKeyValue.CreateBucket(FJs, cfg);
+  try
+    rev1 := kv.Put('item', 'alpha');
+    rev2 := kv.Put('item', 'beta');
+    entry := kv.GetRevision('item', rev1);
+    Should(entry.AsString).Be('alpha');
+    Should(entry.Revision).Be(rev1);
+    Should(entry.IsPut).BeTrue;
+    entry := kv.GetRevision('item', rev2);
+    Should(entry.AsString).Be('beta');
+    Should(entry.Revision).Be(rev2);
+    kv.Delete('item');
+    Should(kv.TryGet('item', entry)).BeFalse;
+    { Historical PUT remains readable after delete (unlike Get). }
+    Should(kv.TryGetRevision('item', rev2, entry)).BeTrue;
+    Should(entry.AsString).Be('beta');
+    hist := kv.History('item');
+    Should(hist.Count >= 3).BeTrue;
+    delRev := hist[hist.Count - 1].Revision;
+    entry := kv.GetRevision('item', delRev);
+    Should(entry.IsPut).BeFalse;
+    Should(Ord(entry.Operation)).Be(Ord(kvoDelete));
+  finally
+    kv.Free;
+    TDextNatsKeyValue.DeleteBucket(FJs, bucket);
+  end;
+end;
+
+procedure TDextNatsKeyValueTests.GetRevision_WrongKeyOrMissing_ShouldRaise;
+var
+  bucket: string;
+  cfg: TNatsKeyValueConfig;
+  kv: TDextNatsKeyValue;
+  rev: UInt64;
+  entry: TNatsKeyValueEntry;
+begin
+  if not EnsureJetStreamOrFail then
+    Exit;
+
+  bucket := UniqueBucket('DEXTKVREVN');
+  cfg := TNatsKeyValueConfig.CreateDefault(bucket);
+  cfg.Storage := ssMemory;
+  cfg.History := 5;
+  kv := TDextNatsKeyValue.CreateBucket(FJs, cfg);
+  try
+    rev := kv.Put('alpha', 'one');
+    kv.Put('beta', 'two');
+    Should(
+      procedure
+      begin
+        kv.GetRevision('beta', rev);
+      end).Throw(EDextNatsKeyNotFound);
+    Should(kv.TryGetRevision('alpha', rev + 999999, entry)).BeFalse;
+    Should(
+      procedure
+      begin
+        kv.GetRevision('alpha', 0);
+      end).Throw(EDextNatsKeyNotFound);
   finally
     kv.Free;
     TDextNatsKeyValue.DeleteBucket(FJs, bucket);
