@@ -19,7 +19,8 @@
 {***************************************************************************}
 {                                                                           }
 {  JetStream layer for the NATS client. Stream admin (create/update/info/   }
-{  delete, ListStreams / ListStreamNames), dedup'd publish with a           }
+{  delete, PurgeStream / STREAM.PURGE, ListStreams / ListStreamNames),      }
+{  dedup'd publish with a                                                   }
 {  Nats-Msg-Id header, pull-consumer admin (create/info/delete,             }
 {  ListConsumers / ListConsumerNames), Fetch, push SubscribePush on         }
 {  deliver_subject, ordered SubscribeOrdered (ADR-17 push helper), and      }
@@ -132,6 +133,28 @@ type
     /// <summary>Parses a stream_create_response/stream_info_response JSON payload.
     /// Raises EDextNatsJetStreamError if the payload carries an "error" object.</summary>
     class function Parse(const AJson: string): TNatsStreamInfo; static;
+  end;
+
+  /// <summary>
+  ///   Body for <c>$JS.API.STREAM.PURGE.&lt;stream&gt;</c> (nats.go
+  ///   <c>StreamPurgeRequest</c> / <c>PurgeStream</c>). Empty fields are omitted
+  ///   from JSON; an all-default request purges the entire stream.
+  /// </summary>
+  TNatsStreamPurgeRequest = record
+    /// <summary>Optional subject filter (wildcards allowed). Empty = whole stream.</summary>
+    Subject: string;
+    /// <summary>Purge messages with sequence below this value (exclusive). 0 = omit.</summary>
+    Sequence: UInt64;
+    /// <summary>
+    ///   Keep this many trailing messages for the filtered subject (or stream).
+    ///   0 = omit (purge matching messages). Used by KV <c>PurgeDeletes</c> Keep=1
+    ///   for young delete markers.
+    /// </summary>
+    Keep: UInt64;
+    /// <summary>All fields empty / zero (full stream purge).</summary>
+    class function CreateDefault: TNatsStreamPurgeRequest; static;
+    /// <summary>Serializes optional subject / seq / keep fields.</summary>
+    function ToJson: string;
   end;
 
   /// <summary>Configuration used to create a JetStream consumer (pull by default).</summary>
@@ -436,6 +459,15 @@ type
     function StreamExists(const AStreamName: string): Boolean;
     /// <summary>Deletes AStreamName and all of its messages. Raises EDextNatsJetStreamError on failure.</summary>
     function DeleteStream(const AStreamName: string): Boolean;
+    /// <summary>
+    ///   Purges messages from AStreamName via <c>$JS.API.STREAM.PURGE</c>.
+    ///   Pass <see cref="TNatsStreamPurgeRequest.CreateDefault"/> for a full purge,
+    ///   or set Subject / Sequence / Keep for a filtered purge.
+    /// </summary>
+    function PurgeStream(const AStreamName: string;
+      const ARequest: TNatsStreamPurgeRequest): Boolean; overload;
+    /// <summary>Full-stream purge (<c>{}</c> body).</summary>
+    function PurgeStream(const AStreamName: string): Boolean; overload;
     /// <summary>
     ///   Lists all stream names via paged <c>$JS.API.STREAM.NAMES</c>.
     ///   When ASubjectFilter is non-empty, only streams matching that subject are returned.
@@ -1713,6 +1745,41 @@ begin
   end;
 end;
 
+{ TNatsStreamPurgeRequest }
+
+class function TNatsStreamPurgeRequest.CreateDefault: TNatsStreamPurgeRequest;
+begin
+  Result := Default(TNatsStreamPurgeRequest);
+end;
+
+function TNatsStreamPurgeRequest.ToJson: string;
+var
+  w: TJsByteWriter;
+  jw: TUtf8JsonWriter;
+begin
+  w.Reset;
+  jw := TUtf8JsonWriter.Create(@w, JsUtf8WriteToByteWriter, False);
+  jw.WriteStartObject;
+  if Subject <> '' then
+  begin
+    jw.WritePropertyName('subject');
+    jw.WriteString(Subject);
+  end;
+  if Sequence > 0 then
+  begin
+    jw.WritePropertyName('seq');
+    jw.WriteNumber(Int64(Sequence));
+  end;
+  if Keep > 0 then
+  begin
+    jw.WritePropertyName('keep');
+    jw.WriteNumber(Int64(Keep));
+  end;
+  jw.WriteEndObject;
+  jw.Flush;
+  Result := TEncoding.UTF8.GetString(w.ToBytes);
+end;
+
 { TNatsConsumerConfig }
 
 class function TNatsConsumerConfig.CreateDefault(const ADurableName, AFilterSubject: string): TNatsConsumerConfig;
@@ -2194,6 +2261,20 @@ end;
 function TDextNatsJetStreamContext.DeleteStream(const AStreamName: string): Boolean;
 begin
   Result := NatsJSParseSuccessResponse(ApiRequest('STREAM.DELETE.' + AStreamName, '{}'));
+end;
+
+function TDextNatsJetStreamContext.PurgeStream(const AStreamName: string;
+  const ARequest: TNatsStreamPurgeRequest): Boolean;
+begin
+  if AStreamName = '' then
+    raise EDextNatsJetStreamError.Create('PurgeStream requires a stream name');
+  Result := NatsJSParseSuccessResponse(
+    ApiRequest('STREAM.PURGE.' + AStreamName, ARequest.ToJson));
+end;
+
+function TDextNatsJetStreamContext.PurgeStream(const AStreamName: string): Boolean;
+begin
+  Result := PurgeStream(AStreamName, TNatsStreamPurgeRequest.CreateDefault);
 end;
 
 function TDextNatsJetStreamContext.ListStreamNames(const ASubjectFilter: string): IList<string>;

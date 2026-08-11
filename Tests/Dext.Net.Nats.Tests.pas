@@ -174,6 +174,8 @@ type
     [Test, Category('Unit')]
     procedure StreamConfig_ShouldSerializeCompressionAndPlacement;
     [Test, Category('Unit')]
+    procedure StreamPurgeRequest_ShouldSerializeOptionalFields;
+    [Test, Category('Unit')]
     procedure StreamInfo_ShouldParseCompressionAndPlacement;
     [Test, Category('Unit')]
     procedure KeyValueConfig_ShouldMapToStreamConfig;
@@ -342,6 +344,8 @@ type
     [Test, Category('JetStream'), Category('KeyValue')]
     procedure Bucket_Purge_ShouldHideKey;
     [Test, Category('JetStream'), Category('KeyValue')]
+    procedure PurgeDeletes_ShouldRemoveMarkersWhenForced;
+    [Test, Category('JetStream'), Category('KeyValue')]
     procedure BucketExists_Missing_ShouldBeFalse;
     [Test, Category('JetStream'), Category('KeyValue'), Category('Negative')]
     procedure Get_MissingKey_ShouldRaise;
@@ -359,6 +363,8 @@ type
     procedure WatchOptions_ShouldDefaultFalse;
     [Test, Category('Unit'), Category('KeyValue'), Category('Negative')]
     procedure WatchOptions_IncludeHistoryWithUpdatesOnly_ShouldRaise;
+    [Test, Category('Unit'), Category('KeyValue')]
+    procedure PurgeDeletesOptions_ShouldDefaultZero;
     [Test, Category('JetStream'), Category('KeyValue')]
     procedure WatchAll_ShouldDeliverCurrentAndUpdates;
     [Test, Category('JetStream'), Category('KeyValue')]
@@ -550,6 +556,8 @@ type
     procedure ObjectInfo_EndOfInitialMarker_ShouldBeEmpty;
     [Test, Category('Unit'), Category('ObjectStore')]
     procedure WatchOptions_ShouldDefaultFalse;
+    [Test, Category('Unit'), Category('ObjectStore'), Category('Negative')]
+    procedure WatchOptions_IncludeHistoryWithUpdatesOnly_ShouldRaise;
     [Test, Category('Unit'), Category('ObjectStore')]
     procedure GetOptions_ShouldDefaultShowDeletedFalse;
     [Test, Category('Unit'), Category('ObjectStore')]
@@ -592,6 +600,10 @@ type
     procedure WatchAll_UpdatesOnly_ShouldSkipInitialAndMarker;
     [Test, Category('JetStream'), Category('ObjectStore')]
     procedure WatchAll_MetaOnly_ShouldOmitPayload;
+    [Test, Category('JetStream'), Category('ObjectStore')]
+    procedure WatchAll_IgnoreDeletes_ShouldSkipDeleted;
+    [Test, Category('JetStream'), Category('ObjectStore')]
+    procedure WatchAll_IncludeHistory_ShouldReplayMeta;
     [Test, Category('JetStream'), Category('ObjectStore')]
     procedure UpdateMeta_ShouldChangeDescriptionHeadersAndRename;
     [Test, Category('JetStream'), Category('ObjectStore'), Category('Negative')]
@@ -1701,6 +1713,29 @@ begin
   Should(json.Contains('"compression":"s2"')).BeTrue;
   Should(json.Contains('"placement":{"cluster":"east","tags":["region:us-east","disk:ssd"]}')).BeTrue;
   Should(cfg.Placement.IsSet).BeTrue;
+end;
+
+procedure TDextNatsProtocolTests.StreamPurgeRequest_ShouldSerializeOptionalFields;
+var
+  req: TNatsStreamPurgeRequest;
+  json: string;
+begin
+  req := TNatsStreamPurgeRequest.CreateDefault;
+  json := req.ToJson;
+  Should(json).Be('{}');
+
+  req.Subject := '$KV.DEMO.gone';
+  json := req.ToJson;
+  Should(json.Contains('"subject":"$KV.DEMO.gone"')).BeTrue;
+  Should(json.Contains('"keep"')).BeFalse;
+  Should(json.Contains('"seq"')).BeFalse;
+
+  req.Keep := 1;
+  req.Sequence := 42;
+  json := req.ToJson;
+  Should(json.Contains('"subject":"$KV.DEMO.gone"')).BeTrue;
+  Should(json.Contains('"keep":1')).BeTrue;
+  Should(json.Contains('"seq":42')).BeTrue;
 end;
 
 procedure TDextNatsProtocolTests.StreamInfo_ShouldParseCompressionAndPlacement;
@@ -3508,6 +3543,46 @@ begin
   end;
 end;
 
+procedure TDextNatsKeyValueTests.PurgeDeletes_ShouldRemoveMarkersWhenForced;
+var
+  bucket: string;
+  cfg: TNatsKeyValueConfig;
+  kv: TDextNatsKeyValue;
+  opts: TNatsKeyValuePurgeDeletesOptions;
+  hist: IList<TNatsKeyValueEntry>;
+  entry: TNatsKeyValueEntry;
+begin
+  if not EnsureJetStreamOrFail then
+    Exit;
+
+  bucket := UniqueBucket('DEXTKVPD');
+  cfg := TNatsKeyValueConfig.CreateDefault(bucket);
+  cfg.Storage := ssMemory;
+  cfg.History := 5;
+  kv := TDextNatsKeyValue.CreateBucket(FJs, cfg);
+  try
+    kv.Put('keep', '1');
+    kv.Put('gone', '2');
+    kv.Delete('gone');
+    hist := kv.History('gone');
+    Should(hist.Count > 0).BeTrue;
+
+    opts := TNatsKeyValuePurgeDeletesOptions.CreateDefault;
+    { Negative = remove all markers regardless of age (nats.go). }
+    opts.DeleteMarkersOlderThan := -1;
+    kv.PurgeDeletes(opts);
+
+    Should(kv.TryGet('keep', entry)).BeTrue;
+    Should(entry.AsString).Be('1');
+    Should(kv.TryGet('gone', entry)).BeFalse;
+    hist := kv.History('gone');
+    Should(hist.Count).Be(0);
+  finally
+    kv.Free;
+    TDextNatsKeyValue.DeleteBucket(FJs, bucket);
+  end;
+end;
+
 procedure TDextNatsKeyValueTests.BucketExists_Missing_ShouldBeFalse;
 begin
   if not EnsureJetStreamOrFail then
@@ -3734,6 +3809,16 @@ begin
       raised := True;
   end;
   Should(raised).BeTrue;
+end;
+
+procedure TDextNatsKeyValueTests.PurgeDeletesOptions_ShouldDefaultZero;
+var
+  opts: TNatsKeyValuePurgeDeletesOptions;
+begin
+  opts := TNatsKeyValuePurgeDeletesOptions.CreateDefault;
+  Should(opts.DeleteMarkersOlderThan).Be(0);
+  Should(NATS_KV_DEFAULT_PURGE_DELETES_OLDER_THAN_NANOS >
+    NATS_KV_MIN_TTL_NANOS).BeTrue;
 end;
 
 procedure TDextNatsKeyValueTests.WatchAll_ShouldDeliverCurrentAndUpdates;
@@ -5847,6 +5932,26 @@ begin
   opts := TNatsObjectStoreWatchOptions.CreateDefault;
   Should(opts.MetaOnly).BeFalse;
   Should(opts.UpdatesOnly).BeFalse;
+  Should(opts.IncludeHistory).BeFalse;
+  Should(opts.IgnoreDeletes).BeFalse;
+end;
+
+procedure TDextNatsObjectStoreTests.WatchOptions_IncludeHistoryWithUpdatesOnly_ShouldRaise;
+var
+  opts: TNatsObjectStoreWatchOptions;
+  raised: Boolean;
+begin
+  opts := TNatsObjectStoreWatchOptions.CreateDefault;
+  opts.IncludeHistory := True;
+  opts.UpdatesOnly := True;
+  raised := False;
+  try
+    opts.Validate;
+  except
+    on E: EDextNatsObjectStoreError do
+      raised := True;
+  end;
+  Should(raised).BeTrue;
 end;
 
 procedure TDextNatsObjectStoreTests.GetOptions_ShouldDefaultShowDeletedFalse;
@@ -6729,6 +6834,164 @@ begin
     finally
       lock.Leave;
     end;
+  finally
+    if watcher <> nil then
+      watcher.Free;
+    gotMarker.Free;
+    lock.Free;
+    store.Free;
+    FOs.DeleteStore(bucket);
+  end;
+end;
+
+procedure TDextNatsObjectStoreTests.WatchAll_IgnoreDeletes_ShouldSkipDeleted;
+var
+  cfg: TNatsObjectStoreConfig;
+  store: TDextNatsObjectStore;
+  watcher: TDextNatsObjectStoreWatcher;
+  opts: TNatsObjectStoreWatchOptions;
+  bucket: string;
+  lock: TCriticalSection;
+  gotNames: IList<string>;
+  gotMarker, gotLiveDel: TEvent;
+  i: Integer;
+  sawGone: Boolean;
+begin
+  if not EnsureJetStreamOrFail then
+    Exit;
+
+  bucket := UniqueBucket('DEXTOBJID');
+  cfg := TNatsObjectStoreConfig.CreateDefault(bucket);
+  cfg.Storage := ssMemory;
+  store := FOs.CreateStore(cfg);
+  lock := TCriticalSection.Create;
+  gotNames := TCollections.CreateList<string>;
+  gotMarker := TEvent.Create(nil, True, False, '');
+  gotLiveDel := TEvent.Create(nil, True, False, '');
+  watcher := nil;
+  try
+    store.Put('keep.bin', TEncoding.UTF8.GetBytes('1'));
+    store.Put('gone.bin', TEncoding.UTF8.GetBytes('2'));
+    store.Delete('gone.bin');
+    opts := TNatsObjectStoreWatchOptions.CreateDefault;
+    opts.IgnoreDeletes := True;
+
+    watcher := store.WatchAll(
+      procedure(const AInfo: TNatsObjectInfo)
+      begin
+        lock.Enter;
+        try
+          if AInfo.IsEndOfInitial then
+            gotMarker.SetEvent
+          else if AInfo.Deleted then
+          begin
+            gotNames.Add('DEL:' + AInfo.Name);
+            gotLiveDel.SetEvent;
+          end
+          else if AInfo.Name <> '' then
+            gotNames.Add('PUT:' + AInfo.Name);
+        finally
+          lock.Leave;
+        end;
+      end,
+      opts);
+
+    Should(gotMarker.WaitFor(5000) = wrSignaled).BeTrue;
+    Should(watcher.InitialDone).BeTrue;
+    store.Delete('keep.bin');
+    Should(gotLiveDel.WaitFor(800) = wrTimeout).BeTrue;
+
+    sawGone := False;
+    lock.Enter;
+    try
+      for i := 0 to gotNames.Count - 1 do
+      begin
+        if Pos('gone.bin', gotNames[i]) > 0 then
+          sawGone := True;
+        if gotNames[i] = 'PUT:keep.bin' then
+          Break;
+      end;
+      Should(gotNames.IndexOf('PUT:keep.bin') >= 0).BeTrue;
+    finally
+      lock.Leave;
+    end;
+    Should(sawGone).BeFalse;
+  finally
+    if watcher <> nil then
+      watcher.Free;
+    gotMarker.Free;
+    gotLiveDel.Free;
+    lock.Free;
+    store.Free;
+    FOs.DeleteStore(bucket);
+  end;
+end;
+
+procedure TDextNatsObjectStoreTests.WatchAll_IncludeHistory_ShouldReplayMeta;
+var
+  cfg: TNatsObjectStoreConfig;
+  store: TDextNatsObjectStore;
+  watcher: TDextNatsObjectStoreWatcher;
+  opts: TNatsObjectStoreWatchOptions;
+  bucket: string;
+  lock: TCriticalSection;
+  gotNames: IList<string>;
+  gotMarker: TEvent;
+  sawA, sawB: Boolean;
+  i: Integer;
+begin
+  if not EnsureJetStreamOrFail then
+    Exit;
+
+  { Object Store meta uses subject rollup, so IncludeHistory rarely sees multiple
+    revisions per object — still exercise deliver_policy=all + EndOfInitial. }
+  bucket := UniqueBucket('DEXTOBJIH');
+  cfg := TNatsObjectStoreConfig.CreateDefault(bucket);
+  cfg.Storage := ssMemory;
+  store := FOs.CreateStore(cfg);
+  lock := TCriticalSection.Create;
+  gotNames := TCollections.CreateList<string>;
+  gotMarker := TEvent.Create(nil, True, False, '');
+  watcher := nil;
+  try
+    store.Put('a.bin', TEncoding.UTF8.GetBytes('a'));
+    store.Put('b.bin', TEncoding.UTF8.GetBytes('b'));
+    opts := TNatsObjectStoreWatchOptions.CreateDefault;
+    opts.IncludeHistory := True;
+
+    watcher := store.WatchAll(
+      procedure(const AInfo: TNatsObjectInfo)
+      begin
+        lock.Enter;
+        try
+          if AInfo.IsEndOfInitial then
+            gotMarker.SetEvent
+          else if (not AInfo.Deleted) and (AInfo.Name <> '') then
+            gotNames.Add(AInfo.Name);
+        finally
+          lock.Leave;
+        end;
+      end,
+      opts);
+
+    Should(gotMarker.WaitFor(5000) = wrSignaled).BeTrue;
+    Should(watcher.InitialDone).BeTrue;
+    sawA := False;
+    sawB := False;
+    lock.Enter;
+    try
+      for i := 0 to gotNames.Count - 1 do
+      begin
+        if gotNames[i] = 'a.bin' then
+          sawA := True;
+        if gotNames[i] = 'b.bin' then
+          sawB := True;
+      end;
+    finally
+      lock.Leave;
+    end;
+    Should(sawA).BeTrue;
+    Should(sawB).BeTrue;
   finally
     if watcher <> nil then
       watcher.Free;

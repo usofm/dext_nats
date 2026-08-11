@@ -7,6 +7,8 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/); versioning f
 
 ### Added
 
+- **KV PurgeDeletes + JetStream STREAM.PURGE:** `TDextNatsJetStreamContext.PurgeStream` / `TNatsStreamPurgeRequest` (`subject` / `seq` / `keep`). KV `PurgeDeletes` / `TNatsKeyValuePurgeDeletesOptions.DeleteMarkersOlderThan` (0 → 30m default, negative → remove all markers; nats.go parity).
+- **Object Store Watch IgnoreDeletes / IncludeHistory:** `TNatsObjectStoreWatchOptions` gains `IgnoreDeletes` (skip `Deleted` meta, still counts toward EndOfInitial) and `IncludeHistory` (`deliver_policy=all`; conflicts with `UpdatesOnly`).
 - **KV GetRevision + bucket Compression/Placement:** `GetRevision` / `TryGetRevision` (STREAM.MSG.GET; includes DEL/PURGE; wrong-subject → not found, nats.go parity). `TNatsKeyValueConfig.Compression` / `Placement` map onto KV_* `STREAM.CREATE` (`scS2` ≡ nats.go `Compression: true`).
 - **Opt-in throughput benchmarks:** `TDextNatsBenchmarkTests` — formal encode (`Encode_Throughput_ShouldReportOpsPerSec`) and live pub/sub (`PubSub_Throughput_ShouldReportMsgsPerSec`) harness next to `Encode_MicroBenchmark_*`; gated with Explicit + `DEXT_NATS_RUN_BENCH=1`; soft-skips without `nats-server` on the live path; prints ops/sec / msgs/sec (soft floors only — not a CI perf gate). `Encode_MicroBenchmark_PubAndCachedPing` now also prints ops/sec.
 - **Health check Flush probe (HLTH P2b):** `TNatsHealthCheckOptions` (`FlushTimeoutMs`, `CreateDefault` / `CreateWithFlush`) + `AddNatsHealthCheck(..., AOptions)`. Default remains Connected-only; when `FlushTimeoutMs > 0`, healthy = connected and short PING/PONG `Flush` within that budget (timeout/error → Unhealthy, never raises; does not fall back to `RequestTimeoutMs`).

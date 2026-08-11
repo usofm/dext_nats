@@ -40,17 +40,18 @@ Source/
                                 TNatsHealthCheckOptions.FlushTimeoutMs;
                                 Web-free — map to IHealthCheck in apps).
   Dext.Net.Nats.JetStream.pas   TDextNatsJetStreamContext: stream admin
-                                (create/update/info/delete, ListStreams /
-                                ListStreamNames), consumer list
-                                (ListConsumers / ListConsumerNames),
-                                dedup'd publish, pull Fetch + push
-                                SubscribePush, ordered SubscribeOrdered
+                                (create/update/info/delete, PurgeStream /
+                                STREAM.PURGE, ListStreams / ListStreamNames),
+                                consumer list (ListConsumers /
+                                ListConsumerNames), dedup'd publish, pull Fetch
+                                + push SubscribePush, ordered SubscribeOrdered
                                 (ADR-17 TDextNatsOrderedConsumer),
                                 Ack/Nak/Term/InProgress via $JS.API.*.
   Dext.Net.Nats.KeyValue.pas    TDextNatsKeyValue: JetStream KV buckets
-                                (CreateBucket/Put/Get/GetRevision/Delete/Purge,
-                                Keys/ListKeys, History, Watch/WatchAll
-                                (EndOfInitial marker, MetaOnly / UpdatesOnly),
+                                (CreateBucket/Put/Get/GetRevision/Delete/Purge /
+                                PurgeDeletes, Keys/ListKeys, History,
+                                Watch/WatchAll (EndOfInitial marker, MetaOnly /
+                                UpdatesOnly / IncludeHistory / IgnoreDeletes),
                                 CAS Create/Update, bucket Compression/Placement,
                                 per-key TTL via LimitMarkerTTL + Create/Purge
                                 Nats-TTL; NATS 2.11+ / ADR-48). Composition over
@@ -60,8 +61,9 @@ Source/
                                 UpdateStore/UpdateObjectStore / DeleteStore /
                                 Put / Get / Delete / List / Keys,
                                 Watch/WatchAll (EndOfInitial marker, MetaOnly /
-                                UpdatesOnly), UpdateMeta, Seal, AddLink /
-                                AddBucketLink on OBJ_ / $O.<bucket>.{C,M}.*).
+                                UpdatesOnly / IncludeHistory / IgnoreDeletes),
+                                UpdateMeta, Seal, AddLink / AddBucketLink on
+                                OBJ_ / $O.<bucket>.{C,M}.*).
                                 Streaming Put/Get (TStream, PutFile/GetFile,
                                 Put with TNatsObjectMeta); Get follows object
                                 links; bucket links raise. Composition over
@@ -229,9 +231,9 @@ parsing frames anywhere else.
 - [x] Client (`Dext.Net.Nats.pas`): connect, pub/sub, request/reply, reconnect,
       keepalive, Drain/DrainAsync/IsDraining — now using `Dext.Collections` throughout
 - [x] JetStream (`Dext.Net.Nats.JetStream.pas`): stream admin
- (create/update/info/delete, `ListStreams` / `ListStreamNames` via
- `$JS.API.STREAM.LIST` / `STREAM.NAMES`; stream config includes
- `compression` / `placement`), consumer admin including
+ (create/update/info/delete, `PurgeStream` / `$JS.API.STREAM.PURGE`,
+ `ListStreams` / `ListStreamNames` via `$JS.API.STREAM.LIST` / `STREAM.NAMES`;
+ stream config includes `compression` / `placement`), consumer admin including
  `ListConsumers` / `ListConsumerNames` (`CONSUMER.LIST` / `CONSUMER.NAMES`),
  dedup'd publish with a `Nats-Msg-Id` header, Fetch, Ack/Nak/Term/InProgress,
  push `SubscribePush` on `deliver_subject`, and ordered `SubscribeOrdered`
@@ -243,7 +245,8 @@ parsing frames anywhere else.
       ListObjects / Keys (meta filter `$O.<bucket>.M.>`, `last_per_subject`),
       Watch / WatchAll (push `last_per_subject` on meta subjects + EndOfInitial
       marker via NumPending; `TNatsObjectStoreWatchOptions.MetaOnly` /
-      `UpdatesOnly`; `Watcher.InitialDone`), UpdateMeta (name / description /
+      `UpdatesOnly` / `IncludeHistory` / `IgnoreDeletes`; `Watcher.InitialDone`),
+      UpdateMeta (name / description /
       headers / metadata; no chunk rewrite), Seal (`config.sealed` on OBJ_
       stream), AddLink / AddBucketLink (`options.link`; Get follows object links
       like nats.go, bucket links raise; GetInfo surfaces link meta without
@@ -291,12 +294,12 @@ parsing frames anywhere else.
       callback `RequestAsync` overload retained
 - [x] JetStream Key-Value (`Dext.Net.Nats.KeyValue.pas` / SPEC-KV-01):
       CreateBucket / DeleteBucket / BucketExists / Put / Get / GetRevision /
-      Delete / Purge, Keys / ListKeys, History, Watch / WatchAll (push
-      last_per_subject + EndOfInitial marker via NumPending; MetaOnly /
-      UpdatesOnly / IncludeHistory / IgnoreDeletes / ResumeFromRevision),
-      CAS Create / Update (`Nats-Expected-Last-Subject-Sequence`),
-      bucket `Compression` / `Placement`, per-key TTL (`LimitMarkerTTL` +
-      `Create`/`Purge` with `Nats-TTL`; NATS 2.11+)
+      Delete / Purge / PurgeDeletes (`DeleteMarkersOlderThan`), Keys / ListKeys,
+      History, Watch / WatchAll (push last_per_subject + EndOfInitial marker via
+      NumPending; MetaOnly / UpdatesOnly / IncludeHistory / IgnoreDeletes /
+      ResumeFromRevision), CAS Create / Update
+      (`Nats-Expected-Last-Subject-Sequence`), bucket `Compression` / `Placement`,
+      per-key TTL (`LimitMarkerTTL` + `Create`/`Purge` with `Nats-TTL`; NATS 2.11+)
 - [x] Release **1.0.0** — `CHANGELOG.md`, README version line, git tag `v1.0.0`
 - [x] NATS Services API MVP (`Dext.Net.Nats.Services.pas`): AddService /
       AddEndpoint / Stop / Reset, `$SRV.PING|INFO|STATS`, Respond /

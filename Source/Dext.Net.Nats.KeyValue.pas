@@ -25,6 +25,7 @@
 {  use ephemeral JetStream consumers (pull for Keys/History, push for       }
 {  Watch). CAS Create/Update use Nats-Expected-Last-Subject-Sequence.       }
 {  GetRevision / TryGetRevision via STREAM.MSG.GET (includes tombstones).   }
+{  PurgeDeletes removes DEL/PURGE markers via STREAM.PURGE (age threshold). }
 {  Bucket config maps Compression / Placement onto KV_* STREAM.CREATE      }
 {  (nats.go KeyValueConfig; Compression=true → scS2).                       }
 {  Per-key TTL (NATS 2.11+, ADR-48): bucket LimitMarkerTTL enables          }
@@ -43,6 +44,7 @@ uses
   System.SysUtils,
   System.Classes,
   System.SyncObjs,
+  System.DateUtils,
   Dext.Collections,
   Dext.Net.Nats.Protocol,
   Dext.Net.Nats,
@@ -68,6 +70,11 @@ const
   NATS_KV_MAX_HISTORY = 64;
   /// <summary>Minimum LimitMarkerTTL / Nats-TTL (1 second), in nanoseconds.</summary>
   NATS_KV_MIN_TTL_NANOS = Int64(1000000000);
+  /// <summary>
+  ///   Default <see cref="TNatsKeyValuePurgeDeletesOptions.DeleteMarkersOlderThan"/>
+  ///   when the option is 0 (nats.go <c>kvDefaultPurgeDeletesMarkerThreshold</c> = 30 minutes).
+  /// </summary>
+  NATS_KV_DEFAULT_PURGE_DELETES_OLDER_THAN_NANOS = Int64(30) * 60 * NATS_KV_MIN_TTL_NANOS;
 
 type
   /// <summary>Raised for Key-Value validation / not-found errors (distinct from JetStream API errors).</summary>
@@ -193,6 +200,23 @@ type
     class function CreateDefault: TNatsKeyValueWatchOptions; static;
     /// <summary>Raises when IncludeHistory and UpdatesOnly are both set.</summary>
     procedure Validate;
+  end;
+
+  /// <summary>
+  ///   Options for <see cref="TDextNatsKeyValue.PurgeDeletes"/> (nats.go
+  ///   <c>DeleteMarkersOlderThan</c> / <c>PurgeOpt</c>).
+  /// </summary>
+  TNatsKeyValuePurgeDeletesOptions = record
+    /// <summary>
+    ///   Age threshold in nanoseconds. Markers older than this are removed
+    ///   entirely (<c>STREAM.PURGE</c> Keep=0). Younger markers keep the
+    ///   tombstone (Keep=1). 0 = default 30 minutes
+    ///   (<see cref="NATS_KV_DEFAULT_PURGE_DELETES_OLDER_THAN_NANOS"/>).
+    ///   Negative = remove all current delete/purge markers regardless of age.
+    /// </summary>
+    DeleteMarkersOlderThan: Int64;
+    /// <summary>Defaults: DeleteMarkersOlderThan=0 (client default 30 minutes).</summary>
+    class function CreateDefault: TNatsKeyValuePurgeDeletesOptions; static;
   end;
 
   /// <summary>
@@ -324,6 +348,13 @@ type
     ///   Bucket must support limit markers. TTL on Delete is not supported (ADR-48).
     /// </summary>
     procedure Purge(const AKey: string; ATTLNanos: Int64); overload;
+    /// <summary>
+    ///   Removes current DEL/PURGE markers via per-subject <c>STREAM.PURGE</c>
+    ///   (nats.go <c>PurgeDeletes</c>). Uses the default 30-minute age threshold.
+    /// </summary>
+    procedure PurgeDeletes; overload;
+    /// <summary>PurgeDeletes with <see cref="TNatsKeyValuePurgeDeletesOptions"/>.</summary>
+    procedure PurgeDeletes(const AOptions: TNatsKeyValuePurgeDeletesOptions); overload;
     /// <summary>Current bucket status from STREAM.INFO.</summary>
     function Status: TNatsKeyValueStatus;
 
@@ -500,6 +531,13 @@ begin
   if IncludeHistory and UpdatesOnly then
     raise EDextNatsKeyValueError.Create(
       'IncludeHistory cannot be used with UpdatesOnly');
+end;
+
+{ TNatsKeyValuePurgeDeletesOptions }
+
+class function TNatsKeyValuePurgeDeletesOptions.CreateDefault: TNatsKeyValuePurgeDeletesOptions;
+begin
+  Result := Default(TNatsKeyValuePurgeDeletesOptions);
 end;
 
 { TDextNatsKeyValue }
@@ -903,6 +941,59 @@ begin
   opts.MsgTTL := ATTLNanos;
   SetLength(empty, 0);
   FJs.Publish(SubjectForKey(FBucket, AKey), empty, opts);
+end;
+
+procedure TDextNatsKeyValue.PurgeDeletes;
+begin
+  PurgeDeletes(TNatsKeyValuePurgeDeletesOptions.CreateDefault);
+end;
+
+procedure TDextNatsKeyValue.PurgeDeletes(const AOptions: TNatsKeyValuePurgeDeletesOptions);
+var
+  entries: IList<TNatsKeyValueEntry>;
+  i: Integer;
+  olderThan, nowNs, createdNs, limitNs: Int64;
+  purgeReq: TNatsStreamPurgeRequest;
+  entry: TNatsKeyValueEntry;
+begin
+  { Mirror nats.go: scan last-per-subject (incl. tombstones), then STREAM.PURGE
+    each delete/purge marker subject. Age threshold Keep=1 for young markers. }
+  olderThan := AOptions.DeleteMarkersOlderThan;
+  if olderThan = 0 then
+    olderThan := NATS_KV_DEFAULT_PURGE_DELETES_OLDER_THAN_NANOS;
+
+  entries := PullSubjectEntries(Format(NATS_KV_SUBJECTS, [FBucket]), dpLastPerSubject, True);
+  if entries.Count = 0 then
+    Exit;
+
+  nowNs := 0;
+  limitNs := 0;
+  if olderThan > 0 then
+  begin
+    nowNs := DateTimeToUnix(Now, False) * NATS_KV_MIN_TTL_NANOS;
+    limitNs := nowNs - olderThan;
+  end;
+
+  for i := 0 to entries.Count - 1 do
+  begin
+    entry := entries[i];
+    if (entry.Operation <> kvoDelete) and (entry.Operation <> kvoPurge) then
+      Continue;
+    if entry.Key = '' then
+      Continue;
+
+    purgeReq := TNatsStreamPurgeRequest.CreateDefault;
+    purgeReq.Subject := SubjectForKey(FBucket, entry.Key);
+    purgeReq.Keep := 0;
+    if olderThan > 0 then
+    begin
+      createdNs := StrToInt64Def(entry.Created, 0);
+      { Keep young markers (nats.go Keep=1). Unparseable Created → purge (Keep=0). }
+      if (createdNs > 0) and (createdNs > limitNs) then
+        purgeReq.Keep := 1;
+    end;
+    FJs.PurgeStream(FStreamName, purgeReq);
+  end;
 end;
 
 function TDextNatsKeyValue.Status: TNatsKeyValueStatus;

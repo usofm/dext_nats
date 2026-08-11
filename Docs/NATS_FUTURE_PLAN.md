@@ -80,7 +80,7 @@
 
 - [x] Payload view با `TByteSpan` عمر مشخص (PERF-04 اختیاری از roadmap) — `TNatsMsg.PayloadSpan` / `TNatsJsMsg.PayloadSpan`؛ `Payload: TBytes` پایدار می‌ماند
 - [x] Health check عمیق‌تر با `Flush` کوتاه (HLTH P2b) — `TNatsHealthCheckOptions.FlushTimeoutMs` / `CreateWithFlush`; default Connected-only
-- [ ] **KV/OS parity (remaining vs nats.go)** — landed recently: KV `Compression`/`Placement` on `TNatsKeyValueConfig`, `GetRevision`/`TryGetRevision`. Still deferred (no ADR required; choose explicitly later): `PurgeDeletes`, `WatchFiltered` / multi-filter Keys, `Mirror`/`Sources`/`RePublish`, bucket `Config()` round-trip, OS Watch `IgnoreDeletes` / IncludeHistory, full micro Services gaps (already listed under P1 Services).
+- [ ] **KV/OS parity (remaining vs nats.go)** — landed: KV `Compression`/`Placement`, `GetRevision`/`TryGetRevision`, **`PurgeDeletes`** (`TNatsKeyValuePurgeDeletesOptions` / `DeleteMarkersOlderThan`; JetStream `PurgeStream` / `STREAM.PURGE`), OS Watch **`IgnoreDeletes` / `IncludeHistory`**. Still deferred: `WatchFiltered` / multi-filter Keys (single-key `Watch` still exact-key only — no search wildcards yet), `Mirror`/`Sources`/`RePublish`, bucket `Config()` round-trip, full micro Services gaps (already listed under P1 Services).
 - [x] Benchmark رسمی throughput کنار `Encode_MicroBenchmark_*` — `TDextNatsBenchmarkTests` (`Encode_Throughput_*` / `PubSub_Throughput_*`); Explicit + `DEXT_NATS_RUN_BENCH=1`; live soft-skip بدون سرور؛ گزارش ops/sec و msgs/sec (نه CI gate)
 
 ---

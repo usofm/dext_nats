@@ -22,7 +22,8 @@
 {  JetStream Object Store (ADR-20). Buckets are OBJ_<bucket> streams with   }
 {  chunk subjects $O.<bucket>.C.> and metadata $O.<bucket>.M.>.             }
 {  CreateStore / UpdateStore / DeleteStore / Put / Get / Delete / List /   }
-{  Keys, Watch / WatchAll (EndOfInitial marker + MetaOnly / UpdatesOnly),  }
+{  Keys, Watch / WatchAll (EndOfInitial + MetaOnly / UpdatesOnly /         }
+{  IncludeHistory / IgnoreDeletes),                                        }
 {  UpdateMeta, Seal, AddLink / AddBucketLink.                               }
 {  Streaming Put/Get: TStream + PutFile/GetFile (chunked, no full TBytes).  }
 {  Lazy GetResult (TDextNatsObjectResult): on-demand chunk Fetch + digest   }
@@ -156,12 +157,17 @@ type
   /// <summary>Callback for <see cref="TDextNatsObjectStore.Watch"/> / WatchAll deliveries.</summary>
   TNatsObjectStoreWatchHandler = reference to procedure(const AInfo: TNatsObjectInfo);
 
-  /// <summary>Options for <see cref="TDextNatsObjectStore.Watch"/> / WatchAll.</summary>
+  /// <summary>
+  ///   Options for <see cref="TDextNatsObjectStore.Watch"/> / WatchAll
+  ///   (nats.go Object Store WatchOpt).
+  /// </summary>
   TNatsObjectStoreWatchOptions = record
     /// <summary>
     ///   Headers-only consumer: object name (from meta subject) without ObjectInfo JSON
     ///   payload. Maps to JetStream <c>headers_only</c>. Watch already targets meta
     ///   subjects — use this to avoid transferring meta JSON bodies.
+    ///   Note: <see cref="IgnoreDeletes"/> needs ObjectInfo JSON (<c>deleted</c>); with
+    ///   MetaOnly, tombstones cannot be distinguished and are delivered.
     /// </summary>
     MetaOnly: Boolean;
     /// <summary>
@@ -169,8 +175,23 @@ type
     ///   (<c>deliver_policy=new</c>). No EndOfInitial marker is sent (nats.go / KV semantics).
     /// </summary>
     UpdatesOnly: Boolean;
-    /// <summary>Defaults: MetaOnly=False, UpdatesOnly=False (snapshot + updates + marker).</summary>
+    /// <summary>
+    ///   Deliver all retained meta revisions (<c>deliver_policy=all</c>) instead of
+    ///   last-per-subject. Conflicts with <see cref="UpdatesOnly"/>.
+    /// </summary>
+    IncludeHistory: Boolean;
+    /// <summary>
+    ///   Skip soft-deleted ObjectInfo (<c>Deleted=True</c>) in the handler, but still
+    ///   count them toward EndOfInitial (nats.go <c>IgnoreDeletes</c>).
+    /// </summary>
+    IgnoreDeletes: Boolean;
+    /// <summary>
+    ///   Defaults: MetaOnly/UpdatesOnly/IncludeHistory/IgnoreDeletes=False
+    ///   (last-per-subject snapshot + updates + marker).
+    /// </summary>
     class function CreateDefault: TNatsObjectStoreWatchOptions; static;
+    /// <summary>Raises when IncludeHistory and UpdatesOnly are both set.</summary>
+    procedure Validate;
   end;
 
   /// <summary>
@@ -816,6 +837,13 @@ end;
 class function TNatsObjectStoreWatchOptions.CreateDefault: TNatsObjectStoreWatchOptions;
 begin
   Result := Default(TNatsObjectStoreWatchOptions);
+end;
+
+procedure TNatsObjectStoreWatchOptions.Validate;
+begin
+  if IncludeHistory and UpdatesOnly then
+    raise EDextNatsObjectStoreError.Create(
+      'IncludeHistory cannot be used with UpdatesOnly');
 end;
 
 { TNatsObjectStoreGetOptions }
@@ -2124,13 +2152,15 @@ type
     FLock: TCriticalSection;
     FHandler: TNatsObjectStoreWatchHandler;
     FUpdatesOnly: Boolean;
+    FIgnoreDeletes: Boolean;
     FStopped: Boolean;
     FInitDone: Boolean;
     FInitPendingKnown: Boolean;
     FInitPending: UInt64;
     FReceived: UInt64;
   public
-    constructor Create(AHandler: TNatsObjectStoreWatchHandler; AUpdatesOnly: Boolean);
+    constructor Create(AHandler: TNatsObjectStoreWatchHandler;
+      AUpdatesOnly, AIgnoreDeletes: Boolean);
     destructor Destroy; override;
     procedure Stop;
     procedure HandleJsMsg(const AInfo: TNatsObjectInfo; ANumPending: Integer);
@@ -2138,12 +2168,14 @@ type
     function InitialDone: Boolean;
   end;
 
-constructor TNatsOsWatchGate.Create(AHandler: TNatsObjectStoreWatchHandler; AUpdatesOnly: Boolean);
+constructor TNatsOsWatchGate.Create(AHandler: TNatsObjectStoreWatchHandler;
+  AUpdatesOnly, AIgnoreDeletes: Boolean);
 begin
   inherited Create;
   FLock := TCriticalSection.Create;
   FHandler := AHandler;
   FUpdatesOnly := AUpdatesOnly;
+  FIgnoreDeletes := AIgnoreDeletes;
   { UpdatesOnly skips the snapshot marker entirely (nats.go / KV). }
   FInitDone := AUpdatesOnly;
   FInitPendingKnown := AUpdatesOnly;
@@ -2208,11 +2240,13 @@ end;
 procedure TNatsOsWatchGate.HandleJsMsg(const AInfo: TNatsObjectInfo; ANumPending: Integer);
 var
   fireMarker: Boolean;
+  deliverInfo: Boolean;
   handler: TNatsObjectStoreWatchHandler;
   pending: UInt64;
 begin
   fireMarker := False;
   handler := nil;
+  deliverInfo := True;
   if ANumPending < 0 then
     pending := 0
   else
@@ -2223,6 +2257,9 @@ begin
     if FStopped then
       Exit;
     handler := FHandler;
+    { IgnoreDeletes: skip soft-deleted meta for the handler, but still tally EndOfInitial. }
+    if FIgnoreDeletes and AInfo.Deleted then
+      deliverInfo := False;
     if not FInitDone then
     begin
       if not FInitPendingKnown then
@@ -2237,7 +2274,7 @@ begin
     FLock.Leave;
   end;
 
-  if Assigned(handler) then
+  if deliverInfo and Assigned(handler) then
     handler(AInfo);
 
   FLock.Enter;
@@ -2329,11 +2366,12 @@ begin
     raise EDextNatsObjectStoreError.Create('Watch requires a handler');
   if AFilterSubject = '' then
     raise EDextNatsObjectStoreError.Create('Watch requires a filter subject');
+  AOptions.Validate;
 
   js := FContext.FJs;
   deliver := js.Client.NewInbox;
   consumerName := 'oswatch_' + ObjNewNuid;
-  gate := TNatsOsWatchGate.Create(AHandler, AOptions.UpdatesOnly);
+  gate := TNatsOsWatchGate.Create(AHandler, AOptions.UpdatesOnly, AOptions.IgnoreDeletes);
   push := nil;
   try
     { Subscribe before CONSUMER.CREATE so the deliver subject has interest. }
@@ -2351,8 +2389,12 @@ begin
     cons.Name := consumerName;
     cons.FilterSubject := AFilterSubject;
     cons.DeliverSubject := deliver;
+    { Same stacking as KV Watch: UpdatesOnly → new; IncludeHistory → all;
+      else last_per_subject. }
     if AOptions.UpdatesOnly then
       cons.DeliverPolicy := dpNew
+    else if AOptions.IncludeHistory then
+      cons.DeliverPolicy := dpAll
     else
       cons.DeliverPolicy := dpLastPerSubject;
     cons.AckPolicy := apNone;
