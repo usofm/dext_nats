@@ -28,13 +28,16 @@
 {  AddGroup (subject-prefix groups + nested AddGroup / AddEndpoint),        }
 {  queue group (default "q", inherit/override on group and endpoint),       }
 {  PING/INFO/STATS at all/kind/instance subjects, basic stats               }
-{  (num_requests / num_errors / processing_time), Respond / RespondError    }
-{  headers, DoneHandler / ErrorHandler, graceful Stop (UNSUB all service    }
-{  SIDs + best-effort Flush — does not client.Drain / disconnect).          }
+{  (num_requests / num_errors / processing_time), optional StatsHandler      }
+{  per-endpoint <c>data</c> JSON, Respond / RespondError headers,           }
+{  DoneHandler / ErrorHandler, graceful Stop (UNSUB all service SIDs +      }
+{  best-effort Flush — does not client.Drain / disconnect).                 }
 {                                                                           }
-{  Gaps vs full nats.go micro: custom StatsHandler data, schema JSON,       }
-{  connection-closed auto-stop, per-subscription Drain (client has no       }
-{  sub.Drain; Stop uses Unsubscribe + Flush), metadata immutability.        }
+{  Gaps vs full nats.go micro: schema JSON, connection-closed auto-stop     }
+{  (client OnDisconnected is not ClosedHandler — fires on reconnectable     }
+{  loss; intentional Disconnect does not fire it), per-subscription Drain   }
+{  (client has no sub.Drain; Stop uses Unsubscribe + Flush), metadata       }
+{  immutability.                                                            }
 {                                                                           }
 {***************************************************************************}
 unit Dext.Net.Nats.Services;
@@ -94,6 +97,22 @@ type
   TNatsServiceErrorHandler = reference to procedure(const AService: TDextNatsService;
     const AError: TNatsServiceErrorInfo);
 
+  /// <summary>Endpoint identity passed to <see cref="TNatsServiceStatsHandler"/> (nats.go Endpoint).</summary>
+  TNatsServiceEndpointInfo = record
+    Name: string;
+    Subject: string;
+    QueueGroup: string;
+    class function Create(const AName, ASubject, AQueueGroup: string): TNatsServiceEndpointInfo; static;
+  end;
+
+  /// <summary>
+  ///   Optional STATS enrichment (nats.go <c>StatsHandler</c>). Return a complete JSON value
+  ///   (object/array/string/number/bool/null) as text for the endpoint <c>data</c> field;
+  ///   empty string omits <c>data</c>. Do not re-enter service methods from the handler.
+  /// </summary>
+  TNatsServiceStatsHandler = reference to function(
+    const AEndpoint: TNatsServiceEndpointInfo): string;
+
   /// <summary>
   ///   Request context for a service endpoint. Call <see cref="Respond"/> or
   ///   <see cref="RespondError"/> once. Freed by the framework after the handler returns.
@@ -148,6 +167,11 @@ type
     DoneHandler: TNatsServiceDoneHandler;
     /// <summary>Optional callback for endpoint / discovery errors.</summary>
     ErrorHandler: TNatsServiceErrorHandler;
+    /// <summary>
+    ///   Optional per-endpoint STATS <c>data</c> producer (nats.go StatsHandler).
+    ///   Invoked once per endpoint when building STATS JSON.
+    /// </summary>
+    StatsHandler: TNatsServiceStatsHandler;
     /// <summary>Defaults: empty description, queue "q", metadata nil, handlers nil.</summary>
     class function CreateDefault(const AName, AVersion: string): TNatsServiceConfig; static;
     /// <summary>Raises <see cref="EDextNatsServiceError"/> when name/version/queue are invalid.</summary>
@@ -255,6 +279,7 @@ type
     FStopped: Boolean;
     FDoneHandler: TNatsServiceDoneHandler;
     FErrorHandler: TNatsServiceErrorHandler;
+    FStatsHandler: TNatsServiceStatsHandler;
     function ResolveQueueGroup(const ACustomQueue: string; ACustomDisabled: Boolean;
       const AParentQueue: string; AParentDisabled: Boolean): string;
     procedure ResolveQueueGroupEx(const ACustomQueue: string; ACustomDisabled: Boolean;
@@ -366,6 +391,17 @@ type
     procedure EnsureCapacity(ANeeded: Integer);
     procedure WriteBytes(AData: Pointer; ALength: Integer);
     function ToBytes: TBytes;
+  end;
+
+  TSrvEndpointStatsSnap = record
+    Name: string;
+    Subject: string;
+    QueueGroup: string;
+    NumRequests: Int64;
+    NumErrors: Int64;
+    LastError: string;
+    ProcessingTimeNanos: Int64;
+    DataJson: string;
   end;
 
 procedure SrvUtf8WriteToByteWriter(AContext, AData: Pointer; ALength: Integer);
@@ -543,6 +579,16 @@ begin
   Result.Description := ADescription;
 end;
 
+{ TNatsServiceEndpointInfo }
+
+class function TNatsServiceEndpointInfo.Create(const AName, ASubject,
+  AQueueGroup: string): TNatsServiceEndpointInfo;
+begin
+  Result.Name := AName;
+  Result.Subject := ASubject;
+  Result.QueueGroup := AQueueGroup;
+end;
+
 { TNatsServiceConfig }
 
 class function TNatsServiceConfig.CreateDefault(const AName, AVersion: string): TNatsServiceConfig;
@@ -556,6 +602,7 @@ begin
   Result.QueueGroupDisabled := False;
   Result.DoneHandler := nil;
   Result.ErrorHandler := nil;
+  Result.StatsHandler := nil;
 end;
 
 procedure TNatsServiceConfig.Validate;
@@ -729,6 +776,7 @@ begin
   FStopped := False;
   FDoneHandler := cfg.DoneHandler;
   FErrorHandler := cfg.ErrorHandler;
+  FStatsHandler := cfg.StatsHandler;
   FStartedUtc := Now;
   SubscribeDiscovery;
 end;
@@ -1293,55 +1341,102 @@ var
   w: TSrvByteWriter;
   jw: TUtf8JsonWriter;
   i: Integer;
-  ep: TEndpointState;
   avg: Int64;
   started: string;
+  name, id, version: string;
+  metadata: IDictionary<string, string>;
+  snaps: TArray<TSrvEndpointStatsSnap>;
+  statsHandler: TNatsServiceStatsHandler;
+  dataJson: string;
 begin
+  statsHandler := nil;
   FLock.Enter;
   try
+    name := FName;
+    id := FId;
+    version := FVersion;
+    metadata := FMetadata;
     started := DateToISO8601(FStartedUtc, True);
-    w.Reset;
-    jw := TUtf8JsonWriter.Create(@w, SrvUtf8WriteToByteWriter, False);
-    jw.WriteStartObject;
-    SrvWriteIdentity(jw, FName, FId, FVersion, FMetadata);
-    jw.WritePropertyName('type');
-    jw.WriteString(NATS_SRV_STATS_RESPONSE_TYPE);
-    jw.WritePropertyName('started');
-    jw.WriteString(started);
-    jw.WritePropertyName('endpoints');
-    jw.WriteStartArray;
+    statsHandler := FStatsHandler;
+    SetLength(snaps, FEndpoints.Count);
     for i := 0 to FEndpoints.Count - 1 do
     begin
-      ep := FEndpoints[i];
-      if ep.NumRequests > 0 then
-        avg := ep.ProcessingTimeNanos div ep.NumRequests
-      else
-        avg := 0;
-      jw.WriteStartObject;
-      jw.WritePropertyName('name');
-      jw.WriteString(ep.Name);
-      jw.WritePropertyName('subject');
-      jw.WriteString(ep.Subject);
-      jw.WritePropertyName('queue_group');
-      jw.WriteString(ep.QueueGroup);
-      jw.WritePropertyName('num_requests');
-      jw.WriteNumber(ep.NumRequests);
-      jw.WritePropertyName('num_errors');
-      jw.WriteNumber(ep.NumErrors);
-      jw.WritePropertyName('last_error');
-      jw.WriteString(ep.LastError);
-      jw.WritePropertyName('processing_time');
-      jw.WriteNumber(ep.ProcessingTimeNanos);
-      jw.WritePropertyName('average_processing_time');
-      jw.WriteNumber(avg);
-      jw.WriteEndObject;
+      snaps[i].Name := FEndpoints[i].Name;
+      snaps[i].Subject := FEndpoints[i].Subject;
+      snaps[i].QueueGroup := FEndpoints[i].QueueGroup;
+      snaps[i].NumRequests := FEndpoints[i].NumRequests;
+      snaps[i].NumErrors := FEndpoints[i].NumErrors;
+      snaps[i].LastError := FEndpoints[i].LastError;
+      snaps[i].ProcessingTimeNanos := FEndpoints[i].ProcessingTimeNanos;
+      snaps[i].DataJson := '';
     end;
-    jw.WriteEndArray;
-    jw.WriteEndObject;
-    Result := TEncoding.UTF8.GetString(w.ToBytes);
   finally
     FLock.Leave;
   end;
+
+  if Assigned(statsHandler) then
+  begin
+    for i := 0 to High(snaps) do
+    begin
+      dataJson := '';
+      try
+        dataJson := Trim(statsHandler(TNatsServiceEndpointInfo.Create(
+          snaps[i].Name, snaps[i].Subject, snaps[i].QueueGroup)));
+      except
+        on E: Exception do
+        begin
+          dataJson := '';
+          FireErrorHandler(snaps[i].Subject, E.Message);
+        end;
+      end;
+      snaps[i].DataJson := dataJson;
+    end;
+  end;
+
+  w.Reset;
+  jw := TUtf8JsonWriter.Create(@w, SrvUtf8WriteToByteWriter, False);
+  jw.WriteStartObject;
+  SrvWriteIdentity(jw, name, id, version, metadata);
+  jw.WritePropertyName('type');
+  jw.WriteString(NATS_SRV_STATS_RESPONSE_TYPE);
+  jw.WritePropertyName('started');
+  jw.WriteString(started);
+  jw.WritePropertyName('endpoints');
+  jw.WriteStartArray;
+  for i := 0 to High(snaps) do
+  begin
+    if snaps[i].NumRequests > 0 then
+      avg := snaps[i].ProcessingTimeNanos div snaps[i].NumRequests
+    else
+      avg := 0;
+    jw.WriteStartObject;
+    jw.WritePropertyName('name');
+    jw.WriteString(snaps[i].Name);
+    jw.WritePropertyName('subject');
+    jw.WriteString(snaps[i].Subject);
+    jw.WritePropertyName('queue_group');
+    jw.WriteString(snaps[i].QueueGroup);
+    jw.WritePropertyName('num_requests');
+    jw.WriteNumber(snaps[i].NumRequests);
+    jw.WritePropertyName('num_errors');
+    jw.WriteNumber(snaps[i].NumErrors);
+    jw.WritePropertyName('last_error');
+    jw.WriteString(snaps[i].LastError);
+    jw.WritePropertyName('processing_time');
+    jw.WriteNumber(snaps[i].ProcessingTimeNanos);
+    jw.WritePropertyName('average_processing_time');
+    jw.WriteNumber(avg);
+    if snaps[i].DataJson <> '' then
+    begin
+      { Embed user JSON value as endpoint "data" (ADR-32 / nats.go StatsHandler). }
+      jw.WritePropertyName('data');
+      jw.WriteRaw(snaps[i].DataJson);
+    end;
+    jw.WriteEndObject;
+  end;
+  jw.WriteEndArray;
+  jw.WriteEndObject;
+  Result := TEncoding.UTF8.GetString(w.ToBytes);
 end;
 
 function TDextNatsService.PingJson: string;

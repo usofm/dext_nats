@@ -75,10 +75,11 @@ Source/
                                 nats.go micro) — AddService / AddEndpoint /
                                 AddGroup (TDextNatsServiceGroup subject
                                 prefixes + nested groups) / Stop / Reset;
-                                DoneHandler / ErrorHandler; Stop UNSUB+Flush
-                                (service SIDs only); auto $SRV.PING|INFO|STATS;
-                                Respond / RespondError. Composition over
-                                TDextNatsClient; does not own the client.
+                                DoneHandler / ErrorHandler / StatsHandler;
+                                Stop UNSUB+Flush (service SIDs only); auto
+                                $SRV.PING|INFO|STATS; Respond / RespondError.
+                                Composition over TDextNatsClient; does not own
+                                the client.
 Demo/
   PubSubE2E/                    One-way core pub/sub E2E console smoke test
                                 against a plain local `nats-server` (no JetStream).
@@ -314,9 +315,9 @@ parsing frames anywhere else.
 - [x] NATS Services API (`Dext.Net.Nats.Services.pas`): AddService /
       AddEndpoint / AddGroup (`TDextNatsServiceGroup`) / Stop / Reset,
       `$SRV.PING|INFO|STATS`, Respond / RespondError, DoneHandler /
-      ErrorHandler, Stop UNSUB+Flush (no client.Drain); remaining gaps vs
-      nats.go micro (StatsHandler / schema / auto-stop / metadata) noted
-      in unit header + FUTURE_PLAN
+      ErrorHandler / StatsHandler (per-endpoint STATS `data`), Stop
+      UNSUB+Flush (no client.Drain); remaining gaps vs nats.go micro
+      (schema / auto-stop / metadata) noted in unit header + FUTURE_PLAN
 - [x] Richer INFO / `TDextNatsClient.ServerInfo` — domain, remote_account,
       acc_is_sys, ldm, api_lvl, cluster*, git_commit, tls_verify, ws_connect_urls
       (account JWT limit claims / OnLameDuckMode / $SYS monitoring still deferred)

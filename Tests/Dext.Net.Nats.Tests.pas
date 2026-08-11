@@ -557,6 +557,8 @@ type
     procedure GroupConfig_InvalidPrefix_ShouldRaise;
     [Test, Category('Unit'), Category('Services')]
     procedure DoneHandler_ShouldFireOnceOnStop;
+    [Test, Category('Unit'), Category('Services')]
+    procedure StatsHandler_ShouldEmbedEndpointDataInStatsJson;
     [Test, Category('Integration'), Category('Services')]
     procedure AddService_PingDiscovery_ShouldRespond;
     [Test, Category('Integration'), Category('Services')]
@@ -6341,6 +6343,51 @@ begin
       svc.Free;
     end;
     Should(doneCount).Be(1);
+  finally
+    client.Free;
+  end;
+end;
+
+procedure TDextNatsServicesTests.StatsHandler_ShouldEmbedEndpointDataInStatsJson;
+var
+  client: TDextNatsClient;
+  svc: TDextNatsService;
+  cfg: TNatsServiceConfig;
+  json: string;
+  seenName, seenSubject: string;
+  callCount: Integer;
+begin
+  seenName := '';
+  seenSubject := '';
+  callCount := 0;
+  client := TDextNatsClient.Create;
+  try
+    cfg := TNatsServiceConfig.CreateDefault('UnitStats', '1.0.0');
+    cfg.StatsHandler :=
+      function(const AEndpoint: TNatsServiceEndpointInfo): string
+      begin
+        Inc(callCount);
+        seenName := AEndpoint.Name;
+        seenSubject := AEndpoint.Subject;
+        Result := '{"cache_hits":7}';
+      end;
+    svc := TDextNatsService.AddService(client, cfg);
+    try
+      svc.AddEndpoint('echo',
+        procedure(const ARequest: TNatsServiceRequest)
+        begin
+          ARequest.Respond('ok');
+        end);
+      json := svc.StatsJson;
+      Should(callCount).Be(1);
+      Should(seenName).Be('echo');
+      Should(seenSubject).Be('echo');
+      Should(json.Contains(NATS_SRV_STATS_RESPONSE_TYPE)).BeTrue;
+      Should(json.Contains('"data":{"cache_hits":7}')).BeTrue;
+      Should(json.Contains('"num_requests":0')).BeTrue;
+    finally
+      svc.Free;
+    end;
   finally
     client.Free;
   end;
