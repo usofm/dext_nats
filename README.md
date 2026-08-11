@@ -290,6 +290,17 @@ Output\Win32\Debug\Dext.Net.Nats.Tests.exe
 | `DEXT_NATS_TLS_PORT=4223` | Enable TLS tests (`DEXT_NATS_TLS_HOST` optional) |
 | `DEXT_NATS_NKEY_PORT=4224` | Enable NKey tests (`DEXT_NATS_NKEY_SEED` or `*_SEED_FILE` / `DEXT_NATS_CREDS_FILE`) |
 | `DEXT_NATS_RUN_STRESS=1` | Run Explicit stress tests |
+| `DEXT_NATS_RUN_BENCH=1` | Run Explicit throughput benchmarks (`Encode_Throughput_*` / `PubSub_Throughput_*`; prints ops/sec / msgs/sec; live soft-skips without server) |
+
+Optional local throughput (not a CI gate):
+
+```bat
+nats-server
+set DEXT_NATS_RUN_BENCH=1
+Output\Win32\Debug\Dext.Net.Nats.Tests.exe
+```
+
+Look for console lines starting with `BENCH ` (micro-encode always prints; formal encode + live pub/sub need the env). Details: [`Docs/TEST_PLAN.md`](Docs/TEST_PLAN.md) §۴.۷.
 
 Full matrix and IDs: [`Docs/TEST_PLAN.md`](Docs/TEST_PLAN.md). Forward plan after the completed Dext roadmap: [`Docs/NATS_FUTURE_PLAN.md`](Docs/NATS_FUTURE_PLAN.md). MQTT vs NATS architecture notes: [`Docs/MQTT_VS_NATS.md`](Docs/MQTT_VS_NATS.md). B2B agent draft: [`Docs/NATS_B2B_AGENT_PLAN.md`](Docs/NATS_B2B_AGENT_PLAN.md).
 

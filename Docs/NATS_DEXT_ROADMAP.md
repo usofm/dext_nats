@@ -90,7 +90,7 @@
 - [x] تست‌های U-06 و encode موجود سبز بمانند.
 - [x] مسیر `PUB` روی hot path حداکثر **یک** `SetLength` نهایی برای خروجی داشته باشد (نه N کپی میانی).
 - [x] بنچمارک ساده (اختیاری در تست/دمو): ≥ همان throughput قبلی؛ هدف: کاهش تخصیص‌های میانی به صفر.
-  (`Encode_MicroBenchmark_PubAndCachedPing` — PING/PONG reference-stable؛ 40k× PUB زیر سقف زمانی)
+  (`Encode_MicroBenchmark_PubAndCachedPing` — PING/PONG reference-stable؛ 40k× PUB زیر سقف زمانی + ops/sec؛ formal `TDextNatsBenchmarkTests` با `DEXT_NATS_RUN_BENCH=1`)
 
 #### SPEC-PERF-02 — Parse کنترل‌لاین روی `TByteSpan` بدون `GetString` اجباری
 
@@ -140,12 +140,13 @@ Dext.Json.Utf8.pas
 
 1. تا وقتی `TNatsMsg.Payload: TBytes` عمومی است، یک کپی به مالکیت handler لازم است (قرارداد فعلی).
 2. داخل parser، از double-copy پرهیز شود: یک `Move` از بافر داخلی به `Payload`.
-3. (اختیاری / آینده) overload داخلی یا record آزمایشی با `TByteSpan` فقط تا پایان `HandleMsgFrame` — **بدون** expose در API پایدار تا lifetime مشخص شود.
+3. (اختیاری) `TNatsMsg.PayloadSpan` / `TNatsJsMsg.PayloadSpan` — view روی `Payload: TBytes` با doc lifetime صریح؛ API پایدار `TBytes` حفظ می‌شود.
 
 **Acceptance:**
 
 - [x] هیچ API عمومی payload را به‌صورت view ناپایدار برنگرداند مگر با doc صریح و تست lifetime.
 - [x] تست integration pub/sub و request/reply بدون رگرسیون.
+- [x] Unit: `Msg_PayloadSpan_ShouldViewOwnedBytes` / `JsMsg_PayloadSpan_ShouldViewOwnedBytes`.
 
 #### SPEC-PERF-05 — سقف ایمنی و تخصیص بافر parser
 
@@ -279,6 +280,7 @@ procedure AddNatsClient(const AServices: IServiceCollection; const AHost: string
 **Acceptance:**
 
 - [x] تست: client قطع → Unhealthy (`HealthCheck_ShouldReportUnhealthyWhenDisconnected`).
+- [x] P2b: `TNatsHealthCheckOptions.FlushTimeoutMs` / `CreateWithFlush`; deep probe تبدیل timeout به Unhealthy (بدون raise); تست unit + live soft-skip.
 
 ---
 

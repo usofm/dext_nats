@@ -30,6 +30,7 @@ uses
   System.Diagnostics,
   Dext.Collections,
   Dext.Collections.Dict,
+  Dext.Core.Span,
   Dext.Testing,
   Dext.Testing.Attributes,
   Dext.Testing.Fluent,
@@ -48,7 +49,8 @@ uses
   Dext.Net.Nats.ObjectStore,
   Dext.Net.Nats.Services,
   Dext.Net.Nats.DependencyInjection,
-  Dext.Net.Nats.HealthChecks;
+  Dext.Net.Nats.HealthChecks,
+  Dext.Utils;
 
 type
   /// <summary>In-memory ILogger for observability unit tests.</summary>
@@ -152,7 +154,11 @@ type
     [Test, Category('Unit')]
     procedure OrderedConsumerOptions_ShouldDefault;
     [Test, Category('Unit')]
+    procedure Msg_PayloadSpan_ShouldViewOwnedBytes;
+    [Test, Category('Unit')]
     procedure JsMsg_ShouldParseAckSubjectMetadata;
+    [Test, Category('Unit')]
+    procedure JsMsg_PayloadSpan_ShouldViewOwnedBytes;
     [Test, Category('Unit')]
     procedure StreamConfig_ShouldSerializeDefaults;
     [Test, Category('Unit')]
@@ -226,6 +232,8 @@ type
     procedure Unsubscribe_MaxMsgs_ShouldAutoCancel;
     [Test, Category('Integration')]
     procedure Flush_ShouldRoundTrip;
+    [Test, Category('Integration')]
+    procedure HealthCheck_WithFlush_ShouldReportHealthyWhenLive;
     [Test, Category('Integration')]
     procedure Ping_ShouldBeAnsweredByFlush;
     [Test, Category('Integration')]
@@ -468,6 +476,12 @@ type
     procedure BindNatsOptions_FromConfiguration_ShouldMapHostPortTls;
     [Test, Category('DI')]
     procedure HealthCheck_ShouldReportUnhealthyWhenDisconnected;
+    [Test, Category('DI')]
+    procedure HealthCheck_Options_ShouldDefaultToConnectedOnly;
+    [Test, Category('DI')]
+    procedure HealthCheck_WithFlush_ShouldStayUnhealthyWhenDisconnected;
+    [Test, Category('DI')]
+    procedure AddNatsHealthCheck_WithFlushOptions_ShouldApplyTimeout;
   end;
 
   [TestFixture('NATS Observability')]
@@ -588,6 +602,29 @@ type
     procedure AddBucketLink_Get_ShouldRaise;
     [Test, Category('JetStream'), Category('ObjectStore'), Category('Negative')]
     procedure AddLink_DeletedOrLinkTarget_ShouldRaise;
+  end;
+
+  /// <summary>
+  /// Opt-in throughput harness (CPU encode + live pub/sub). Soft-skips unless
+  /// <c>DEXT_NATS_RUN_BENCH=1</c>; live path soft-skips without nats-server.
+  /// Not a CI perf gate — reports msgs/sec / ops/sec for local comparison.
+  /// </summary>
+  [TestFixture('NATS Benchmark')]
+  TDextNatsBenchmarkTests = class
+  private
+    FClient: TDextNatsClient;
+    function EnsureServerOrFail: Boolean;
+    function TryConnectLiveOrSoftSkip: Boolean;
+  public
+    [SetUp]
+    procedure SetUp;
+    [TearDown]
+    procedure TearDown;
+
+    [Test, Category('Benchmark'), Explicit('Set DEXT_NATS_RUN_BENCH=1')]
+    procedure Encode_Throughput_ShouldReportOpsPerSec;
+    [Test, Category('Benchmark'), Explicit('Set DEXT_NATS_RUN_BENCH=1')]
+    procedure PubSub_Throughput_ShouldReportMsgsPerSec;
   end;
 
 implementation
@@ -732,6 +769,16 @@ end;
 function LiveSkippedByEnv: Boolean;
 begin
   Result := EnvFlagTrue('DEXT_NATS_SKIP_LIVE');
+end;
+
+function NatsBenchEnabled: Boolean;
+begin
+  Result := EnvFlagTrue('DEXT_NATS_RUN_BENCH');
+end;
+
+function NatsStressEnabled: Boolean;
+begin
+  Result := EnvFlagTrue('DEXT_NATS_RUN_STRESS');
 end;
 
 function JsUniqueSubject(const AStream: string): string;
@@ -1145,6 +1192,7 @@ var
   payload, frame, ping1, ping2: TBytes;
   sw: TStopwatch;
   ms: Int64;
+  opsPerSec: Double;
 begin
   // Cached PING/PONG: same dynamic-array reference (no per-call allocation).
   ping1 := NatsEncodePing;
@@ -1159,6 +1207,12 @@ begin
     frame := NatsEncodePub('bench.subject', '', payload);
   sw.Stop;
   ms := sw.ElapsedMilliseconds;
+  if ms < 1 then
+    ms := 1;
+  opsPerSec := Iterations * 1000.0 / ms;
+  SafeWriteLn(Format(
+    'BENCH Encode_MicroBenchmark_PubAndCachedPing: %d pubs in %d ms = %.0f ops/sec',
+    [Iterations, ms, opsPerSec]));
 
   Should(Utf8OfBytes(frame).StartsWith('PUB bench.subject ')).BeTrue;
   Should(Utf8OfBytes(frame).Contains('bench-payload')).BeTrue;
@@ -1446,6 +1500,32 @@ begin
   Should(Assigned(opts.OnError)).BeFalse;
 end;
 
+procedure TDextNatsProtocolTests.Msg_PayloadSpan_ShouldViewOwnedBytes;
+var
+  msg: TNatsMsg;
+  span: TByteSpan;
+  kept: TBytes;
+begin
+  msg := Default(TNatsMsg);
+  span := msg.PayloadSpan;
+  Should(span.Length).Be(0);
+  Should(NativeInt(span.Data)).Be(0);
+
+  msg.Payload := BytesOfUtf8('hello-span');
+  span := msg.PayloadSpan;
+  Should(span.Length).Be(Length(msg.Payload));
+  Should(NativeInt(span.Data)).Be(NativeInt(@msg.Payload[0]));
+  Should(span.EqualsString('hello-span')).BeTrue;
+  Should(Utf8OfBytes(span.ToBytes)).Be('hello-span');
+
+  { Lifetime: keeping Payload (TBytes) keeps the bytes alive; the span alone must not be stored. }
+  kept := msg.Payload;
+  span := TByteSpan.FromBytes(kept);
+  SetLength(msg.Payload, 0);
+  Should(span.EqualsString('hello-span')).BeTrue;
+  Should(Utf8OfBytes(kept)).Be('hello-span');
+end;
+
 procedure TDextNatsProtocolTests.JsMsg_ShouldParseAckSubjectMetadata;
 var
   raw: TNatsMsg;
@@ -1466,6 +1546,19 @@ begin
   Should(js.Timestamp).Be(1700000000);
   Should(js.NumPending).Be(3);
   Should(js.AsString).Be('payload');
+end;
+
+procedure TDextNatsProtocolTests.JsMsg_PayloadSpan_ShouldViewOwnedBytes;
+var
+  js: TNatsJsMsg;
+  span: TByteSpan;
+begin
+  js := Default(TNatsJsMsg);
+  js.Payload := BytesOfUtf8('js-body');
+  span := js.PayloadSpan;
+  Should(span.Length).Be(Length(js.Payload));
+  Should(NativeInt(span.Data)).Be(NativeInt(@js.Payload[0]));
+  Should(span.Equals(TByteSpan.FromBytes(js.Payload))).BeTrue;
 end;
 
 procedure TDextNatsProtocolTests.StreamConfig_ShouldSerializeDefaults;
@@ -2105,6 +2198,24 @@ begin
   FClient.Publish(UniqueSubject('dext.nats.test.flush'), 'x');
   FClient.Flush(3000);
   Should(FClient.Connected).BeTrue;
+end;
+
+procedure TDextNatsIntegrationTests.HealthCheck_WithFlush_ShouldReportHealthyWhenLive;
+var
+  Check: TNatsHealthCheck;
+  Res: TNatsHealthResult;
+begin
+  if not EnsureServerOrFail then
+    Exit;
+
+  Check := TNatsHealthCheck.Create(FClient, TNatsHealthCheckOptions.CreateWithFlush(1000));
+  try
+    Res := Check.CheckHealth;
+    Should(Ord(Res.Status)).Be(Ord(nhsHealthy));
+    Should(Res.Description.Contains('responsive')).BeTrue;
+  finally
+    Check.Free;
+  end;
 end;
 
 procedure TDextNatsIntegrationTests.Ping_ShouldBeAnsweredByFlush;
@@ -4641,6 +4752,9 @@ var
   e1, e2: TEvent;
   p1, p2: string;
 begin
+  // Defensive: Explicit suite may also be enabled via DEXT_NATS_RUN_BENCH=1.
+  if not NatsStressEnabled then
+    Exit;
   if not EnsureServerOrFail then
     Exit;
   s1 := 'dext.nats.stress.a.' + IntToHex(Random(MaxInt), 8);
@@ -4680,6 +4794,8 @@ var
   remaining: Integer;
   done: TEvent;
 begin
+  if not NatsStressEnabled then
+    Exit;
   if not EnsureServerOrFail then
     Exit;
   subject := 'dext.nats.stress.req.' + IntToHex(Random(MaxInt), 8);
@@ -4724,6 +4840,8 @@ procedure TDextNatsStressTests.RequestTimeout_LateReply_ShouldNotCrash;
 var
   subject: string;
 begin
+  if not NatsStressEnabled then
+    Exit;
   if not EnsureServerOrFail then
     Exit;
   subject := 'dext.nats.stress.late.' + IntToHex(Random(MaxInt), 8);
@@ -4751,6 +4869,8 @@ var
   disconnected, reconnected: TEvent;
   sawDisconnect: Boolean;
 begin
+  if not NatsStressEnabled then
+    Exit;
   if LiveSkippedByEnv then
     Exit;
 
@@ -4802,6 +4922,8 @@ var
   disconnected, done: TEvent;
   errText: string;
 begin
+  if not NatsStressEnabled then
+    Exit;
   if LiveSkippedByEnv then
     Exit;
 
@@ -4848,6 +4970,164 @@ begin
     Should(errText.Contains('reconnect buffer') or errText.Contains('Not connected')).BeTrue;
   finally
     disconnected.Free;
+    done.Free;
+  end;
+end;
+
+{ TDextNatsBenchmarkTests }
+
+function TDextNatsBenchmarkTests.TryConnectLiveOrSoftSkip: Boolean;
+begin
+  Result := False;
+  if LiveSkippedByEnv then
+    Exit;
+
+  try
+    FClient.Connect(NatsTestHost, NatsTestPort);
+    Result := True;
+  except
+    on E: Exception do
+      Result := LiveSoftSkipOrFail(
+        Format('NATS server not reachable at %s:%d (%s). Start nats-server, ' +
+          'or omit DEXT_NATS_REQUIRE_LIVE for soft-skip.',
+          [NatsTestHost, NatsTestPort, E.Message]));
+  end;
+end;
+
+function TDextNatsBenchmarkTests.EnsureServerOrFail: Boolean;
+begin
+  Result := TryConnectLiveOrSoftSkip;
+end;
+
+procedure TDextNatsBenchmarkTests.SetUp;
+begin
+  FClient := TDextNatsClient.Create;
+end;
+
+procedure TDextNatsBenchmarkTests.TearDown;
+begin
+  if Assigned(FClient) then
+  begin
+    try
+      FClient.Disconnect;
+    except
+    end;
+    FreeAndNil(FClient);
+  end;
+end;
+
+procedure TDextNatsBenchmarkTests.Encode_Throughput_ShouldReportOpsPerSec;
+const
+  Iterations = 200000;
+var
+  i: Integer;
+  payload, frame, msgWire: TBytes;
+  parser: TDextNatsFrameParser;
+  parsed: TNatsFrame;
+  sw: TStopwatch;
+  ms: Int64;
+  opsPerSec: Double;
+  parsedOk: Integer;
+begin
+  // Defensive: Explicit suite may be enabled via DEXT_NATS_RUN_STRESS alone.
+  if not NatsBenchEnabled then
+    Exit;
+
+  payload := BytesOfUtf8('bench-payload');
+
+  sw := TStopwatch.StartNew;
+  frame := nil;
+  for i := 1 to Iterations do
+    frame := NatsEncodePub('bench.subject', '', payload);
+  sw.Stop;
+  ms := sw.ElapsedMilliseconds;
+  if ms < 1 then
+    ms := 1;
+  opsPerSec := Iterations * 1000.0 / ms;
+  SafeWriteLn(Format(
+    'BENCH Encode_Throughput: %d PUB encodes in %d ms = %.0f ops/sec',
+    [Iterations, ms, opsPerSec]));
+  Should(Utf8OfBytes(frame).StartsWith('PUB bench.subject ')).BeTrue;
+  // Soft floor only — not a CI gate.
+  Should(opsPerSec > 1000).BeTrue;
+
+  msgWire := BytesOfUtf8(
+    Format('MSG bench.subject 1 %d', [Length(payload)]) + #13#10 +
+    Utf8OfBytes(payload) + #13#10);
+  parser := TDextNatsFrameParser.Create;
+  try
+    parsedOk := 0;
+    sw := TStopwatch.StartNew;
+    for i := 1 to Iterations do
+    begin
+      FeedParserBytes(parser, msgWire, 0, Length(msgWire));
+      if parser.TryReadFrame(parsed) then
+        Inc(parsedOk);
+    end;
+    sw.Stop;
+    ms := sw.ElapsedMilliseconds;
+    if ms < 1 then
+      ms := 1;
+    opsPerSec := Iterations * 1000.0 / ms;
+    SafeWriteLn(Format(
+      'BENCH Encode_Throughput: %d MSG parse roundtrips in %d ms = %.0f frames/sec',
+      [Iterations, ms, opsPerSec]));
+    Should(parsedOk).Be(Iterations);
+    Should(opsPerSec > 1000).BeTrue;
+  finally
+    parser.Free;
+  end;
+end;
+
+procedure TDextNatsBenchmarkTests.PubSub_Throughput_ShouldReportMsgsPerSec;
+const
+  MessageCount = 20000;
+  Payload = 'bench';
+var
+  subject: string;
+  received: Integer;
+  done: TEvent;
+  i: Integer;
+  sw: TStopwatch;
+  ms: Int64;
+  msgsPerSec: Double;
+begin
+  if not NatsBenchEnabled then
+    Exit;
+  if not EnsureServerOrFail then
+    Exit;
+
+  subject := 'dext.nats.bench.pubsub.' + IntToHex(Random(MaxInt), 8);
+  received := 0;
+  done := TEvent.Create(nil, True, False, '');
+  try
+    FClient.Subscribe(subject,
+      procedure(const AMsg: TNatsMsg)
+      begin
+        if TInterlocked.Increment(received) >= MessageCount then
+          done.SetEvent;
+      end);
+
+    // Brief settle so the SUB is registered before the publish burst.
+    Sleep(50);
+
+    sw := TStopwatch.StartNew;
+    for i := 1 to MessageCount do
+      FClient.Publish(subject, Payload);
+    Should(done.WaitFor(60000) = wrSignaled).BeTrue;
+    sw.Stop;
+    ms := sw.ElapsedMilliseconds;
+    if ms < 1 then
+      ms := 1;
+    msgsPerSec := MessageCount * 1000.0 / ms;
+    SafeWriteLn(Format(
+      'BENCH PubSub_Throughput: %d msgs in %d ms = %.0f msgs/sec (publish+deliver)',
+      [MessageCount, ms, msgsPerSec]));
+
+    Should(received).Be(MessageCount);
+    // Soft floor only — catastrophic-regression guard, not a CI perf gate.
+    Should(msgsPerSec > 100).BeTrue;
+  finally
     done.Free;
   end;
 end;
@@ -4988,6 +5268,78 @@ begin
     Res := Check.CheckHealth;
     Should(Ord(Res.Status)).Be(Ord(nhsUnhealthy));
     Should(Res.Description.Contains('disconnected')).BeTrue;
+  finally
+    Check.Free;
+  end;
+end;
+
+procedure TDextNatsDiTests.HealthCheck_Options_ShouldDefaultToConnectedOnly;
+var
+  Opts: TNatsHealthCheckOptions;
+  Client: TDextNatsClient;
+  Check: TNatsHealthCheck;
+begin
+  Opts := TNatsHealthCheckOptions.CreateDefault;
+  Should(Opts.FlushTimeoutMs).Be(0);
+  Opts := TNatsHealthCheckOptions.CreateWithFlush;
+  Should(Opts.FlushTimeoutMs).Be(NATS_HEALTH_FLUSH_TIMEOUT_MS);
+  Opts := TNatsHealthCheckOptions.CreateWithFlush(0);
+  Should(Opts.FlushTimeoutMs).Be(NATS_HEALTH_FLUSH_TIMEOUT_MS);
+  Opts := TNatsHealthCheckOptions.CreateWithFlush(250);
+  Should(Opts.FlushTimeoutMs).Be(250);
+
+  Client := TDextNatsClient.Create(TDextNatsOptions.CreateDefault);
+  try
+    Check := TNatsHealthCheck.Create(Client);
+    try
+      Should(Check.Options.FlushTimeoutMs).Be(0);
+    finally
+      Check.Free;
+    end;
+  finally
+    Client.Free;
+  end;
+end;
+
+procedure TDextNatsDiTests.HealthCheck_WithFlush_ShouldStayUnhealthyWhenDisconnected;
+var
+  Client: TDextNatsClient;
+  Check: TNatsHealthCheck;
+  Res: TNatsHealthResult;
+  sw: TStopwatch;
+begin
+  // Deep probe must not call Flush (or hang) when the socket is down.
+  Client := TDextNatsClient.Create(TDextNatsOptions.CreateDefault);
+  try
+    Check := TNatsHealthCheck.Create(Client, TNatsHealthCheckOptions.CreateWithFlush(500));
+    try
+      sw := TStopwatch.StartNew;
+      Res := Check.CheckHealth;
+      sw.Stop;
+      Should(Ord(Res.Status)).Be(Ord(nhsUnhealthy));
+      Should(Res.Description.Contains('disconnected')).BeTrue;
+      Should(sw.ElapsedMilliseconds < 200).BeTrue;
+    finally
+      Check.Free;
+    end;
+  finally
+    Client.Free;
+  end;
+end;
+
+procedure TDextNatsDiTests.AddNatsHealthCheck_WithFlushOptions_ShouldApplyTimeout;
+var
+  Services: TDextServices;
+  Provider: IServiceProvider;
+  Check: TNatsHealthCheck;
+begin
+  Services := TDextServices.New;
+  AddNatsClient(Services.Unwrap);
+  AddNatsHealthCheck(Services.Unwrap, TNatsHealthCheckOptions.CreateWithFlush(750));
+  Provider := Services.BuildServiceProvider;
+  Check := TDextServices.GetRequiredServiceObject<TNatsHealthCheck>(Provider);
+  try
+    Should(Check.Options.FlushTimeoutMs).Be(750);
   finally
     Check.Free;
   end;

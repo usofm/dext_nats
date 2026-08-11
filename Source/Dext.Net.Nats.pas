@@ -69,6 +69,7 @@ type
   TNatsMsg = record
     Subject: string;
     ReplyTo: string;
+    /// <summary>Owned payload bytes (stable API). Copy or keep this field to retain data past the handler.</summary>
     Payload: TBytes;
     Headers: TNatsHeaders;
     Sid: Integer;
@@ -76,6 +77,15 @@ type
     StatusCode: Integer;
     /// <summary>Decodes the payload as a UTF-8 string.</summary>
     function AsString: string;
+    /// <summary>
+    ///   Zero-copy view over <see cref="Payload"/> storage (PERF-04).
+    ///   Lifetime: valid only while this record's <c>Payload</c> dynamic array remains allocated
+    ///   and is not reassigned or resized. Safe for the duration of a subscription handler that
+    ///   receives <c>const AMsg</c>. Do not store the span alone across awaits, queues, or after
+    ///   the handler returns — keep <c>Payload</c> (or call <c>PayloadSpan.ToBytes</c>) instead.
+    ///   Empty payload yields an empty span (<c>Data = nil</c>, <c>Length = 0</c>).
+    /// </summary>
+    function PayloadSpan: TByteSpan;
     /// <summary>True when the message carries a reply subject the handler can publish to.</summary>
     function HasReplyTo: Boolean;
     /// <summary>True when the server reported no responders for a request (status 503).</summary>
@@ -378,6 +388,11 @@ begin
     Result := ''
   else
     Result := TEncoding.UTF8.GetString(Payload);
+end;
+
+function TNatsMsg.PayloadSpan: TByteSpan;
+begin
+  Result := TByteSpan.FromBytes(Payload);
 end;
 
 function TNatsMsg.HasReplyTo: Boolean;

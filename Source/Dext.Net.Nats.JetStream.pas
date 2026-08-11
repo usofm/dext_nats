@@ -38,6 +38,7 @@ uses
   System.Classes,
   System.SyncObjs,
   Dext.Collections,
+  Dext.Core.Span,
   Dext.Net.Nats.Protocol,
   Dext.Net.Nats;
 
@@ -262,6 +263,7 @@ type
   TNatsJsMsg = record
     Subject: string;
     ReplyTo: string;
+    /// <summary>Owned payload bytes (stable API). Copy or keep this field to retain data past the handler.</summary>
     Payload: TBytes;
     Headers: TNatsHeaders;
     StatusCode: Integer;
@@ -274,6 +276,12 @@ type
     NumPending: Integer;
     /// <summary>Decodes the payload as a UTF-8 string.</summary>
     function AsString: string;
+    /// <summary>
+    ///   Zero-copy view over <see cref="Payload"/> (same lifetime rules as
+    ///   <see cref="TNatsMsg.PayloadSpan"/>). Keep <c>Payload</c> or call
+    ///   <c>PayloadSpan.ToBytes</c> to retain data past the handler / Fetch result scope.
+    /// </summary>
+    function PayloadSpan: TByteSpan;
     /// <summary>Builds a JS message from a raw NATS message, parsing metadata from ReplyTo / headers.</summary>
     class function FromNatsMsg(const AMsg: TNatsMsg): TNatsJsMsg; static;
   end;
@@ -2075,6 +2083,11 @@ begin
     Result := ''
   else
     Result := TEncoding.UTF8.GetString(Payload);
+end;
+
+function TNatsJsMsg.PayloadSpan: TByteSpan;
+begin
+  Result := TByteSpan.FromBytes(Payload);
 end;
 
 class function TNatsJsMsg.FromNatsMsg(const AMsg: TNatsMsg): TNatsJsMsg;

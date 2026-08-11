@@ -77,10 +77,10 @@
 
 ### P3 — بعد از 1.0 (اختیاری)
 
-- [ ] Payload view با `TByteSpan` عمر مشخص (PERF-04 اختیاری از roadmap)
-- [ ] Health check عمیق‌تر با `Flush` کوتاه (HLTH P2b)
+- [x] Payload view با `TByteSpan` عمر مشخص (PERF-04 اختیاری از roadmap) — `TNatsMsg.PayloadSpan` / `TNatsJsMsg.PayloadSpan`؛ `Payload: TBytes` پایدار می‌ماند
+- [x] Health check عمیق‌تر با `Flush` کوتاه (HLTH P2b) — `TNatsHealthCheckOptions.FlushTimeoutMs` / `CreateWithFlush`; default Connected-only
 - [ ] KV/OS parity بیشتر با nats.go در صورت ADR جدید سرور
-- [ ] Benchmark رسمی throughput کنار `Encode_MicroBenchmark_*`
+- [x] Benchmark رسمی throughput کنار `Encode_MicroBenchmark_*` — `TDextNatsBenchmarkTests` (`Encode_Throughput_*` / `PubSub_Throughput_*`); Explicit + `DEXT_NATS_RUN_BENCH=1`; live soft-skip بدون سرور؛ گزارش ops/sec و msgs/sec (نه CI gate)
 
 ---
 

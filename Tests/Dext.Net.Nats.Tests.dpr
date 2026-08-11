@@ -44,6 +44,7 @@ uses
 var
   Config: TTestConfigurator;
   RunStress: Boolean;
+  RunBench: Boolean;
 begin
   SetConsoleCharSet;
   try
@@ -56,12 +57,16 @@ begin
       SafeWriteLn('NKey: soft-skip (set DEXT_NATS_NKEY_PORT + SEED to enable live NKey tests)');
     RunStress := SameText(Trim(GetEnvironmentVariable('DEXT_NATS_RUN_STRESS')), '1')
       or SameText(Trim(GetEnvironmentVariable('DEXT_NATS_RUN_STRESS')), 'true');
+    RunBench := SameText(Trim(GetEnvironmentVariable('DEXT_NATS_RUN_BENCH')), '1')
+      or SameText(Trim(GetEnvironmentVariable('DEXT_NATS_RUN_BENCH')), 'true');
     if not RunStress then
       SafeWriteLn('Stress: explicit tests omitted (set DEXT_NATS_RUN_STRESS=1 to include)');
+    if not RunBench then
+      SafeWriteLn('Bench: explicit tests omitted (set DEXT_NATS_RUN_BENCH=1 to include)');
     SafeWriteLn;
 
     Config := ConfigureTests.Verbose;
-    if RunStress then
+    if RunStress or RunBench then
       Config := Config.IncludeExplicitTests;
 
     RunTests(Config.RegisterFixtures([
@@ -75,6 +80,7 @@ begin
       TDextNatsTlsIntegrationTests,
       TDextNatsNKeyIntegrationTests,
       TDextNatsStressTests,
+      TDextNatsBenchmarkTests,
       TDextNatsDiTests,
       TDextNatsObservabilityTests
     ]));

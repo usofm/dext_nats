@@ -28,14 +28,17 @@ Source/
                                 threading, reconnection, pub/sub, request/reply,
                                 Drain/DrainAsync/IsDraining, NKey/JWT auth,
                                 ServerInfo snapshot (handshake + async INFO),
+                                TNatsMsg.PayloadSpan (TByteSpan over Payload),
                                 optional ILogger + opt-in TMetrics.
   Dext.Net.Nats.DependencyInjection.pas
                                 Dext.DI helpers: AddNatsClient (singleton),
                                 AddNatsClientAndConnect, AddNatsJetStream
                                 (transient, does not own the client).
   Dext.Net.Nats.HealthChecks.pas
-                                TNatsHealthCheck / AddNatsHealthCheck (Connected
-                                probe; Web-free — map to IHealthCheck in apps).
+                                TNatsHealthCheck / AddNatsHealthCheck
+                                (Connected probe; optional short Flush via
+                                TNatsHealthCheckOptions.FlushTimeoutMs;
+                                Web-free — map to IHealthCheck in apps).
   Dext.Net.Nats.JetStream.pas   TDextNatsJetStreamContext: stream admin
                                 (create/update/info/delete, ListStreams /
                                 ListStreamNames), consumer list
@@ -276,11 +279,13 @@ parsing frames anywhere else.
       `AddNatsClientAndConnect`, `AddNatsJetStream`, `BindNatsOptions` /
       config section `Nats`)
 - [x] Observability: optional `ILogger`, opt-in `TMetrics` (`EnableMetrics`),
-      `TNatsClientMetrics`, `Dext.Net.Nats.HealthChecks`
+      `TNatsClientMetrics`, `Dext.Net.Nats.HealthChecks` (Connected + optional
+      Flush probe / HLTH P2b)
 - [x] Protocol hot-path PERF (`Docs/NATS_DEXT_ROADMAP.md` SPEC-PERF-01..05):
   `TNatsByteWriter` encode path, byte `ParseControlLine`, INFO/CONNECT via
   `Dext.Json.Utf8` (`TUtf8JsonReader`/`TUtf8JsonWriter`); JetStream admin JSON
-  migrated the same way (PERF-03b); `System.JSON` removed from Protocol + JetStream
+  migrated the same way (PERF-03b); `System.JSON` removed from Protocol + JetStream;
+  PERF-04 `TNatsMsg`/`TNatsJsMsg.PayloadSpan` (`TByteSpan` over owned `Payload`)
 - [x] Async `RequestAsync`/`FlushAsync` via `TAsyncBuilder` (roadmap SPEC-ASYNC-01);
       callback `RequestAsync` overload retained
 - [x] JetStream Key-Value (`Dext.Net.Nats.KeyValue.pas` / SPEC-KV-01):

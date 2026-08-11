@@ -19,6 +19,7 @@
 | Services (`$SRV.*`) | subject/SemVer helpers؛ live AddService+PING+endpoint+Stop | soft-skip بدون سرور (JetStream لازم نیست) |
 | TLS / NKey | env-gated (`DEXT_NATS_TLS_PORT` / `DEXT_NATS_NKEY_PORT`) | بدون env → soft-skip |
 | Stress | Explicit + `DEXT_NATS_RUN_STRESS=1` | خارج از CI پیش‌فرض |
+| Benchmark | Explicit + `DEXT_NATS_RUN_BENCH=1` | خارج از CI پیش‌فرض؛ گزارش ops/sec / msgs/sec (نه gate) |
 | DI / Observability | AddNats*، HealthCheck، Metrics، Logger | Unit؛ TearDown `DefaultProvider := nil` |
 
 **Demo** (`Demo/JetStreamSmokeTest` و E2Eهای دیگر) مکمل دستی است، نه جایگزین suite.
@@ -56,6 +57,7 @@
 | U-09b | `ConsumerConfig_ShouldSerializeOrderedFields` | flow_control / idle_heartbeat / mem_storage / num_replicas |
 | U-09c | `OrderedConsumerOptions_ShouldDefault` | `TNatsOrderedConsumerOptions.CreateDefault` |
 | U-10 | `JsMsg_ShouldParseAckSubjectMetadata` | `TNatsJsMsg.FromNatsMsg` از `$JS.ACK.*` |
+| U-10b | `Msg_PayloadSpan_ShouldViewOwnedBytes` / `JsMsg_PayloadSpan_ShouldViewOwnedBytes` | PERF-04 `PayloadSpan` zero-copy + lifetime (keep `TBytes`) |
 
 #### `TDextNatsIntegrationTests` — cleartext `127.0.0.1:4222` — **~۲۵**
 
@@ -87,6 +89,7 @@
 |------|--------|
 | Live Integration/JS/KV/OS | soft-skip بدون `nats-server`؛ سخت با `DEXT_NATS_REQUIRE_LIVE=1` |
 | Stress | `[Explicit]` — فقط با runner/`DEXT_NATS_RUN_STRESS=1` |
+| Benchmark | `[Explicit]` — فقط با `DEXT_NATS_RUN_BENCH=1`؛ live soft-skip بدون سرور |
 | TLS / NKey | env-gated؛ بدون port → soft-skip حتی با REQUIRE_LIVE |
 | چرخش `ConnectUrls` (failover چندسروره) | فقط parse INFO در Unit؛ integration چندنود ندارد |
 | `ExpectedLastSequence` / همهٔ publish CAS options | ExpectedStream mismatch پوشش دارد؛ بقیه اختیاری |
@@ -273,6 +276,27 @@
 
 ---
 
+### ۴.۷ Throughput benchmark (`Category('Benchmark')`)
+
+Formal harness beside the always-on unit micro-bench `Encode_MicroBenchmark_PubAndCachedPing` (which also prints ops/sec).
+
+| ID | سناریو | وضعیت | یادداشت |
+|----|--------|-------|---------|
+| B-01 | Encode PUB throughput + MSG parse roundtrip (`Encode_Throughput_ShouldReportOpsPerSec`) | EXISTS | Explicit + `DEXT_NATS_RUN_BENCH=1`؛ CPU-only؛ خط `BENCH Encode_Throughput: … ops/sec` / `frames/sec` |
+| B-02 | Live core pub/sub publish+deliver (`PubSub_Throughput_ShouldReportMsgsPerSec`) | EXISTS | Explicit + `DEXT_NATS_RUN_BENCH=1`؛ soft-skip بدون `nats-server`؛ خط `BENCH PubSub_Throughput: … msgs/sec` |
+
+**اجرا:**
+
+```bat
+nats-server
+set DEXT_NATS_RUN_BENCH=1
+Output\Win32\Debug\Dext.Net.Nats.Tests.exe
+```
+
+Runner includes Explicit when `DEXT_NATS_RUN_BENCH=1` or `DEXT_NATS_RUN_STRESS=1`; each suite also self-gates on its own env so they do not cross-run. Soft floors only (catastrophic regression) — **not** a CI performance gate.
+
+---
+
 ## ۵. چیدمان پروژه / Project layout
 
 ### ۵.۱ پیشنهاد ساختار (فازبندی‌شده)
@@ -347,6 +371,7 @@ Output: `..\Output\$(Platform)\$(Config)` مثل Demo.
 | `DEXT_NATS_TLS_PORT` خالی | TLS → soft-skip (حتی با `REQUIRE_LIVE`؛ TLS جدا env-gated است) |
 | TLS port set ولی handshake fail | soft-skip مگر `REQUIRE_LIVE` |
 | Stress | فقط با `DEXT_NATS_RUN_STRESS=1`؛ نبود سرور همان سیاست soft-skip/`REQUIRE_LIVE` |
+| Benchmark | فقط با `DEXT_NATS_RUN_BENCH=1`؛ live pub/sub همان soft-skip/`REQUIRE_LIVE`؛ encode CPU-only |
 
 **کمک‌متدهای پیشنهادی در Support:**
 
@@ -372,6 +397,7 @@ procedure SkipUnless(ACond: Boolean; const AReason: string);
 | `DEXT_NATS_NKEY_HOST` / `DEXT_NATS_NKEY_PORT` | endpoint NKey (port الزامی برای live) |
 | `DEXT_NATS_NKEY_SEED` / `DEXT_NATS_NKEY_SEED_FILE` / `DEXT_NATS_CREDS_FILE` | seed یا `.creds` |
 | `DEXT_NATS_RUN_STRESS` | فعال‌سازی stress |
+| `DEXT_NATS_RUN_BENCH` | فعال‌سازی throughput benchmarks (Explicit؛ گزارش `BENCH … msgs/sec` / `ops/sec`) |
 
 ---
 
@@ -567,6 +593,7 @@ flowchart TD
 - [x] بدون سرور: liveها soft-skip تمیز (exit code موفقیت‌آمیز مگر `DEXT_NATS_REQUIRE_LIVE=1`)
 - [x] TLS بدون env → soft-skip؛ با env+سرور (`Tests/tls`، پورت ۴۲۲۳) → T-01..T-03 سبز
 - [x] Stress اختیاری و جدا از CI پیش‌فرض (`DEXT_NATS_RUN_STRESS=1`)
+- [x] Benchmark اختیاری throughput (`DEXT_NATS_RUN_BENCH=1`؛ B-01/B-02؛ نه CI gate)
 - [x] شکاف‌های بخش ۲.۳ عملی بسته شده‌اند؛ NKey/JWT / DI / push / observability عمداً خارج از scope
 - [x] Demo همچنان به‌عنوان smoke دستی قابل اجراست
 
@@ -581,8 +608,9 @@ flowchart TD
 | JetStream | ~15 (incl. negatives) | 11–13 | T3 |
 | TLS | 3 env-gated | 2–3 env-gated | T4 |
 | Stress | 5 opt-in Explicit | 3–5 opt-in | T5 |
+| Benchmark | 2 opt-in Explicit (`DEXT_NATS_RUN_BENCH`) | 2 opt-in | post-1.0 |
 | Negative (پراکنده) | N-01..N-08 پوشش عملی | ۸ سناریو | T2–T5 |
-| **جمع** | **۷۵ پیش‌فرض / ۸۰ با TLS+Stress** | **~70–80** | — |
+| **جمع** | **۷۵ پیش‌فرض / ۸۲ با TLS+Stress+Bench** | **~70–80** | — |
 
 ---
 
