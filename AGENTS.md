@@ -100,7 +100,8 @@ Demo/
 Tests/                          Dext.Testing-based unit + integration tests.
 Docs/                           Roadmap (`NATS_DEXT_ROADMAP.md`), test matrix
                                 (`TEST_PLAN.md`), forward plan (`NATS_FUTURE_PLAN.md`),
-                                B2B agent draft (`NATS_B2B_AGENT_PLAN.md`).
+                                B2B agent draft (`NATS_B2B_AGENT_PLAN.md`),
+                                MQTT vs NATS notes (`MQTT_VS_NATS.md`).
 Dext.Nats.groupproj             Delphi project group: Tests + all Demo/*.dproj.
 LICENSE                         Apache 2.0.
 ```

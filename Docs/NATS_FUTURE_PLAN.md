@@ -57,7 +57,7 @@
 
 - [x] **Shutdown / WSAEINTR 10004** — landed: dext_nats `afa22e5` (FClosing skip + clean RecvLoop join; `Disconnect_ShouldJoinThreadsCleanly`) + Dext Tcp `7061f861`.
 - [x] **Stream compression + placement** — landed: `ca3d4f5` (`TNatsStoreCompression` / `TNatsPlacement` on `TNatsStreamConfig` + Object Store map; soft-skip live S2 coverage).
-- [ ] **یادداشت معماری MQTT vs NATS** — پیش‌نویس `Dext.Net.Mqtt vs Dext.Net.Nats.md` (untracked) را پالایش و در `Docs/` ثبت کن؛ MQTT همچنان غیرهدف پیاده‌سازی است.
+- [x] **یادداشت معماری MQTT vs NATS** — [`MQTT_VS_NATS.md`](MQTT_VS_NATS.md)؛ MQTT همچنان غیرهدف پیاده‌سازی است.
 - [ ] **B2B Agent / TNatsManager** — پیش‌نویس در [`NATS_B2B_AGENT_PLAN.md`](NATS_B2B_AGENT_PLAN.md) (مسیر legacy Agent + اپ جدید + امنیت RouteId)؛ پیاده‌سازی تا قطعی شدن Outbox/DB معوق.
 
 ### P1 — هم‌ترازی با nats.go (شکاف‌های اعلام‌شده)
@@ -89,7 +89,7 @@
 ریلیز **1.0** وقتی Done است که:
 
 1. همهٔ آیتم‌های **§۲** همچنان سبز روی suite پیش‌فرض بمانند (بدون رگرسیون).
-2. **P0 §۳** committed باشد (shutdown 10004: `afa22e5` / Tcp `7061f861`؛ compression/placement: `ca3d4f5`)؛ آیتم MQTT-vs-NATS note همچنان باز است.
+2. **P0 §۳** committed باشد (shutdown 10004، compression/placement، یادداشت [`MQTT_VS_NATS.md`](MQTT_VS_NATS.md)). B2B Agent فقط سند است و برای برچسب 1.0 کتابخانه اجباری نیست.
 3. [`TEST_PLAN.md`](TEST_PLAN.md): مسیرهای Integration اصلی (Disconnect تمیز، pub/sub، request، JS Fetch+Ack، KV Put/Get، OS Put/Get) بدون fail روی `nats-server -js` محلی.
 4. README و `AGENTS.md` با API واقعی هم‌خوان باشند (بدون وعدهٔ قابلیت uncommitted).
 5. برچسب git `v1.0.0` + یادداشت کوتاه «چه پشتیبانی می‌شود / چه پشتیبانی نمی‌شود».
