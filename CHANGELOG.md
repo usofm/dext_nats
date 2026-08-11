@@ -7,6 +7,7 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/); versioning f
 
 ### Added
 
+- **KV WatchFiltered + bucket Config():** `WatchFiltered` (key/subject wildcards `*` / trailing `>`; multi-filter via consumer `filter_subjects`); `Watch` accepts the same search-key rules. `TNatsKeyValueConfig.FromStreamConfig` + `TDextNatsKeyValue.Config` / `TNatsKeyValueStatus.Config` read back bucket settings from STREAM.INFO (Mirror/Sources/RePublish still omitted). Consumer config gains `FilterSubjects`.
 - **KV PurgeDeletes + JetStream STREAM.PURGE:** `TDextNatsJetStreamContext.PurgeStream` / `TNatsStreamPurgeRequest` (`subject` / `seq` / `keep`). KV `PurgeDeletes` / `TNatsKeyValuePurgeDeletesOptions.DeleteMarkersOlderThan` (0 → 30m default, negative → remove all markers; nats.go parity).
 - **Object Store Watch IgnoreDeletes / IncludeHistory:** `TNatsObjectStoreWatchOptions` gains `IgnoreDeletes` (skip `Deleted` meta, still counts toward EndOfInitial) and `IncludeHistory` (`deliver_policy=all`; conflicts with `UpdatesOnly`).
 - **KV GetRevision + bucket Compression/Placement:** `GetRevision` / `TryGetRevision` (STREAM.MSG.GET; includes DEL/PURGE; wrong-subject → not found, nats.go parity). `TNatsKeyValueConfig.Compression` / `Placement` map onto KV_* `STREAM.CREATE` (`scS2` ≡ nats.go `Compression: true`).
@@ -31,7 +32,7 @@ First production-oriented release of the native NATS client for the Dext Framewo
 - **Async:** `RequestAsync` / `FlushAsync` (`TAsyncBuilder`)
 - **DI / ops:** `AddNatsClient` / config bind / `AddNatsJetStream`, optional `ILogger`, opt-in metrics, `TNatsHealthCheck`
 - **JetStream:** stream/consumer admin (`ListStreams` / `ListConsumers`, …), Fetch, push `SubscribePush`, ordered `SubscribeOrdered`, Ack/Nak/Term/InProgress, compression (`s2`) + placement on stream config
-- **Key-Value:** Put/Get/Delete/Purge, Keys, History, Watch (EndOfInitial, MetaOnly/UpdatesOnly, IncludeHistory, IgnoreDeletes, ResumeFromRevision), CAS Create/Update, per-key TTL (server 2.11+)
+- **Key-Value:** Put/Get/Delete/Purge, Keys, History, Watch/WatchFiltered (EndOfInitial, wildcards, MetaOnly/UpdatesOnly, IncludeHistory, IgnoreDeletes, ResumeFromRevision), Config() stream read-back, CAS Create/Update, per-key TTL (server 2.11+)
 - **Object Store:** Create/Update/Delete store, Put/Get/Delete, List/Keys, Watch, UpdateMeta, Seal, links, streaming Put/Get + PutFile/GetFile, lazy `GetResult` / `TDextNatsObjectResult`
 - **DX:** unit + live tests (`Dext.Testing`), console E2E demos, VCLDemo, `Dext.Nats.groupproj`
 

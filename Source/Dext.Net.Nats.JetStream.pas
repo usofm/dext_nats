@@ -167,6 +167,12 @@ type
     /// <summary>Optional subject filter within the stream.</summary>
     FilterSubject: string;
     /// <summary>
+    ///   Multi-filter subjects (JSON <c>filter_subjects</c>). When non-empty, takes
+    ///   precedence over <see cref="FilterSubject"/> (server rejects both together).
+    ///   Used by KV <c>WatchFiltered</c> with more than one key pattern.
+    /// </summary>
+    FilterSubjects: TArray<string>;
+    /// <summary>
     ///   When non-empty, creates a <b>push</b> consumer that delivers to this subject.
     ///   Empty = pull consumer (use <see cref="TDextNatsJetStreamContext.Fetch"/>).
     /// </summary>
@@ -1806,6 +1812,7 @@ var
   w: TJsByteWriter;
   jw: TUtf8JsonWriter;
   deliverStr, ackStr, replayStr: string;
+  i: Integer;
 begin
   case DeliverPolicy of
     dpAll: deliverStr := 'all';
@@ -1851,7 +1858,15 @@ begin
     jw.WritePropertyName('description');
     jw.WriteString(Description);
   end;
-  if FilterSubject <> '' then
+  if Length(FilterSubjects) > 0 then
+  begin
+    jw.WritePropertyName('filter_subjects');
+    jw.WriteStartArray;
+    for i := 0 to High(FilterSubjects) do
+      jw.WriteString(FilterSubjects[i]);
+    jw.WriteEndArray;
+  end
+  else if FilterSubject <> '' then
   begin
     jw.WritePropertyName('filter_subject');
     jw.WriteString(FilterSubject);

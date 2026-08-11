@@ -50,12 +50,13 @@ Source/
   Dext.Net.Nats.KeyValue.pas    TDextNatsKeyValue: JetStream KV buckets
                                 (CreateBucket/Put/Get/GetRevision/Delete/Purge /
                                 PurgeDeletes, Keys/ListKeys, History,
-                                Watch/WatchAll (EndOfInitial marker, MetaOnly /
-                                UpdatesOnly / IncludeHistory / IgnoreDeletes),
-                                CAS Create/Update, bucket Compression/Placement,
-                                per-key TTL via LimitMarkerTTL + Create/Purge
-                                Nats-TTL; NATS 2.11+ / ADR-48). Composition over
-                                JetStream.
+                                Watch/WatchFiltered/WatchAll (wildcards, EndOfInitial,
+                                MetaOnly / UpdatesOnly / IncludeHistory /
+                                IgnoreDeletes), Config()/Status.Config stream
+                                read-back, CAS Create/Update, bucket
+                                Compression/Placement, per-key TTL via
+                                LimitMarkerTTL + Create/Purge Nats-TTL;
+                                NATS 2.11+ / ADR-48). Composition over JetStream.
   Dext.Net.Nats.ObjectStore.pas TDextNatsObjectStoreContext / TDextNatsObjectStore:
                                 JetStream Object Store (CreateStore /
                                 UpdateStore/UpdateObjectStore / DeleteStore /
@@ -266,9 +267,9 @@ parsing frames anywhere else.
   `Demo/JetStreamSmokeTest/` (JetStream admin / pull / dedup),
   `Demo/KeyValueE2E/` (JetStream KV CreateBucket / Put / Get / Keys /
   History / Delete / Purge, CAS Create/Update, WatchAll EndOfInitial +
-  IncludeHistory Watch, optional per-key TTL, DeleteBucket), and
-  `Demo/ObjectStoreE2E/` (JetStream Object Store CreateStore / Put / Get /
-  PutFile / GetFile / List / Keys / Delete / UpdateMeta / WatchAll /
+  IncludeHistory Watch / WatchFiltered, Config(), optional per-key TTL,
+  DeleteBucket), and `Demo/ObjectStoreE2E/` (JetStream Object Store CreateStore /
+  Put / Get / PutFile / GetFile / List / Keys / Delete / UpdateMeta / WatchAll /
   AddLink / Seal / DeleteStore)
 - [x] VCL demo (`Demo/VCLDemo/`): multi-connection tabs, connect toggle,
   Publish/Subscribe/Request/Unsubscribe, shared log, JetStream helper form
@@ -295,9 +296,10 @@ parsing frames anywhere else.
 - [x] JetStream Key-Value (`Dext.Net.Nats.KeyValue.pas` / SPEC-KV-01):
       CreateBucket / DeleteBucket / BucketExists / Put / Get / GetRevision /
       Delete / Purge / PurgeDeletes (`DeleteMarkersOlderThan`), Keys / ListKeys,
-      History, Watch / WatchAll (push last_per_subject + EndOfInitial marker via
-      NumPending; MetaOnly / UpdatesOnly / IncludeHistory / IgnoreDeletes /
-      ResumeFromRevision), CAS Create / Update
+      History, Watch / WatchFiltered / WatchAll (push last_per_subject +
+      EndOfInitial marker via NumPending; key wildcards `*` / `>`; MetaOnly /
+      UpdatesOnly / IncludeHistory / IgnoreDeletes / ResumeFromRevision),
+      `Config` / `Status.Config` from STREAM.INFO, CAS Create / Update
       (`Nats-Expected-Last-Subject-Sequence`), bucket `Compression` / `Placement`,
       per-key TTL (`LimitMarkerTTL` + `Create`/`Purge` with `Nats-TTL`; NATS 2.11+)
 - [x] Release **1.0.0** — `CHANGELOG.md`, README version line, git tag `v1.0.0`

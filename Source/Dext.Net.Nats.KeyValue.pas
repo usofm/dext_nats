@@ -34,6 +34,9 @@
 {  when the initial consumer backlog is done; MetaOnly / UpdatesOnly /      }
 {  IncludeHistory / ResumeFromRevision via consumer headers_only /          }
 {  deliver_policy; IgnoreDeletes filters DEL/PURGE client-side (nats.go).   }
+{  Watch / WatchFiltered accept NATS subject wildcards (* / >) on keys;     }
+{  multi-filter uses consumer filter_subjects. Config() / Status.Config     }
+{  round-trip bucket settings from STREAM.INFO (no Mirror/Sources/RePublish).}
 {                                                                           }
 {***************************************************************************}
 unit Dext.Net.Nats.KeyValue;
@@ -122,6 +125,12 @@ type
     class function CreateDefault(const ABucket: string): TNatsKeyValueConfig; static;
     /// <summary>Maps this bucket config onto a <see cref="TNatsStreamConfig"/> for STREAM.CREATE.</summary>
     function ToStreamConfig: TNatsStreamConfig;
+    /// <summary>
+    ///   Rebuilds bucket config from a KV_* stream config (nats.go
+    ///   <c>KeyValueBucketStatus.Config</c>). Omits Mirror/Sources/RePublish/Metadata.
+    /// </summary>
+    class function FromStreamConfig(const ABucket: string;
+      const AStream: TNatsStreamConfig): TNatsKeyValueConfig; static;
   end;
 
   /// <summary>Bucket status derived from the backing KV_* stream info.</summary>
@@ -133,8 +142,10 @@ type
     History: Integer;
     /// <summary>Configured limit-marker TTL in nanoseconds when known; else 0.</summary>
     LimitMarkerTTL: Int64;
-    class function FromStreamInfo(const ABucket: string; const AInfo: TNatsStreamInfo;
-      AHistory: Integer = 1; ALimitMarkerTTL: Int64 = 0): TNatsKeyValueStatus; static;
+    /// <summary>Bucket config read back from stream (same as <see cref="TDextNatsKeyValue.Config"/>).</summary>
+    Config: TNatsKeyValueConfig;
+    class function FromStreamInfo(const ABucket: string;
+      const AInfo: TNatsStreamInfo): TNatsKeyValueStatus; static;
   end;
 
   /// <summary>One revision of a key (value + metadata).</summary>
@@ -263,6 +274,7 @@ type
     class procedure ValidateKeyName(const AKey: string); static;
     class function IsValidBucketChar(C: Char): Boolean; static;
     class function IsValidKeyChar(C: Char): Boolean; static;
+    class function IsValidSearchKeyChar(C: Char): Boolean; static;
     function KeyFromSubject(const ASubject: string): string;
     function EntryFromStored(const AKey: string; const AMsg: TNatsStoredMsg): TNatsKeyValueEntry;
     function EntryFromJsMsg(const AMsg: TNatsJsMsg): TNatsKeyValueEntry;
@@ -274,10 +286,11 @@ type
     function CreateKey(const AKey: string; const AValue: TBytes; ATTLNanos: Int64): UInt64;
     function PullSubjectEntries(const AFilterSubject: string; ADeliver: TNatsDeliverPolicy;
       AIncludeDeletes: Boolean): IList<TNatsKeyValueEntry>;
-    function StartWatch(const AFilterSubject: string;
+    function StartWatch(const AFilterSubjects: TArray<string>;
       AHandler: TNatsKeyValueWatchHandler;
       const AOptions: TNatsKeyValueWatchOptions): TDextNatsKeyValueWatcher;
     class procedure ValidateTTLNanos(ATTLNanos: Int64; const ALabel: string); static;
+    class procedure ValidateSearchKey(const AKey: string); static;
     class function OperationFromHeaders(const AHeaders: TNatsHeaders): TNatsKvOperation; static;
   public
     /// <summary>Binds to an existing bucket (does not create it). Validates the name only.</summary>
@@ -355,8 +368,13 @@ type
     procedure PurgeDeletes; overload;
     /// <summary>PurgeDeletes with <see cref="TNatsKeyValuePurgeDeletesOptions"/>.</summary>
     procedure PurgeDeletes(const AOptions: TNatsKeyValuePurgeDeletesOptions); overload;
-    /// <summary>Current bucket status from STREAM.INFO.</summary>
+    /// <summary>Current bucket status from STREAM.INFO (includes <c>Config</c>).</summary>
     function Status: TNatsKeyValueStatus;
+    /// <summary>
+    ///   Current bucket config from STREAM.INFO (nats.go <c>Status.Config()</c>).
+    ///   Mirror/Sources/RePublish are not surfaced.
+    /// </summary>
+    function Config: TNatsKeyValueConfig;
 
     /// <summary>
     ///   Live key names (latest revision is a PUT). Ephemeral pull consumer with
@@ -371,13 +389,25 @@ type
     /// </summary>
     function History(const AKey: string): IList<TNatsKeyValueEntry>;
     /// <summary>
-    ///   Watches one key: delivers the current last-per-subject value (if any), then
-    ///   an <see cref="TNatsKeyValueEntry.EndOfInitial"/> marker, then live updates.
-    ///   Caller must Free the watcher (or Stop) before freeing this store.
+    ///   Watches a key or key pattern (<c>*</c> / trailing <c>&gt;</c> wildcards,
+    ///   nats.go <c>Watch</c>): last-per-subject snapshot (if any), EndOfInitial
+    ///   marker, then live updates. Caller must Free the watcher (or Stop) before
+    ///   freeing this store.
     /// </summary>
     function Watch(const AKey: string; AHandler: TNatsKeyValueWatchHandler): TDextNatsKeyValueWatcher; overload;
-    /// <summary>Watch one key with <see cref="TNatsKeyValueWatchOptions"/>.</summary>
+    /// <summary>Watch with <see cref="TNatsKeyValueWatchOptions"/>.</summary>
     function Watch(const AKey: string; AHandler: TNatsKeyValueWatchHandler;
+      const AOptions: TNatsKeyValueWatchOptions): TDextNatsKeyValueWatcher; overload;
+    /// <summary>
+    ///   Watches keys matching any of AKeyFilters (subject wildcards; nats.go
+    ///   <c>WatchFiltered</c>). Empty filters = WatchAll. Multiple filters use
+    ///   consumer <c>filter_subjects</c>.
+    /// </summary>
+    function WatchFiltered(const AKeyFilters: TArray<string>;
+      AHandler: TNatsKeyValueWatchHandler): TDextNatsKeyValueWatcher; overload;
+    /// <summary>WatchFiltered with <see cref="TNatsKeyValueWatchOptions"/>.</summary>
+    function WatchFiltered(const AKeyFilters: TArray<string>;
+      AHandler: TNatsKeyValueWatchHandler;
       const AOptions: TNatsKeyValueWatchOptions): TDextNatsKeyValueWatcher; overload;
     /// <summary>
     ///   Watches the whole bucket (last-per-subject snapshot + EndOfInitial marker +
@@ -475,10 +505,33 @@ begin
     Result.DuplicateWindow := dupWindow;
 end;
 
+class function TNatsKeyValueConfig.FromStreamConfig(const ABucket: string;
+  const AStream: TNatsStreamConfig): TNatsKeyValueConfig;
+begin
+  Result := CreateDefault(ABucket);
+  Result.Description := AStream.Description;
+  if AStream.MaxMsgsPerSubject > 0 then
+  begin
+    if AStream.MaxMsgsPerSubject > NATS_KV_MAX_HISTORY then
+      Result.History := NATS_KV_MAX_HISTORY
+    else
+      Result.History := Integer(AStream.MaxMsgsPerSubject);
+  end;
+  Result.MaxBytes := AStream.MaxBytes;
+  Result.MaxValueSize := AStream.MaxMsgSize;
+  Result.TTL := AStream.MaxAge;
+  Result.LimitMarkerTTL := AStream.SubjectDeleteMarkerTTL;
+  Result.Storage := AStream.Storage;
+  if AStream.NumReplicas > 0 then
+    Result.NumReplicas := AStream.NumReplicas;
+  Result.Compression := AStream.Compression;
+  Result.Placement := AStream.Placement;
+end;
+
 { TNatsKeyValueStatus }
 
-class function TNatsKeyValueStatus.FromStreamInfo(const ABucket: string; const AInfo: TNatsStreamInfo;
-  AHistory: Integer; ALimitMarkerTTL: Int64): TNatsKeyValueStatus;
+class function TNatsKeyValueStatus.FromStreamInfo(const ABucket: string;
+  const AInfo: TNatsStreamInfo): TNatsKeyValueStatus;
 begin
   Result := Default(TNatsKeyValueStatus);
   Result.Bucket := ABucket;
@@ -487,10 +540,9 @@ begin
     Result.StreamName := TDextNatsKeyValue.StreamNameForBucket(ABucket);
   Result.Values := AInfo.Messages;
   Result.Bytes := AInfo.Bytes;
-  Result.History := AHistory;
-  if Result.History <= 0 then
-    Result.History := 1;
-  Result.LimitMarkerTTL := ALimitMarkerTTL;
+  Result.Config := TNatsKeyValueConfig.FromStreamConfig(ABucket, AInfo.Config);
+  Result.History := Result.Config.History;
+  Result.LimitMarkerTTL := Result.Config.LimitMarkerTTL;
 end;
 
 { TNatsKeyValueEntry }
@@ -553,6 +605,12 @@ begin
   Result := IsValidBucketChar(C) or (C = '.') or (C = '/') or (C = '=');
 end;
 
+class function TDextNatsKeyValue.IsValidSearchKeyChar(C: Char): Boolean;
+begin
+  { nats.go validSearchKeyRe: key chars plus '*' (token wildcard). '>' is trailing-only. }
+  Result := IsValidKeyChar(C) or (C = '*');
+end;
+
 class procedure TDextNatsKeyValue.ValidateBucketName(const ABucket: string);
 var
   i: Integer;
@@ -575,6 +633,28 @@ begin
   for i := 1 to Length(AKey) do
     if not IsValidKeyChar(AKey[i]) then
       raise EDextNatsKeyValueError.CreateFmt('Invalid KV key: %s', [AKey]);
+end;
+
+class procedure TDextNatsKeyValue.ValidateSearchKey(const AKey: string);
+var
+  i, n: Integer;
+begin
+  { nats.go searchKeyValid — empty rejected; '*' anywhere; '>' only at end. }
+  if AKey = '' then
+    raise EDextNatsKeyValueError.Create('KV key filter must not be empty');
+  n := Length(AKey);
+  if (AKey[1] = '.') or (AKey[n] = '.') or (Pos('..', AKey) > 0) then
+    raise EDextNatsKeyValueError.CreateFmt('Invalid KV key filter: %s', [AKey]);
+  for i := 1 to n do
+  begin
+    if AKey[i] = '>' then
+    begin
+      if i <> n then
+        raise EDextNatsKeyValueError.CreateFmt('Invalid KV key filter: %s', [AKey]);
+    end
+    else if not IsValidSearchKeyChar(AKey[i]) then
+      raise EDextNatsKeyValueError.CreateFmt('Invalid KV key filter: %s', [AKey]);
+  end;
 end;
 
 class procedure TDextNatsKeyValue.ValidateTTLNanos(ATTLNanos: Int64; const ALabel: string);
@@ -665,7 +745,7 @@ begin
     raise EDextNatsKeyValueError.Create('GetStatus requires a JetStream context');
   ValidateBucketName(ABucket);
   info := AJs.GetStreamInfo(StreamNameForBucket(ABucket));
-  Result := TNatsKeyValueStatus.FromStreamInfo(ABucket, info, 1);
+  Result := TNatsKeyValueStatus.FromStreamInfo(ABucket, info);
 end;
 
 class function TDextNatsKeyValue.Open(AJs: TDextNatsJetStreamContext;
@@ -1001,6 +1081,11 @@ begin
   Result := GetStatus(FJs, FBucket);
 end;
 
+function TDextNatsKeyValue.Config: TNatsKeyValueConfig;
+begin
+  Result := Status.Config;
+end;
+
 function TDextNatsKeyValue.PullSubjectEntries(const AFilterSubject: string;
   ADeliver: TNatsDeliverPolicy; AIncludeDeletes: Boolean): IList<TNatsKeyValueEntry>;
 const
@@ -1289,7 +1374,7 @@ begin
   end;
 end;
 
-function TDextNatsKeyValue.StartWatch(const AFilterSubject: string;
+function TDextNatsKeyValue.StartWatch(const AFilterSubjects: TArray<string>;
   AHandler: TNatsKeyValueWatchHandler;
   const AOptions: TNatsKeyValueWatchOptions): TDextNatsKeyValueWatcher;
 var
@@ -1301,7 +1386,7 @@ var
 begin
   if not Assigned(AHandler) then
     raise EDextNatsKeyValueError.Create('Watch requires a handler');
-  if AFilterSubject = '' then
+  if Length(AFilterSubjects) = 0 then
     raise EDextNatsKeyValueError.Create('Watch requires a filter subject');
   AOptions.Validate;
 
@@ -1318,7 +1403,10 @@ begin
       end);
     cons := TNatsConsumerConfig.CreateDefault;
     cons.Name := consumerName;
-    cons.FilterSubject := AFilterSubject;
+    if Length(AFilterSubjects) = 1 then
+      cons.FilterSubject := AFilterSubjects[0]
+    else
+      cons.FilterSubjects := AFilterSubjects;
     cons.DeliverSubject := deliver;
     { Priority matches nats.go stacking: StartSequence overrides DeliverNew /
       LastPerSubject; IncludeHistory omits last_per_subject (deliver all). }
@@ -1358,8 +1446,32 @@ end;
 function TDextNatsKeyValue.Watch(const AKey: string; AHandler: TNatsKeyValueWatchHandler;
   const AOptions: TNatsKeyValueWatchOptions): TDextNatsKeyValueWatcher;
 begin
-  ValidateKeyName(AKey);
-  Result := StartWatch(SubjectForKey(FBucket, AKey), AHandler, AOptions);
+  ValidateSearchKey(AKey);
+  Result := StartWatch([SubjectForKey(FBucket, AKey)], AHandler, AOptions);
+end;
+
+function TDextNatsKeyValue.WatchFiltered(const AKeyFilters: TArray<string>;
+  AHandler: TNatsKeyValueWatchHandler): TDextNatsKeyValueWatcher;
+begin
+  Result := WatchFiltered(AKeyFilters, AHandler, TNatsKeyValueWatchOptions.CreateDefault);
+end;
+
+function TDextNatsKeyValue.WatchFiltered(const AKeyFilters: TArray<string>;
+  AHandler: TNatsKeyValueWatchHandler;
+  const AOptions: TNatsKeyValueWatchOptions): TDextNatsKeyValueWatcher;
+var
+  subjects: TArray<string>;
+  i: Integer;
+begin
+  if Length(AKeyFilters) = 0 then
+    Exit(WatchAll(AHandler, AOptions));
+  SetLength(subjects, Length(AKeyFilters));
+  for i := 0 to High(AKeyFilters) do
+  begin
+    ValidateSearchKey(AKeyFilters[i]);
+    subjects[i] := SubjectForKey(FBucket, AKeyFilters[i]);
+  end;
+  Result := StartWatch(subjects, AHandler, AOptions);
 end;
 
 function TDextNatsKeyValue.WatchAll(AHandler: TNatsKeyValueWatchHandler): TDextNatsKeyValueWatcher;
@@ -1370,7 +1482,7 @@ end;
 function TDextNatsKeyValue.WatchAll(AHandler: TNatsKeyValueWatchHandler;
   const AOptions: TNatsKeyValueWatchOptions): TDextNatsKeyValueWatcher;
 begin
-  Result := StartWatch(Format(NATS_KV_SUBJECTS, [FBucket]), AHandler, AOptions);
+  Result := StartWatch([Format(NATS_KV_SUBJECTS, [FBucket])], AHandler, AOptions);
 end;
 
 end.

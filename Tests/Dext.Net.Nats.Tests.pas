@@ -152,6 +152,8 @@ type
     [Test, Category('Unit')]
     procedure ConsumerConfig_ShouldSerializeOrderedFields;
     [Test, Category('Unit')]
+    procedure ConsumerConfig_ShouldSerializeFilterSubjects;
+    [Test, Category('Unit')]
     procedure OrderedConsumerOptions_ShouldDefault;
     [Test, Category('Unit')]
     procedure Msg_PayloadSpan_ShouldViewOwnedBytes;
@@ -180,6 +182,8 @@ type
     [Test, Category('Unit')]
     procedure KeyValueConfig_ShouldMapToStreamConfig;
     [Test, Category('Unit')]
+    procedure KeyValueConfig_FromStreamConfig_ShouldRoundTrip;
+    [Test, Category('Unit')]
     procedure KeyValueConfig_LimitMarkerTTL_ShouldEnableMsgTTL;
     [Test, Category('Unit')]
     procedure KeyValue_ValidateTTL_ShouldRejectSubSecond;
@@ -187,6 +191,8 @@ type
     procedure StoredMsg_ShouldParseDataAndKvHeaders;
     [Test, Category('Unit')]
     procedure KeyValue_ValidateNames_ShouldRejectInvalid;
+    [Test, Category('Unit'), Category('KeyValue'), Category('Negative')]
+    procedure KeyValue_ValidateSearchKey_ShouldRejectBadWildcards;
   end;
 
   [TestFixture('NATS Client Integration (localhost:4222)')]
@@ -381,6 +387,10 @@ type
     procedure WatchAll_IgnoreDeletes_ShouldSkipDeleteMarkers;
     [Test, Category('JetStream'), Category('KeyValue')]
     procedure Watch_ResumeFromRevision_ShouldSkipEarlierRevisions;
+    [Test, Category('JetStream'), Category('KeyValue')]
+    procedure WatchFiltered_ShouldMatchWildcardKeys;
+    [Test, Category('JetStream'), Category('KeyValue')]
+    procedure Config_ShouldRoundTripFromStream;
     [Test, Category('JetStream'), Category('KeyValue')]
     procedure Create_ShouldPutOnlyIfAbsent;
     [Test, Category('JetStream'), Category('KeyValue'), Category('Negative')]
@@ -1500,6 +1510,20 @@ begin
   Should(json.Contains('num_replicas')).BeFalse;
 end;
 
+procedure TDextNatsProtocolTests.ConsumerConfig_ShouldSerializeFilterSubjects;
+var
+  cfg: TNatsConsumerConfig;
+  json: string;
+begin
+  cfg := TNatsConsumerConfig.CreateDefault;
+  cfg.Name := 'multi';
+  cfg.FilterSubject := 'ignored.when.array.set';
+  cfg.FilterSubjects := ['$KV.B.a.*', '$KV.B.b.>'];
+  json := cfg.ToJson;
+  Should(json.Contains('"filter_subjects":["$KV.B.a.*","$KV.B.b.>"]')).BeTrue;
+  Should(json.Contains('"filter_subject"')).BeFalse;
+end;
+
 procedure TDextNatsProtocolTests.OrderedConsumerOptions_ShouldDefault;
 var
   opts: TNatsOrderedConsumerOptions;
@@ -1799,6 +1823,40 @@ begin
   Should(json.Contains('"placement":{"cluster":"east","tags":["kv:hot"]}')).BeTrue;
 end;
 
+procedure TDextNatsProtocolTests.KeyValueConfig_FromStreamConfig_ShouldRoundTrip;
+var
+  kv, back: TNatsKeyValueConfig;
+  stream: TNatsStreamConfig;
+begin
+  kv := TNatsKeyValueConfig.CreateDefault('ROUND');
+  kv.Description := 'inventory';
+  kv.History := 7;
+  kv.MaxBytes := 1024 * 1024;
+  kv.MaxValueSize := 4096;
+  kv.TTL := 60 * NATS_KV_MIN_TTL_NANOS;
+  kv.LimitMarkerTTL := 5 * NATS_KV_MIN_TTL_NANOS;
+  kv.Storage := ssMemory;
+  kv.NumReplicas := 1;
+  kv.Compression := scS2;
+  kv.Placement.Cluster := 'west';
+  kv.Placement.Tags := ['kv'];
+  stream := kv.ToStreamConfig;
+  back := TNatsKeyValueConfig.FromStreamConfig('ROUND', stream);
+  Should(back.Bucket).Be('ROUND');
+  Should(back.Description).Be('inventory');
+  Should(back.History).Be(7);
+  Should(back.MaxBytes).Be(1024 * 1024);
+  Should(back.MaxValueSize).Be(4096);
+  Should(back.TTL).Be(60 * NATS_KV_MIN_TTL_NANOS);
+  Should(back.LimitMarkerTTL).Be(5 * NATS_KV_MIN_TTL_NANOS);
+  Should(Ord(back.Storage)).Be(Ord(ssMemory));
+  Should(back.NumReplicas).Be(1);
+  Should(Ord(back.Compression)).Be(Ord(scS2));
+  Should(back.Placement.Cluster).Be('west');
+  Should(Length(back.Placement.Tags)).Be(1);
+  Should(back.Placement.Tags[0]).Be('kv');
+end;
+
 procedure TDextNatsProtocolTests.KeyValueConfig_LimitMarkerTTL_ShouldEnableMsgTTL;
 var
   kv: TNatsKeyValueConfig;
@@ -1869,6 +1927,48 @@ begin
       kv := TDextNatsKeyValue.Create(nil, 'x');
       kv.Free;
     end).Throw(EDextNatsKeyValueError);
+end;
+
+procedure TDextNatsProtocolTests.KeyValue_ValidateSearchKey_ShouldRejectBadWildcards;
+var
+  client: TDextNatsClient;
+  js: TDextNatsJetStreamContext;
+  kv: TDextNatsKeyValue;
+  handler: TNatsKeyValueWatchHandler;
+begin
+  { ValidateSearchKey runs before StartWatch I/O — no server required. }
+  client := TDextNatsClient.Create;
+  js := TDextNatsJetStreamContext.Create(client);
+  kv := TDextNatsKeyValue.Create(js, 'FILTERS');
+  handler := procedure(const AEntry: TNatsKeyValueEntry)
+    begin
+    end;
+  try
+    Should(
+      procedure
+      begin
+        kv.WatchFiltered(['a>b'], handler);
+      end).Throw(EDextNatsKeyValueError);
+    Should(
+      procedure
+      begin
+        kv.WatchFiltered(['.leading'], handler);
+      end).Throw(EDextNatsKeyValueError);
+    Should(
+      procedure
+      begin
+        kv.WatchFiltered(['trailing.'], handler);
+      end).Throw(EDextNatsKeyValueError);
+    Should(
+      procedure
+      begin
+        kv.WatchFiltered(['has..dot'], handler);
+      end).Throw(EDextNatsKeyValueError);
+  finally
+    kv.Free;
+    js.Free;
+    client.Free;
+  end;
 end;
 
 { TDextNatsIntegrationTests }
@@ -4407,6 +4507,145 @@ begin
       watcher.Free;
     gotMarker.Free;
     lock.Free;
+    kv.Free;
+    TDextNatsKeyValue.DeleteBucket(FJs, bucket);
+  end;
+end;
+
+procedure TDextNatsKeyValueTests.WatchFiltered_ShouldMatchWildcardKeys;
+var
+  bucket: string;
+  cfg: TNatsKeyValueConfig;
+  kv: TDextNatsKeyValue;
+  watcher: TDextNatsKeyValueWatcher;
+  lock: TCriticalSection;
+  got: IList<string>;
+  gotMarker: TEvent;
+  i, j, attempt: Integer;
+  sawBlue, sawRed, sawGadget: Boolean;
+begin
+  if not EnsureJetStreamOrFail then
+    Exit;
+
+  bucket := UniqueBucket('DEXTKVWF');
+  cfg := TNatsKeyValueConfig.CreateDefault(bucket);
+  cfg.Storage := ssMemory;
+  cfg.History := 1;
+  kv := TDextNatsKeyValue.CreateBucket(FJs, cfg);
+  lock := TCriticalSection.Create;
+  got := TCollections.CreateList<string>;
+  gotMarker := TEvent.Create(nil, True, False, '');
+  watcher := nil;
+  try
+    kv.Put('widget.blue', '41');
+    kv.Put('widget.red', '7');
+    kv.Put('gadget.pro', '99');
+
+    watcher := kv.WatchFiltered(['widget.*'],
+      procedure(const AEntry: TNatsKeyValueEntry)
+      begin
+        lock.Enter;
+        try
+          if AEntry.IsEndOfInitial then
+            gotMarker.SetEvent
+          else if AEntry.IsPut then
+            got.Add(AEntry.Key + '=' + AEntry.AsString);
+        finally
+          lock.Leave;
+        end;
+      end);
+
+    Should(gotMarker.WaitFor(5000) = wrSignaled).BeTrue;
+    sawBlue := False;
+    sawRed := False;
+    sawGadget := False;
+    lock.Enter;
+    try
+      Should(got.Count).Be(2);
+      for i := 0 to got.Count - 1 do
+      begin
+        if got[i] = 'widget.blue=41' then
+          sawBlue := True;
+        if got[i] = 'widget.red=7' then
+          sawRed := True;
+        if got[i].StartsWith('gadget.') then
+          sawGadget := True;
+      end;
+    finally
+      lock.Leave;
+    end;
+    Should(sawBlue).BeTrue;
+    Should(sawRed).BeTrue;
+    Should(sawGadget).BeFalse;
+
+    kv.Put('widget.blue', '42');
+    kv.Put('gadget.pro', '100');
+    { Live update for matching key only. }
+    sawBlue := False;
+    sawGadget := False;
+    for attempt := 1 to 50 do
+    begin
+      lock.Enter;
+      try
+        sawBlue := False;
+        sawGadget := False;
+        for j := 0 to got.Count - 1 do
+        begin
+          if got[j] = 'widget.blue=42' then
+            sawBlue := True;
+          if got[j] = 'gadget.pro=100' then
+            sawGadget := True;
+        end;
+      finally
+        lock.Leave;
+      end;
+      if sawBlue then
+        Break;
+      Sleep(100);
+    end;
+    Should(sawBlue).BeTrue;
+    Should(sawGadget).BeFalse;
+  finally
+    if watcher <> nil then
+      watcher.Free;
+    gotMarker.Free;
+    lock.Free;
+    kv.Free;
+    TDextNatsKeyValue.DeleteBucket(FJs, bucket);
+  end;
+end;
+
+procedure TDextNatsKeyValueTests.Config_ShouldRoundTripFromStream;
+var
+  bucket: string;
+  cfg, back: TNatsKeyValueConfig;
+  kv: TDextNatsKeyValue;
+  st: TNatsKeyValueStatus;
+begin
+  if not EnsureJetStreamOrFail then
+    Exit;
+
+  bucket := UniqueBucket('DEXTKVCFG');
+  cfg := TNatsKeyValueConfig.CreateDefault(bucket);
+  cfg.Description := 'cfg-roundtrip';
+  cfg.Storage := ssMemory;
+  cfg.History := 5;
+  cfg.MaxValueSize := 2048;
+  cfg.Compression := scS2;
+  kv := TDextNatsKeyValue.CreateBucket(FJs, cfg);
+  try
+    back := kv.Config;
+    Should(back.Bucket).Be(bucket);
+    Should(back.Description).Be('cfg-roundtrip');
+    Should(back.History).Be(5);
+    Should(back.MaxValueSize).Be(2048);
+    Should(Ord(back.Storage)).Be(Ord(ssMemory));
+    Should(Ord(back.Compression)).Be(Ord(scS2));
+    st := kv.Status;
+    Should(st.History).Be(5);
+    Should(st.Config.Description).Be('cfg-roundtrip');
+    Should(Ord(st.Config.Compression)).Be(Ord(scS2));
+  finally
     kv.Free;
     TDextNatsKeyValue.DeleteBucket(FJs, bucket);
   end;
