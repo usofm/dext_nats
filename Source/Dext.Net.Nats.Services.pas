@@ -19,20 +19,21 @@
 {                                                                           }
 {***************************************************************************}
 {                                                                           }
-{  NATS Services API (ADR-32 / nats.go micro) — MVP.                        }
+{  NATS Services API (ADR-32 / nats.go micro).                              }
 {  Register request/reply endpoints and auto-respond on $SRV.PING|INFO|STATS }
 {  discovery subjects. TDextNatsService wraps an existing TDextNatsClient by }
 {  composition and does not own its lifetime.                               }
 {                                                                           }
-{  MVP covers: name/version/description, AddEndpoint (subject + handler),   }
-{  queue group (default "q"), PING/INFO/STATS at all/kind/instance subjects,}
-{  basic stats (num_requests / num_errors / processing_time), Respond /     }
-{  RespondError headers, graceful Stop (UNSUB).                             }
+{  Covers: name/version/description, AddEndpoint (subject + handler),       }
+{  AddGroup (subject-prefix groups + nested AddGroup / AddEndpoint),        }
+{  queue group (default "q", inherit/override on group and endpoint),       }
+{  PING/INFO/STATS at all/kind/instance subjects, basic stats               }
+{  (num_requests / num_errors / processing_time), Respond / RespondError    }
+{  headers, graceful Stop (UNSUB).                                          }
 {                                                                           }
-{  Gaps vs full nats.go micro: groups (AddGroup), custom StatsHandler data, }
-{  DoneHandler / ErrorHandler, schema JSON, connection-closed auto-stop,    }
-{  subscription Drain (Stop uses Unsubscribe), queue-group disable nuances  }
-{  beyond the QueueGroupDisabled flag, metadata immutability enforcement.   }
+{  Gaps vs full nats.go micro: custom StatsHandler data, DoneHandler /      }
+{  ErrorHandler, schema JSON, connection-closed auto-stop, subscription     }
+{  Drain (Stop uses Unsubscribe), metadata immutability enforcement.        }
 {                                                                           }
 {***************************************************************************}
 unit Dext.Net.Nats.Services;
@@ -131,9 +132,9 @@ type
   TNatsEndpointConfig = record
     /// <summary>Endpoint name (alphanumeric / dash / underscore).</summary>
     Name: string;
-    /// <summary>Subject to subscribe; empty uses Name.</summary>
+    /// <summary>Subject to subscribe; empty uses Name. Prefixed when added via a group.</summary>
     Subject: string;
-    /// <summary>Optional queue override; empty inherits the service queue.</summary>
+    /// <summary>Optional queue override; empty inherits the service or group queue.</summary>
     QueueGroup: string;
     /// <summary>When True, this endpoint uses a plain subscribe (no queue).</summary>
     QueueGroupDisabled: Boolean;
@@ -142,6 +143,53 @@ type
     /// <summary>Defaults: Subject=Name, inherit service queue.</summary>
     class function CreateDefault(const AName: string; const ASubject: string = ''): TNatsEndpointConfig; static;
     procedure Validate;
+  end;
+
+  /// <summary>Configuration for <see cref="TDextNatsService.AddGroup"/> (nats.go micro Group).</summary>
+  TNatsGroupConfig = record
+    /// <summary>
+    ///   Subject prefix for endpoints in this group (may contain dots). Empty is allowed
+    ///   (endpoints use their own subject only). Nested groups join prefixes with <c>.</c>.
+    /// </summary>
+    Prefix: string;
+    /// <summary>Optional queue override; empty inherits the parent service/group queue.</summary>
+    QueueGroup: string;
+    /// <summary>When True, endpoints in this group subscribe without a queue group.</summary>
+    QueueGroupDisabled: Boolean;
+    /// <summary>Defaults: inherit parent queue.</summary>
+    class function CreateDefault(const APrefix: string): TNatsGroupConfig; static;
+    /// <summary>Raises when Prefix or QueueGroup fail subject validation.</summary>
+    procedure Validate;
+  end;
+
+  TDextNatsService = class;
+  TDextNatsServiceGroup = class;
+
+  /// <summary>
+  ///   Subject-prefix group for nested endpoints (nats.go micro <c>Group</c>).
+  ///   Owned by the parent <see cref="TDextNatsService"/> — do not Free.
+  /// </summary>
+  TDextNatsServiceGroup = class
+  private
+    FService: TDextNatsService;
+    FPrefix: string;
+    FQueueGroup: string;
+    FQueueGroupDisabled: Boolean;
+    constructor Create(AService: TDextNatsService; const APrefix, AQueueGroup: string;
+      AQueueGroupDisabled: Boolean);
+  public
+    /// <summary>Creates a nested group: subject prefix becomes <c>Prefix.&lt;APrefix&gt;</c>.</summary>
+    function AddGroup(const APrefix: string): TDextNatsServiceGroup; overload;
+    /// <summary>Creates a nested group with queue override options.</summary>
+    function AddGroup(const AConfig: TNatsGroupConfig): TDextNatsServiceGroup; overload;
+    /// <summary>Registers an endpoint under <c>Prefix.&lt;name&gt;</c> (or Prefix.Subject).</summary>
+    procedure AddEndpoint(const AName: string; const AHandler: TNatsServiceHandler); overload;
+    /// <summary>Registers an endpoint; subject is prefixed with this group's Prefix.</summary>
+    procedure AddEndpoint(const AConfig: TNatsEndpointConfig;
+      const AHandler: TNatsServiceHandler); overload;
+    property Service: TDextNatsService read FService;
+    /// <summary>Resolved subject prefix (stacked for nested groups).</summary>
+    property Prefix: string read FPrefix;
   end;
 
   /// <summary>
@@ -176,10 +224,20 @@ type
     FQueueGroup: string;
     FQueueGroupDisabled: Boolean;
     FEndpoints: IList<TEndpointState>;
+    FGroups: IList<TDextNatsServiceGroup>;
     FDiscoverySids: IList<Integer>;
     FStartedUtc: TDateTime;
     FStopped: Boolean;
-    function ResolveQueueGroup(const AEndpointQueue: string; AEndpointDisabled: Boolean): string;
+    function ResolveQueueGroup(const ACustomQueue: string; ACustomDisabled: Boolean;
+      const AParentQueue: string; AParentDisabled: Boolean): string;
+    procedure ResolveQueueGroupEx(const ACustomQueue: string; ACustomDisabled: Boolean;
+      const AParentQueue: string; AParentDisabled: Boolean;
+      out AQueue: string; out ADisabled: Boolean);
+    function CreateGroup(const AConfig: TNatsGroupConfig;
+      const AParentQueue: string; AParentQueueDisabled: Boolean): TDextNatsServiceGroup;
+    procedure AddEndpointInternal(const AConfig: TNatsEndpointConfig;
+      const AHandler: TNatsServiceHandler; const ASubjectPrefix: string;
+      const AParentQueue: string; AParentQueueDisabled: Boolean);
     procedure EnsureRunning;
     procedure SubscribeDiscovery;
     procedure SubscribeDiscoverySubject(AVerb: TNatsServiceVerb; const ASubject: string);
@@ -205,6 +263,14 @@ type
     /// <summary>Registers a request/reply endpoint with explicit subject / queue options.</summary>
     procedure AddEndpoint(const AConfig: TNatsEndpointConfig;
       const AHandler: TNatsServiceHandler); overload;
+
+    /// <summary>
+    ///   Creates a subject-prefix group (nats.go micro). Endpoints added to the group
+    ///   subscribe on <c>APrefix.&lt;endpoint&gt;</c>. Owned by this service — do not Free.
+    /// </summary>
+    function AddGroup(const APrefix: string): TDextNatsServiceGroup; overload;
+    /// <summary>Creates a subject-prefix group with queue override options.</summary>
+    function AddGroup(const AConfig: TNatsGroupConfig): TDextNatsServiceGroup; overload;
 
     /// <summary>Unsubscribes discovery + endpoint subscriptions. Idempotent.</summary>
     procedure Stop;
@@ -237,6 +303,8 @@ function NatsServiceIsValidName(const AName: string): Boolean;
 function NatsServiceIsValidSemVer(const AVersion: string): Boolean;
 /// <summary>True when ASubject is a valid endpoint/queue subject (no spaces; optional trailing &gt;).</summary>
 function NatsServiceIsValidSubject(const ASubject: string): Boolean;
+/// <summary>Joins group prefix and endpoint subject with <c>.</c> (empty prefix returns ASubject).</summary>
+function NatsServiceJoinSubject(const APrefix, ASubject: string): string;
 /// <summary>Generates a unique service instance id (GUID hex, no dashes).</summary>
 function NatsServiceNewId: string;
 
@@ -379,6 +447,16 @@ begin
   Result := True;
 end;
 
+function NatsServiceJoinSubject(const APrefix, ASubject: string): string;
+begin
+  if APrefix = '' then
+    Result := ASubject
+  else if ASubject = '' then
+    Result := APrefix
+  else
+    Result := APrefix + '.' + ASubject;
+end;
+
 function NatsServiceNewId: string;
 var
   guid: TGUID;
@@ -476,6 +554,24 @@ begin
     raise EDextNatsServiceError.Create('Invalid endpoint subject');
   if (QueueGroup <> '') and (not NatsServiceIsValidSubject(QueueGroup)) then
     raise EDextNatsServiceError.Create('Invalid endpoint queue group');
+end;
+
+{ TNatsGroupConfig }
+
+class function TNatsGroupConfig.CreateDefault(const APrefix: string): TNatsGroupConfig;
+begin
+  Result := Default(TNatsGroupConfig);
+  Result.Prefix := APrefix;
+  Result.QueueGroup := '';
+  Result.QueueGroupDisabled := False;
+end;
+
+procedure TNatsGroupConfig.Validate;
+begin
+  if (Prefix <> '') and (not NatsServiceIsValidSubject(Prefix)) then
+    raise EDextNatsServiceError.Create('Invalid group subject prefix');
+  if (QueueGroup <> '') and (not NatsServiceIsValidSubject(QueueGroup)) then
+    raise EDextNatsServiceError.Create('Invalid group queue group');
 end;
 
 { TNatsServiceRequest }
@@ -585,6 +681,7 @@ begin
   else
     FQueueGroup := NATS_SRV_DEFAULT_QUEUE;
   FEndpoints := TCollections.CreateList<TEndpointState>;
+  FGroups := TCollections.CreateList<TDextNatsServiceGroup>;
   FDiscoverySids := TCollections.CreateList<Integer>;
   FStopped := False;
   FStartedUtc := Now;
@@ -610,6 +707,12 @@ begin
           FEndpoints[i].Free;
         FEndpoints.Clear;
       end;
+      if FGroups <> nil then
+      begin
+        for i := 0 to FGroups.Count - 1 do
+          FGroups[i].Free;
+        FGroups.Clear;
+      end;
     finally
       FLock.Leave;
     end;
@@ -634,18 +737,46 @@ begin
     raise EDextNatsServiceError.Create('Service is stopped');
 end;
 
-function TDextNatsService.ResolveQueueGroup(const AEndpointQueue: string;
-  AEndpointDisabled: Boolean): string;
+function TDextNatsService.ResolveQueueGroup(const ACustomQueue: string;
+  ACustomDisabled: Boolean; const AParentQueue: string;
+  AParentDisabled: Boolean): string;
+var
+  disabled: Boolean;
 begin
-  if AEndpointDisabled then
-    Exit('');
-  if AEndpointQueue <> '' then
-    Exit(AEndpointQueue);
-  if FQueueGroupDisabled then
-    Exit('');
-  if FQueueGroup <> '' then
-    Exit(FQueueGroup);
-  Result := NATS_SRV_DEFAULT_QUEUE;
+  ResolveQueueGroupEx(ACustomQueue, ACustomDisabled, AParentQueue, AParentDisabled,
+    Result, disabled);
+end;
+
+procedure TDextNatsService.ResolveQueueGroupEx(const ACustomQueue: string;
+  ACustomDisabled: Boolean; const AParentQueue: string; AParentDisabled: Boolean;
+  out AQueue: string; out ADisabled: Boolean);
+begin
+  if ACustomDisabled then
+  begin
+    AQueue := '';
+    ADisabled := True;
+    Exit;
+  end;
+  if ACustomQueue <> '' then
+  begin
+    AQueue := ACustomQueue;
+    ADisabled := False;
+    Exit;
+  end;
+  if AParentDisabled then
+  begin
+    AQueue := '';
+    ADisabled := True;
+    Exit;
+  end;
+  if AParentQueue <> '' then
+  begin
+    AQueue := AParentQueue;
+    ADisabled := False;
+    Exit;
+  end;
+  AQueue := NATS_SRV_DEFAULT_QUEUE;
+  ADisabled := False;
 end;
 
 procedure TDextNatsService.SubscribeDiscoverySubject(AVerb: TNatsServiceVerb;
@@ -786,6 +917,45 @@ end;
 
 procedure TDextNatsService.AddEndpoint(const AConfig: TNatsEndpointConfig;
   const AHandler: TNatsServiceHandler);
+begin
+  AddEndpointInternal(AConfig, AHandler, '', FQueueGroup, FQueueGroupDisabled);
+end;
+
+function TDextNatsService.AddGroup(const APrefix: string): TDextNatsServiceGroup;
+begin
+  Result := AddGroup(TNatsGroupConfig.CreateDefault(APrefix));
+end;
+
+function TDextNatsService.AddGroup(const AConfig: TNatsGroupConfig): TDextNatsServiceGroup;
+begin
+  Result := CreateGroup(AConfig, FQueueGroup, FQueueGroupDisabled);
+end;
+
+function TDextNatsService.CreateGroup(const AConfig: TNatsGroupConfig;
+  const AParentQueue: string; AParentQueueDisabled: Boolean): TDextNatsServiceGroup;
+var
+  cfg: TNatsGroupConfig;
+  queue: string;
+  disabled: Boolean;
+begin
+  cfg := AConfig;
+  cfg.Validate;
+
+  FLock.Enter;
+  try
+    EnsureRunning;
+    ResolveQueueGroupEx(cfg.QueueGroup, cfg.QueueGroupDisabled,
+      AParentQueue, AParentQueueDisabled, queue, disabled);
+    Result := TDextNatsServiceGroup.Create(Self, cfg.Prefix, queue, disabled);
+    FGroups.Add(Result);
+  finally
+    FLock.Leave;
+  end;
+end;
+
+procedure TDextNatsService.AddEndpointInternal(const AConfig: TNatsEndpointConfig;
+  const AHandler: TNatsServiceHandler; const ASubjectPrefix: string;
+  const AParentQueue: string; AParentQueueDisabled: Boolean);
 var
   cfg: TNatsEndpointConfig;
   ep: TEndpointState;
@@ -802,11 +972,15 @@ begin
   subject := cfg.Subject;
   if subject = '' then
     subject := cfg.Name;
+  subject := NatsServiceJoinSubject(ASubjectPrefix, subject);
+  if not NatsServiceIsValidSubject(subject) then
+    raise EDextNatsServiceError.Create('Invalid endpoint subject');
 
   FLock.Enter;
   try
     EnsureRunning;
-    queue := ResolveQueueGroup(cfg.QueueGroup, cfg.QueueGroupDisabled);
+    queue := ResolveQueueGroup(cfg.QueueGroup, cfg.QueueGroupDisabled,
+      AParentQueue, AParentQueueDisabled);
     ep := TEndpointState.Create;
     ep.Name := cfg.Name;
     ep.Subject := subject;
@@ -858,6 +1032,48 @@ begin
     ep.Free;
     raise EDextNatsServiceError.Create('Service is stopped');
   end;
+end;
+
+{ TDextNatsServiceGroup }
+
+constructor TDextNatsServiceGroup.Create(AService: TDextNatsService;
+  const APrefix, AQueueGroup: string; AQueueGroupDisabled: Boolean);
+begin
+  inherited Create;
+  FService := AService;
+  FPrefix := APrefix;
+  FQueueGroup := AQueueGroup;
+  FQueueGroupDisabled := AQueueGroupDisabled;
+end;
+
+function TDextNatsServiceGroup.AddGroup(const APrefix: string): TDextNatsServiceGroup;
+begin
+  Result := AddGroup(TNatsGroupConfig.CreateDefault(APrefix));
+end;
+
+function TDextNatsServiceGroup.AddGroup(const AConfig: TNatsGroupConfig): TDextNatsServiceGroup;
+var
+  cfg: TNatsGroupConfig;
+begin
+  cfg := AConfig;
+  cfg.Prefix := NatsServiceJoinSubject(FPrefix, cfg.Prefix);
+  Result := FService.CreateGroup(cfg, FQueueGroup, FQueueGroupDisabled);
+end;
+
+procedure TDextNatsServiceGroup.AddEndpoint(const AName: string;
+  const AHandler: TNatsServiceHandler);
+var
+  cfg: TNatsEndpointConfig;
+begin
+  cfg := TNatsEndpointConfig.CreateDefault(AName);
+  AddEndpoint(cfg, AHandler);
+end;
+
+procedure TDextNatsServiceGroup.AddEndpoint(const AConfig: TNatsEndpointConfig;
+  const AHandler: TNatsServiceHandler);
+begin
+  FService.AddEndpointInternal(AConfig, AHandler, FPrefix, FQueueGroup,
+    FQueueGroupDisabled);
 end;
 
 procedure TDextNatsService.Stop;

@@ -16,9 +16,9 @@ Native [NATS](https://nats.io) client for the [Dext Framework](https://github.co
 | `Source/Dext.Net.Nats.JetStream.pas` | `TDextNatsJetStreamContext` — streams (`ListStreams` / `ListStreamNames`), pull/push consumers (`ListConsumers` / `ListConsumerNames`), Fetch, SubscribePush, ordered SubscribeOrdered, Ack/Nak/Term |
 | `Source/Dext.Net.Nats.KeyValue.pas` | `TDextNatsKeyValue` — JetStream KV (Put/Get/GetRevision/Delete/Purge, Keys/ListKeysFiltered, History, Watch/WatchFiltered/WatchAll, Config(), CAS Create/Update; bucket Compression/Placement) |
 | `Source/Dext.Net.Nats.ObjectStore.pas` | Object Store (`CreateStore` / `UpdateStore`/`UpdateObjectStore` / `Put` / `Get` / `GetResult` / `Delete` / `List` / `Keys`, `Watch`/`WatchAll` with EndOfInitial + MetaOnly/UpdatesOnly, `UpdateMeta`, `Seal`, `AddLink` / `AddBucketLink`, streaming `Put`/`Get` via `TStream` + `PutFile`/`GetFile`, lazy `TDextNatsObjectResult`) |
-| `Source/Dext.Net.Nats.Services.pas` | NATS Services API MVP — `TDextNatsService` (`AddService` / `AddEndpoint` / `Stop`, auto `$SRV.PING\|INFO\|STATS`) |
+| `Source/Dext.Net.Nats.Services.pas` | NATS Services API — `TDextNatsService` (`AddService` / `AddEndpoint` / `AddGroup` / `Stop`, auto `$SRV.PING\|INFO\|STATS`) |
 
-### NATS Services (MVP)
+### NATS Services
 
 ```delphi
 uses Dext.Net.Nats, Dext.Net.Nats.Services;
@@ -26,6 +26,7 @@ uses Dext.Net.Nats, Dext.Net.Nats.Services;
 var
   Client: TDextNatsClient;
   Svc: TDextNatsService;
+  Grp: TDextNatsServiceGroup;
   Cfg: TNatsServiceConfig;
 begin
   Client := TDextNatsClient.Create;
@@ -39,9 +40,15 @@ begin
         begin
           ARequest.Respond(ARequest.Data);
         end);
+      Grp := Svc.AddGroup('numbers');
+      Grp.AddEndpoint('add', { subject: numbers.add }
+        procedure(const ARequest: TNatsServiceRequest)
+        begin
+          ARequest.Respond(ARequest.Data);
+        end);
       // Discover: Request('$SRV.PING.EchoService', '') / INFO / STATS
     finally
-      Svc.Free; // Stop + UNSUB
+      Svc.Free; // Stop + UNSUB (owns groups — do not Free Grp)
     end;
   finally
     Client.Free;

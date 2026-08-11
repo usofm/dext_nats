@@ -71,10 +71,12 @@ Source/
                                 Put with TNatsObjectMeta); Get follows object
                                 links; bucket links raise. Composition over
                                 JetStream; does not own the client.
-  Dext.Net.Nats.Services.pas    TDextNatsService: NATS Services API MVP (ADR-32 /
+  Dext.Net.Nats.Services.pas    TDextNatsService: NATS Services API (ADR-32 /
                                 nats.go micro) — AddService / AddEndpoint /
-                                Stop / Reset; auto $SRV.PING|INFO|STATS;
-                                Respond / RespondError. Composition over
+                                AddGroup (TDextNatsServiceGroup subject
+                                prefixes + nested groups) / Stop / Reset;
+                                auto $SRV.PING|INFO|STATS; Respond /
+                                RespondError. Composition over
                                 TDextNatsClient; does not own the client.
 Demo/
   PubSubE2E/                    One-way core pub/sub E2E console smoke test
@@ -308,9 +310,11 @@ parsing frames anywhere else.
       `Mirror` / `Sources` / `RePublish` pass-through on stream config,
       per-key TTL (`LimitMarkerTTL` + `Create`/`Purge` with `Nats-TTL`; NATS 2.11+)
 - [x] Release **1.0.0** — `CHANGELOG.md`, README version line, git tag `v1.0.0`
-- [x] NATS Services API MVP (`Dext.Net.Nats.Services.pas`): AddService /
-      AddEndpoint / Stop / Reset, `$SRV.PING|INFO|STATS`, Respond /
-      RespondError; gaps vs nats.go micro noted in unit header + FUTURE_PLAN
+- [x] NATS Services API (`Dext.Net.Nats.Services.pas`): AddService /
+      AddEndpoint / AddGroup (`TDextNatsServiceGroup`) / Stop / Reset,
+      `$SRV.PING|INFO|STATS`, Respond / RespondError; remaining gaps vs
+      nats.go micro (StatsHandler / Done/Error / Drain / auto-stop) noted
+      in unit header + FUTURE_PLAN
 - [x] Richer INFO / `TDextNatsClient.ServerInfo` — domain, remote_account,
       acc_is_sys, ldm, api_lvl, cluster*, git_commit, tls_verify, ws_connect_urls
       (account JWT limit claims / OnLameDuckMode / $SYS monitoring still deferred)

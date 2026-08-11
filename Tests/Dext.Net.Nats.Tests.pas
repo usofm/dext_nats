@@ -549,10 +549,18 @@ type
     procedure Config_InvalidName_ShouldRaise;
     [Test, Category('Unit'), Category('Services')]
     procedure PingJson_ShouldIncludeTypeAndIdentity;
+    [Test, Category('Unit'), Category('Services')]
+    procedure JoinSubject_ShouldPrefixAndAllowEmpty;
+    [Test, Category('Unit'), Category('Services')]
+    procedure AddGroup_ShouldPrefixEndpointSubjectsInInfo;
+    [Test, Category('Unit'), Category('Services')]
+    procedure GroupConfig_InvalidPrefix_ShouldRaise;
     [Test, Category('Integration'), Category('Services')]
     procedure AddService_PingDiscovery_ShouldRespond;
     [Test, Category('Integration'), Category('Services')]
     procedure Endpoint_ShouldEchoAndStopUnsubscribes;
+    [Test, Category('Integration'), Category('Services')]
+    procedure AddGroup_NestedEndpoint_ShouldRespond;
   end;
 
   [TestFixture('NATS JetStream Object Store (requires nats-server -js)')]
@@ -6218,6 +6226,82 @@ begin
   end;
 end;
 
+procedure TDextNatsServicesTests.JoinSubject_ShouldPrefixAndAllowEmpty;
+begin
+  Should(NatsServiceJoinSubject('numbers', 'add')).Be('numbers.add');
+  Should(NatsServiceJoinSubject('numbers.v1', 'mul')).Be('numbers.v1.mul');
+  Should(NatsServiceJoinSubject('', 'bare')).Be('bare');
+  Should(NatsServiceJoinSubject('only', '')).Be('only');
+end;
+
+procedure TDextNatsServicesTests.AddGroup_ShouldPrefixEndpointSubjectsInInfo;
+var
+  client: TDextNatsClient;
+  svc: TDextNatsService;
+  grp, nested: TDextNatsServiceGroup;
+  cfg: TNatsServiceConfig;
+  gCfg: TNatsGroupConfig;
+  json: string;
+begin
+  client := TDextNatsClient.Create;
+  try
+    cfg := TNatsServiceConfig.CreateDefault('UnitGroup', '1.0.0');
+    svc := TDextNatsService.AddService(client, cfg);
+    try
+      grp := svc.AddGroup('numbers');
+      Should(grp.Prefix).Be('numbers');
+      grp.AddEndpoint('add',
+        procedure(const ARequest: TNatsServiceRequest)
+        begin
+          ARequest.Respond('ok');
+        end);
+
+      nested := grp.AddGroup('v1');
+      Should(nested.Prefix).Be('numbers.v1');
+      nested.AddEndpoint('mul',
+        procedure(const ARequest: TNatsServiceRequest)
+        begin
+          ARequest.Respond('ok');
+        end);
+
+      gCfg := TNatsGroupConfig.CreateDefault('orders.inventory');
+      gCfg.QueueGroup := 'q-inv';
+      grp := svc.AddGroup(gCfg);
+      Should(grp.Prefix).Be('orders.inventory');
+      grp.AddEndpoint('check',
+        procedure(const ARequest: TNatsServiceRequest)
+        begin
+          ARequest.Respond('ok');
+        end);
+
+      json := svc.InfoJson;
+      Should(json.Contains('"subject":"numbers.add"')).BeTrue;
+      Should(json.Contains('"subject":"numbers.v1.mul"')).BeTrue;
+      Should(json.Contains('"subject":"orders.inventory.check"')).BeTrue;
+      Should(json.Contains('"queue_group":"q-inv"')).BeTrue;
+      Should(json.Contains('"name":"add"')).BeTrue;
+      Should(json.Contains('"name":"mul"')).BeTrue;
+      Should(json.Contains('"name":"check"')).BeTrue;
+    finally
+      svc.Free;
+    end;
+  finally
+    client.Free;
+  end;
+end;
+
+procedure TDextNatsServicesTests.GroupConfig_InvalidPrefix_ShouldRaise;
+var
+  cfg: TNatsGroupConfig;
+begin
+  cfg := TNatsGroupConfig.CreateDefault('bad prefix');
+  Should(
+    procedure
+    begin
+      cfg.Validate;
+    end).Throw(EDextNatsServiceError);
+end;
+
 procedure TDextNatsServicesTests.AddService_PingDiscovery_ShouldRespond;
 var
   cfg: TNatsServiceConfig;
@@ -6291,6 +6375,41 @@ begin
       begin
         FClient.Request(pingSubj, '', 1000);
       end).Throw(EDextNatsNoResponders);
+  finally
+    svc.Free;
+  end;
+end;
+
+procedure TDextNatsServicesTests.AddGroup_NestedEndpoint_ShouldRespond;
+var
+  cfg: TNatsServiceConfig;
+  svc: TDextNatsService;
+  grp, nested: TDextNatsServiceGroup;
+  name, subject: string;
+  reply: TNatsMsg;
+begin
+  if not EnsureServerOrFail then
+    Exit;
+
+  name := UniqueServiceName('DextGrp');
+  cfg := TNatsServiceConfig.CreateDefault(name, '0.2.0');
+  svc := TDextNatsService.AddService(FClient, cfg);
+  try
+    grp := svc.AddGroup('dext.calc');
+    nested := grp.AddGroup('v1');
+    nested.AddEndpoint('add',
+      procedure(const ARequest: TNatsServiceRequest)
+      begin
+        ARequest.Respond('sum=' + ARequest.AsString);
+      end);
+    FClient.Flush(2000);
+
+    subject := 'dext.calc.v1.add';
+    reply := FClient.Request(subject, '2+3', 2000);
+    Should(reply.AsString).Be('sum=2+3');
+
+    reply := FClient.Request(NatsServiceControlSubject(svInfo, name, svc.Id), '', 2000);
+    Should(reply.AsString.Contains('"subject":"dext.calc.v1.add"')).BeTrue;
   finally
     svc.Free;
   end;
