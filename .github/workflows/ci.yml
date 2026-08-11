@@ -1,0 +1,43 @@
+﻿# Structure checks (no Delphi compiler on hosted runners).
+# Full Win32 test build remains local / self-hosted — see README Tests section.
+
+name: ci
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  structure:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Required source and docs
+        run: |
+          set -e
+          test -f Source/Dext.Net.Nats.pas
+          test -f Source/Dext.Net.Nats.Protocol.pas
+          test -f Source/Dext.Net.Nats.JetStream.pas
+          test -f Source/Dext.Net.Nats.KeyValue.pas
+          test -f Source/Dext.Net.Nats.ObjectStore.pas
+          test -f Tests/Dext.Net.Nats.Tests.dproj
+          test -f Dext.Nats.groupproj
+          test -f CHANGELOG.md
+          test -f README.md
+          test -f Docs/NATS_FUTURE_PLAN.md
+          test -f Docs/TEST_PLAN.md
+          test -f Docs/MQTT_VS_NATS.md
+          grep -q '1.0.0' CHANGELOG.md
+          grep -q 'Version:' README.md
+
+      - name: Remind Delphi build is local
+        run: |
+          echo "Hosted CI does not run dcc32/msbuild."
+          echo "Reproduce locally (README):"
+          echo "  set BDS=C:\\Program Files (x86)\\Embarcadero\\Studio\\23.0"
+          echo "  msbuild Tests\\Dext.Net.Nats.Tests.dproj /p:Config=Debug /p:Platform=Win32"
+          echo "  nats-server -js"
+          echo "  set DEXT_NATS_REQUIRE_LIVE=1"
+          echo "  Output\\Win32\\Debug\\Dext.Net.Nats.Tests.exe"

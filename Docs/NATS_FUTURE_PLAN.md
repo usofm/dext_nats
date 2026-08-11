@@ -71,9 +71,9 @@
 ### P2 — کیفیت ریلیز و عملیات
 
 - [x] **Versioning** — `CHANGELOG.md` + semver **1.0.0** + git tag `v1.0.0` (local; push tag when publishing).
-- [ ] **CI** — job build Delphi 12 + suite پیش‌فرض؛ اختیاری service container `nats-server -js` با `DEXT_NATS_REQUIRE_LIVE=1`؛ stress فقط env-gated (طبق [`TEST_PLAN.md`](TEST_PLAN.md) §۷.۴). *تا آن زمان: دستور بازتولید در README کافی است برای Done معیار ۶.*
+- [x] **CI** — `.github/workflows/ci.yml` structure checks on hosted runners; full Delphi suite remains **local / self-hosted** (reproduce commands in README). Live/`DEXT_NATS_REQUIRE_LIVE` not in hosted CI.
 - [ ] **پوشش تست باز از TEST_PLAN** — صف/headers/reconnect/outbox، JS Nak/Term/InProgress، stress Explicit؛ بستن gapهای §۲.۳ که هنوز soft-skip یا غایب‌اند
-- [ ] **Push / publish ریلیز** — پکیج یا subtree برای مصرف‌کننده‌های Dext؛ README نصب؛ بدون force-push به `main`
+- [ ] **Push / publish ریلیز** — پکیج یا subtree برای مصرف‌کننده‌های Dext؛ `git push` + `git push --tags` وقتی آمادهٔ انتشار؛ بدون force-push به `main`
 
 ### P3 — بعد از 1.0 (اختیاری)
 
@@ -93,7 +93,7 @@
 3. [`TEST_PLAN.md`](TEST_PLAN.md): مسیرهای Integration اصلی (Disconnect تمیز، pub/sub، request، JS Fetch+Ack، KV Put/Get، OS Put/Get) بدون fail روی `nats-server -js` محلی.
 4. README و `AGENTS.md` با API واقعی هم‌خوان باشند (بدون وعدهٔ قابلیت uncommitted).
 5. برچسب git `v1.0.0` + [`CHANGELOG.md`](../CHANGELOG.md) («چه پشتیبانی می‌شود / چه پشتیبانی نمی‌شود»).
-6. CI حداقلی (build + unit؛ live اختیاری) **یا** دستور بازتولید مستند در README (فعلاً README کافی است؛ workflow خودکار هنوز باز است).
+6. CI: workflow ساختار در `.github/workflows/ci.yml` + دستور بازتولید Delphi در README (build کامل روی self-hosted هنوز اختیاری است).
 
 آیتم‌های P1 (show-deleted، lazy ObjectResult، Services، ordered) **الزامی برای 1.0 نیستند** مگر صریحاً به این لیست اضافه شوند.
 
