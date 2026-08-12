@@ -11,6 +11,7 @@ interface
 
 uses
   System.SysUtils,
+  Dext.Collections,
   Dext.Testing,
   Dext.Testing.Attributes,
   Dext.Testing.Fluent,
@@ -114,7 +115,7 @@ var
   Raw: TFakeConsumerTransport;
   Transport: INatsJetStreamApiTransport;
   Consumers: TDextNatsJetStreamConsumers;
-  Names: Dext.Collections.IList<string>;
+  Names: IList<string>;
 begin
   Transport := NewTransport(Raw);
   Raw.Response := '{"type":"io.nats.jetstream.api.v1.consumer_names_response","total":2,"offset":0,"limit":1024,"consumers":["A","B"]}';
