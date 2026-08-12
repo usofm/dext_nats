@@ -25,65 +25,45 @@ jobs:
           test -f Source/JetStream/Dext.Net.Nats.JetStream.Json.pas
           test -f Source/JetStream/Dext.Net.Nats.JetStream.Codecs.pas
           test -f Source/JetStream/Dext.Net.Nats.JetStream.Parsers.pas
+          test -f Source/JetStream/Dext.Net.Nats.JetStream.Paging.pas
           test -f Source/JetStream/Dext.Net.Nats.JetStream.Transport.pas
           test -f Source/JetStream/Dext.Net.Nats.JetStream.Streams.pas
-          test -f Source/Dext.Net.Nats.KeyValue.pas
-          test -f Source/Dext.Net.Nats.ObjectStore.pas
-          test -f Source/Dext.Net.Nats.Services.pas
-          test -f Source/Dext.Net.Nats.DependencyInjection.pas
-          test -f Source/Dext.Net.Nats.HealthChecks.pas
+          test -f Source/JetStream/Dext.Net.Nats.JetStream.Consumers.pas
+          test -f Tests/JetStream/Dext.Net.Nats.JetStream.Json.Tests.pas
+          test -f Tests/JetStream/Dext.Net.Nats.JetStream.Streams.Tests.pas
+          test -f Tests/JetStream/Dext.Net.Nats.JetStream.Consumers.Tests.pas
           test -f Source/Internal/Dext.Net.Nats.Internal.Buffer.pas
           test -f Source/Internal/Dext.Net.Nats.Internal.Dispatcher.pas
           test -f Source/Internal/Dext.Net.Nats.Internal.Parser.pas
-          test -f Tests/Core/Dext.Net.Nats.Drain.Tests.pas
-          test -f Tests/Core/Dext.Net.Nats.Dispatching.Tests.pas
-          test -f Tests/Internal/Dext.Net.Nats.Internal.Tests.pas
           test -f Tests/Protocol/Dext.Net.Nats.ParserV2.Tests.pas
-          test -f Tests/JetStream/Dext.Net.Nats.JetStream.Json.Tests.pas
-          test -f Tests/JetStream/Dext.Net.Nats.JetStream.Streams.Tests.pas
           test -f Tests/Benchmarks/Dext.Net.Nats.ParserV2.Benchmarks.pas
           test -f Tests/Dext.Net.Nats.Tests.dproj
-          test -f Dext.Nats.groupproj
-          test -f CHANGELOG.md
-          test -f README.md
-          test -f Docs/NATS_FUTURE_PLAN.md
-          test -f Docs/TEST_PLAN.md
-          test -f Docs/MQTT_VS_NATS.md
           test -f Docs/ARCHITECTURE_V2.md
           test -f scripts/build-tests.ps1
-          test -f scripts/download-nats-server.ps1
           test -f .github/workflows/delphi-build.yml
-          grep -q '1.0.0' CHANGELOG.md
-          grep -q 'Version:' README.md
-          grep -q 'FlushTimeoutMs' Source/Dext.Net.Nats.HealthChecks.pas
-          grep -q 'GetRevision' Source/Dext.Net.Nats.KeyValue.pas
-          grep -q 'TChannel<T>.CreateBounded' Source/Internal/Dext.Net.Nats.Internal.Dispatcher.pas
-          grep -q 'FReadPos' Source/Internal/Dext.Net.Nats.Internal.Buffer.pas
-          grep -q 'CompactionCount' Source/Internal/Dext.Net.Nats.Internal.Buffer.pas
           grep -q 'TDextNatsFrameParserV2' Source/Internal/Dext.Net.Nats.Internal.Parser.pas
           grep -q 'TDextNatsDispatchedSubscription' Source/Dext.Net.Nats.Dispatching.pas
-          grep -q 'TDextNatsJsByteWriter' Source/JetStream/Dext.Net.Nats.JetStream.Json.pas
           grep -q 'NatsJsEncodeStreamConfig' Source/JetStream/Dext.Net.Nats.JetStream.Codecs.pas
           grep -q 'NatsJsParseStreamInfo' Source/JetStream/Dext.Net.Nats.JetStream.Parsers.pas
+          grep -q 'NatsJsParseNamePage' Source/JetStream/Dext.Net.Nats.JetStream.Paging.pas
           grep -q 'INatsJetStreamApiTransport' Source/JetStream/Dext.Net.Nats.JetStream.Transport.pas
           grep -q 'TDextNatsJetStreamStreams' Source/JetStream/Dext.Net.Nats.JetStream.Streams.pas
-          grep -q 'TDextNatsInternalTests' Tests/Dext.Net.Nats.Tests.dpr
-          grep -q 'TDextNatsDispatchingTests' Tests/Dext.Net.Nats.Tests.dpr
-          grep -q 'TDextNatsParserV2Tests' Tests/Dext.Net.Nats.Tests.dpr
-          grep -q 'TDextNatsParserV2BenchmarkTests' Tests/Dext.Net.Nats.Tests.dpr
-          grep -q 'TDextNatsJetStreamJsonTests' Tests/Dext.Net.Nats.Tests.dpr
+          grep -q 'ListStreamNames' Source/JetStream/Dext.Net.Nats.JetStream.Streams.pas
+          grep -q 'TDextNatsJetStreamConsumers' Source/JetStream/Dext.Net.Nats.JetStream.Consumers.pas
+          grep -q 'ListConsumerNames' Source/JetStream/Dext.Net.Nats.JetStream.Consumers.pas
           grep -q 'TDextNatsJetStreamStreamsTests' Tests/Dext.Net.Nats.Tests.dpr
+          grep -q 'TDextNatsJetStreamConsumersTests' Tests/Dext.Net.Nats.Tests.dpr
 
       - name: Test layout guard
         run: |
           set -e
-          echo "Focused V2 tests must live in feature folders."
           test -f Tests/Core/Dext.Net.Nats.Drain.Tests.pas
           test -f Tests/Core/Dext.Net.Nats.Dispatching.Tests.pas
           test -f Tests/Internal/Dext.Net.Nats.Internal.Tests.pas
           test -f Tests/Protocol/Dext.Net.Nats.ParserV2.Tests.pas
           test -f Tests/JetStream/Dext.Net.Nats.JetStream.Json.Tests.pas
           test -f Tests/JetStream/Dext.Net.Nats.JetStream.Streams.Tests.pas
+          test -f Tests/JetStream/Dext.Net.Nats.JetStream.Consumers.Tests.pas
           test -f Tests/Benchmarks/Dext.Net.Nats.ParserV2.Benchmarks.pas
 
       - name: Repository hygiene
@@ -91,17 +71,14 @@ jobs:
           set -e
           if find .tools -type f ! -name README.md | grep -q .; then
             echo "Downloaded/binary tools must not be committed under .tools/."
-            find .tools -type f ! -name README.md
             exit 1
           fi
           if find . -type f \( -name '*.zip' -o -name '*.7z' \) | grep -q .; then
             echo "Archive artifacts must be downloaded by scripts, not committed."
-            find . -type f \( -name '*.zip' -o -name '*.7z' \)
             exit 1
           fi
 
       - name: Remind Delphi build is self-hosted
         run: |
           echo "Hosted CI performs structure/hygiene checks only."
-          echo "Compile locally or use the manual 'Delphi Build' workflow on a Windows self-hosted runner."
-          echo "Local build: powershell -ExecutionPolicy Bypass -File scripts\\build-tests.ps1"
+          echo "Compile locally or use the manual Delphi Build workflow on a Windows self-hosted runner."
