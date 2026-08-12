@@ -38,6 +38,10 @@ type
     function Available: Integer;
     function DataSpan: TByteSpan;
     function Capacity: Integer;
+    function ByteAt(AOffset: Integer): Byte; inline;
+    function IndexOfCrLf(AStartOffset: Integer = 0): Integer;
+    procedure CopyTo(AOffset: Integer; var ADest: TBytes; ACount: Integer);
+    function Utf8String(AOffset, ACount: Integer): string;
   end;
 
 implementation
@@ -58,6 +62,13 @@ end;
 function TDextNatsReadBuffer.Capacity: Integer;
 begin
   Result := Length(FBuffer);
+end;
+
+function TDextNatsReadBuffer.ByteAt(AOffset: Integer): Byte;
+begin
+  if (AOffset < 0) or (AOffset >= Available) then
+    raise EArgumentOutOfRangeException.Create('Buffer offset is outside unread data');
+  Result := FBuffer[FReadPos + AOffset];
 end;
 
 procedure TDextNatsReadBuffer.Clear;
@@ -146,6 +157,15 @@ begin
     Clear;
 end;
 
+procedure TDextNatsReadBuffer.CopyTo(AOffset: Integer; var ADest: TBytes; ACount: Integer);
+begin
+  if (AOffset < 0) or (ACount < 0) or (AOffset + ACount > Available) then
+    raise EArgumentOutOfRangeException.Create('Copy range is outside unread data');
+  SetLength(ADest, ACount);
+  if ACount > 0 then
+    Move(FBuffer[FReadPos + AOffset], ADest[0], ACount);
+end;
+
 function TDextNatsReadBuffer.DataSpan: TByteSpan;
 var
   Count: Integer;
@@ -154,6 +174,32 @@ begin
   if Count = 0 then
     Exit(Default(TByteSpan));
   Result := TByteSpan.Create(@FBuffer[FReadPos], Count);
+end;
+
+function TDextNatsReadBuffer.IndexOfCrLf(AStartOffset: Integer): Integer;
+var
+  I: Integer;
+begin
+  if AStartOffset < 0 then
+    AStartOffset := 0;
+  I := AStartOffset;
+  while I < Available - 1 do
+  begin
+    if (ByteAt(I) = 13) and (ByteAt(I + 1) = 10) then
+      Exit(I);
+    Inc(I);
+  end;
+  Result := -1;
+end;
+
+function TDextNatsReadBuffer.Utf8String(AOffset, ACount: Integer): string;
+var
+  Bytes: TBytes;
+begin
+  CopyTo(AOffset, Bytes, ACount);
+  if Length(Bytes) = 0 then
+    Exit('');
+  Result := TEncoding.UTF8.GetString(Bytes);
 end;
 
 end.
