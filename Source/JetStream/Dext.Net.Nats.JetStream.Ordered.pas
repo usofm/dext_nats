@@ -10,6 +10,7 @@ unit Dext.Net.Nats.JetStream.Ordered;
 interface
 
 uses
+  System.Classes,
   System.SyncObjs,
   Dext.Net.Nats,
   Dext.Net.Nats.JetStream,
@@ -35,6 +36,7 @@ type
     FExpectedDseq: UInt64;
     FLastStreamSeq: UInt64;
     FLastConsumerSeq: UInt64;
+    FLastActivityMs: UInt64;
     FIdleHeartbeatNs: Int64;
     FActive: Boolean;
     FStopping: Boolean;
@@ -48,7 +50,6 @@ type
     procedure TeardownPushAndConsumer;
     procedure InstallDelivery(ASerial: Integer);
     function TryReset(AInitial: Boolean = False): Boolean;
-    procedure HandleRawMsg(ASerial: Integer; const AMsg: TNatsMsg);
     procedure MonitorLoop;
     function GetActive: Boolean;
     function GetConsumerName: string;
@@ -73,9 +74,7 @@ type
 implementation
 
 uses
-  System.SysUtils,
-  System.Classes,
-  Dext.Net.Nats.JetStream.Fetch;
+  System.SysUtils;
 
 const
   NATS_JS_ORDERED_HB_NS = Int64(5) * 1000000000;
@@ -300,27 +299,34 @@ begin
   SelfRef := Self;
   FPush := FPushService.Subscribe(Deliver,
     procedure(const AMsg: TNatsJsMsg)
+    var
+      NeedReset: Boolean;
+      Handler: TNatsOrderedConsumerHandler;
     begin
-      { Push service already converted the wire message. Reconstruct a minimal
-        NATS message path is intentionally avoided; ordered validation happens
-        directly on the JetStream sequence fields. }
+      NeedReset := False;
+      Handler := nil;
       SelfRef.FLock.Enter;
       try
         if SelfRef.FStopping or (ASerial <> SelfRef.FSerial) then Exit;
         SelfRef.FLastActivityMs := TThread.GetTickCount64;
         if AMsg.ConsumerSequence <> SelfRef.FExpectedDseq then
-          SelfRef.FResetPending := True
+        begin
+          SelfRef.FResetPending := True;
+          NeedReset := True;
+        end
         else
         begin
           SelfRef.FExpectedDseq := AMsg.ConsumerSequence + 1;
           SelfRef.FLastStreamSeq := AMsg.StreamSequence;
           SelfRef.FLastConsumerSeq := AMsg.ConsumerSequence;
+          Handler := SelfRef.FHandler;
         end;
       finally
         SelfRef.FLock.Leave;
       end;
-      if SelfRef.FResetPending then SelfRef.FWake.SetEvent
-      else if Assigned(SelfRef.FHandler) then SelfRef.FHandler(AMsg);
+      if NeedReset then SelfRef.FWake.SetEvent
+      else if Assigned(Handler) then
+      try Handler(AMsg); except end;
     end);
   FDeliverSubject := Deliver;
 end;
@@ -385,14 +391,6 @@ begin
       end;
     end;
   end;
-end;
-
-procedure TDextNatsOrderedConsumerEngine.HandleRawMsg(ASerial: Integer;
-  const AMsg: TNatsMsg);
-begin
-  { Retained as an explicit seam for the eventual facade cut-over. The V2 push
-    service owns wire conversion; runtime parity tests will exercise this seam. }
-  if NatsJsIsControlMessage(AMsg) then Exit;
 end;
 
 procedure TDextNatsOrderedConsumerEngine.MonitorLoop;
