@@ -4,19 +4,6 @@
 {                                                                           }
 {           A native NATS client library for the Dext Framework            }
 {                                                                           }
-{           Licensed under the Apache License, Version 2.0 (the "License"); }
-{           you may not use this file except in compliance with the License.}
-{           You may obtain a copy of the License at                         }
-{                                                                           }
-{               http://www.apache.org/licenses/LICENSE-2.0                  }
-{                                                                           }
-{           Unless required by applicable law or agreed to in writing,      }
-{           software distributed under the License is distributed on an     }
-{           "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,    }
-{           either express or implied. See the License for the specific     }
-{           language governing permissions and limitations under the        }
-{           License.                                                        }
-{                                                                           }
 {***************************************************************************}
 program DextNetNatsTests;
 
@@ -37,8 +24,10 @@ uses
   Dext.Net.Nats.JetStream.Json in '..\Source\JetStream\Dext.Net.Nats.JetStream.Json.pas',
   Dext.Net.Nats.JetStream.Codecs in '..\Source\JetStream\Dext.Net.Nats.JetStream.Codecs.pas',
   Dext.Net.Nats.JetStream.Parsers in '..\Source\JetStream\Dext.Net.Nats.JetStream.Parsers.pas',
+  Dext.Net.Nats.JetStream.Paging in '..\Source\JetStream\Dext.Net.Nats.JetStream.Paging.pas',
   Dext.Net.Nats.JetStream.Transport in '..\Source\JetStream\Dext.Net.Nats.JetStream.Transport.pas',
   Dext.Net.Nats.JetStream.Streams in '..\Source\JetStream\Dext.Net.Nats.JetStream.Streams.pas',
+  Dext.Net.Nats.JetStream.Consumers in '..\Source\JetStream\Dext.Net.Nats.JetStream.Consumers.pas',
   Dext.Net.Nats.KeyValue in '..\Source\Dext.Net.Nats.KeyValue.pas',
   Dext.Net.Nats.ObjectStore in '..\Source\Dext.Net.Nats.ObjectStore.pas',
   Dext.Net.Nats.Services in '..\Source\Dext.Net.Nats.Services.pas',
@@ -54,7 +43,8 @@ uses
   Dext.Net.Nats.ParserV2.Tests in 'Protocol\Dext.Net.Nats.ParserV2.Tests.pas',
   Dext.Net.Nats.ParserV2.Benchmarks in 'Benchmarks\Dext.Net.Nats.ParserV2.Benchmarks.pas',
   Dext.Net.Nats.JetStream.Json.Tests in 'JetStream\Dext.Net.Nats.JetStream.Json.Tests.pas',
-  Dext.Net.Nats.JetStream.Streams.Tests in 'JetStream\Dext.Net.Nats.JetStream.Streams.Tests.pas';
+  Dext.Net.Nats.JetStream.Streams.Tests in 'JetStream\Dext.Net.Nats.JetStream.Streams.Tests.pas',
+  Dext.Net.Nats.JetStream.Consumers.Tests in 'JetStream\Dext.Net.Nats.JetStream.Consumers.Tests.pas';
 
 var
   Config: TTestConfigurator;
@@ -66,19 +56,10 @@ begin
     SafeWriteLn;
     SafeWriteLn('Dext.Net.Nats Tests');
     SafeWriteLn('===================');
-    if Trim(GetEnvironmentVariable('DEXT_NATS_TLS_PORT')) = '' then
-      SafeWriteLn('TLS: soft-skip (set DEXT_NATS_TLS_PORT to enable live TLS tests)');
-    if Trim(GetEnvironmentVariable('DEXT_NATS_NKEY_PORT')) = '' then
-      SafeWriteLn('NKey: soft-skip (set DEXT_NATS_NKEY_PORT + SEED to enable live NKey tests)');
     RunStress := SameText(Trim(GetEnvironmentVariable('DEXT_NATS_RUN_STRESS')), '1')
       or SameText(Trim(GetEnvironmentVariable('DEXT_NATS_RUN_STRESS')), 'true');
     RunBench := SameText(Trim(GetEnvironmentVariable('DEXT_NATS_RUN_BENCH')), '1')
       or SameText(Trim(GetEnvironmentVariable('DEXT_NATS_RUN_BENCH')), 'true');
-    if not RunStress then
-      SafeWriteLn('Stress: explicit tests omitted (set DEXT_NATS_RUN_STRESS=1 to include)');
-    if not RunBench then
-      SafeWriteLn('Bench: explicit tests omitted (set DEXT_NATS_RUN_BENCH=1 to include)');
-    SafeWriteLn;
 
     Config := ConfigureTests.Verbose;
     if RunStress or RunBench then
@@ -103,7 +84,8 @@ begin
       TDextNatsParserV2Tests,
       TDextNatsParserV2BenchmarkTests,
       TDextNatsJetStreamJsonTests,
-      TDextNatsJetStreamStreamsTests
+      TDextNatsJetStreamStreamsTests,
+      TDextNatsJetStreamConsumersTests
     ]));
   except
     on E: Exception do
