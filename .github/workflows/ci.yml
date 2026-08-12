@@ -21,7 +21,6 @@ jobs:
             Source/Dext.Net.Nats.pas \
             Source/Dext.Net.Nats.ParserRuntime.pas \
             Source/Dext.Net.Nats.Protocol.pas \
-            Source/Dext.Net.Nats.Dispatching.pas \
             Source/Internal/Dext.Net.Nats.Internal.Buffer.pas \
             Source/Internal/Dext.Net.Nats.Internal.Dispatcher.pas \
             Source/Internal/Dext.Net.Nats.Internal.Parser.pas \
@@ -60,7 +59,6 @@ jobs:
           grep -q 'FParser := TDextNatsRuntimeFrameParser.Create;' Source/Dext.Net.Nats.pas
           grep -q 'TChannel<T>.CreateBounded' Source/Internal/Dext.Net.Nats.Internal.Dispatcher.pas
           grep -q 'FReadPos' Source/Internal/Dext.Net.Nats.Internal.Buffer.pas
-          grep -q 'TDextNatsDispatchedSubscription' Source/Dext.Net.Nats.Dispatching.pas
           grep -q 'NatsV2EncodePub' Source/Protocol/Dext.Net.Nats.Protocol.Writer.pas
           grep -q 'NatsJsUtf8Write' Source/JetStream/Dext.Net.Nats.JetStream.ObjectPaging.pas
           ! grep -q 'DextNatsJsUtf8SinkWrite' Source/JetStream/Dext.Net.Nats.JetStream.ObjectPaging.pas
@@ -116,12 +114,37 @@ jobs:
           assert leave >= 0 and send > leave, 'FlushOutbox must release FLock before SendRaw'
           PY
 
+      - name: Bounded callback dispatch contract
+        run: |
+          set -e
+          ! test -f Source/Dext.Net.Nats.Dispatching.pas
+          ! test -f Tests/Core/Dext.Net.Nats.Dispatching.Tests.pas
+          grep -q 'FHandlerDispatcher: TDextNatsBoundedDispatcher<TNatsHandlerDispatchItem>' Source/Dext.Net.Nats.pas
+          grep -q 'HandlerWorkerCount := 1' Source/Dext.Net.Nats.pas
+          grep -q 'HandlerQueueCapacity := 8192' Source/Dext.Net.Nats.pas
+          grep -q 'FHandlerDispatcher.Dispatch(item)' Source/Dext.Net.Nats.pas
+          grep -q 'InlineDelivery: Boolean' Source/Dext.Net.Nats.pas
+          grep -q "end, '', True);" Source/Dext.Net.Nats.pas
+          grep -q 'Result := SubscribeCore(ASubject, AHandler, AQueue, False)' Source/Dext.Net.Nats.pas
+          grep -q 'FChannel.Close' Source/Internal/Dext.Net.Nats.Internal.Dispatcher.pas
+          grep -q 'Dispatcher_Stop_ShouldDrainAcceptedItems' Tests/Internal/Dext.Net.Nats.Internal.Tests.pas
+          python - <<'PY'
+          from pathlib import Path
+          s = Path('Source/Dext.Net.Nats.pas').read_text(encoding='utf-8-sig')
+          a = s.index('procedure TDextNatsClient.HandleMsgFrame')
+          b = s.index('procedure TDextNatsClient.ExecuteHandlerDispatch', a)
+          block = s[a:b]
+          assert 'handler(msg);' not in block, 'Application handler must not execute directly on RecvLoop'
+          assert 'FHandlerDispatcher.Dispatch(item)' in block
+          req = s[s.index('function TDextNatsClient.RequestWithHeaders'):s.index('procedure TDextNatsClient.RequestAsync', s.index('function TDextNatsClient.RequestWithHeaders'))]
+          assert 'SubscribeCore(inbox' in req and "end, '', True);" in req, 'Synchronous request completion must remain inline'
+          PY
+
       - name: Feature-oriented tests contract
         run: |
           set -e
           for f in \
             Tests/Core/Dext.Net.Nats.Drain.Tests.pas \
-            Tests/Core/Dext.Net.Nats.Dispatching.Tests.pas \
             Tests/Internal/Dext.Net.Nats.Internal.Tests.pas \
             Tests/Protocol/Dext.Net.Nats.ParserV2.Tests.pas \
             Tests/Protocol/Dext.Net.Nats.ParserRuntime.Tests.pas \
@@ -194,5 +217,5 @@ jobs:
         run: |
           echo "Hosted Linux CI verifies architecture and hygiene only."
           echo "Full gate: scripts/validate-parser-cutover.ps1 -Config Release -Platform Win32 -LiveNats -Benchmark"
-          echo "Parser V2 is the only runtime parser; build uses a clean Rebuild."
+          echo "Parser V2 is the only runtime parser; callbacks use bounded Dext-channel dispatch."
           echo "Release remains gated on Delphi 13 compile + live NATS tests."
