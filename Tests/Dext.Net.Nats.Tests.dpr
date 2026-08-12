@@ -1,4 +1,4 @@
-program DextNetNatsTests;
+﻿program DextNetNatsTests;
 
 {$APPTYPE CONSOLE}
 
@@ -14,8 +14,8 @@ uses
   Dext.Net.Nats.Protocol.Control in '..\Source\Protocol\Dext.Net.Nats.Protocol.Control.pas',
   Dext.Net.Nats.Protocol.Writer in '..\Source\Protocol\Dext.Net.Nats.Protocol.Writer.pas',
   Dext.Net.Nats.NKeys in '..\Source\Dext.Net.Nats.NKeys.pas',
+  Dext.Net.Nats.ParserRuntime in '..\Source\Dext.Net.Nats.ParserRuntime.pas',
   Dext.Net.Nats in '..\Source\Dext.Net.Nats.pas',
-  Dext.Net.Nats.Dispatching in '..\Source\Dext.Net.Nats.Dispatching.pas',
   Dext.Net.Nats.JetStream in '..\Source\Dext.Net.Nats.JetStream.pas',
   Dext.Net.Nats.JetStream.Json in '..\Source\JetStream\Dext.Net.Nats.JetStream.Json.pas',
   Dext.Net.Nats.JetStream.Codecs in '..\Source\JetStream\Dext.Net.Nats.JetStream.Codecs.pas',
@@ -46,13 +46,11 @@ uses
   Dext.Net.Nats.Internal.Buffer in '..\Source\Internal\Dext.Net.Nats.Internal.Buffer.pas',
   Dext.Net.Nats.Internal.Dispatcher in '..\Source\Internal\Dext.Net.Nats.Internal.Dispatcher.pas',
   Dext.Net.Nats.Internal.Parser in '..\Source\Internal\Dext.Net.Nats.Internal.Parser.pas',
-  Dext.Net.Nats.Internal.ParserSelector in '..\Source\Internal\Dext.Net.Nats.Internal.ParserSelector.pas',
   Dext.Net.Nats.Tests in 'Dext.Net.Nats.Tests.pas',
   Dext.Net.Nats.Drain.Tests in 'Core\Dext.Net.Nats.Drain.Tests.pas',
-  Dext.Net.Nats.Dispatching.Tests in 'Core\Dext.Net.Nats.Dispatching.Tests.pas',
   Dext.Net.Nats.Internal.Tests in 'Internal\Dext.Net.Nats.Internal.Tests.pas',
   Dext.Net.Nats.ParserV2.Tests in 'Protocol\Dext.Net.Nats.ParserV2.Tests.pas',
-  Dext.Net.Nats.ParserSelector.Tests in 'Protocol\Dext.Net.Nats.ParserSelector.Tests.pas',
+  Dext.Net.Nats.ParserRuntime.Tests in 'Protocol\Dext.Net.Nats.ParserRuntime.Tests.pas',
   Dext.Net.Nats.Protocol.V2.Tests in 'Protocol\Dext.Net.Nats.Protocol.V2.Tests.pas',
   Dext.Net.Nats.ParserV2.Benchmarks in 'Benchmarks\Dext.Net.Nats.ParserV2.Benchmarks.pas',
   Dext.Net.Nats.JetStream.Json.Tests in 'JetStream\Dext.Net.Nats.JetStream.Json.Tests.pas',
@@ -101,9 +99,8 @@ begin
       TDextNatsDiTests,
       TDextNatsObservabilityTests,
       TDextNatsInternalTests,
-      TDextNatsDispatchingTests,
       TDextNatsParserV2Tests,
-      TDextNatsParserSelectorTests,
+      TDextNatsParserRuntimeTests,
       TDextNatsProtocolV2Tests,
       TDextNatsParserV2BenchmarkTests,
       TDextNatsJetStreamJsonTests,

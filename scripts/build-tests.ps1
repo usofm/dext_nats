@@ -5,9 +5,7 @@ param(
   [ValidateSet('Win32', 'Win64')]
   [string]$Platform = 'Win32',
 
-  [string]$BdsRoot = '',
-
-  [switch]$ParserV2
+  [string]$BdsRoot = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -40,25 +38,39 @@ function Find-RsVars {
   return (Resolve-Path $found).Path
 }
 
-$rsvars = Find-RsVars -ExplicitRoot $BdsRoot
-Write-Host "Using RAD Studio environment: $rsvars"
-Write-Host "Building: $project"
-Write-Host "Config=$Config Platform=$Platform ParserV2=$($ParserV2.IsPresent)"
-
-$properties = '/p:Config=' + $Config + ' /p:Platform=' + $Platform
-if ($ParserV2) {
-  # Global MSBuild property is intentional for this validation build. It selects
-  # Dext.Net.Nats.Internal.ParserSelector without changing source files.
-  $properties += ' /p:DCC_Define=DEXT_NATS_PARSER_V2'
+function Quote-CmdArgument {
+  param([string]$Value)
+  return '"' + ($Value -replace '"', '""') + '"'
 }
 
-$command = 'call "' + $rsvars + '" && msbuild "' + $project + '" /t:Build ' + $properties
+$rsvars = Find-RsVars -ExplicitRoot $BdsRoot
+$outputDir = Join-Path $repoRoot ("Output\{0}\{1}" -f $Platform, $Config)
+
+Write-Host "Using RAD Studio environment: $rsvars"
+Write-Host "Building: $project"
+Write-Host "Config=$Config Platform=$Platform Parser=V2"
+Write-Host "Output=$outputDir"
+
+if (Test-Path $outputDir) {
+  Remove-Item $outputDir -Recurse -Force
+}
+New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
+
+$properties = @(
+  '/p:Config=' + $Config,
+  '/p:Platform=' + $Platform,
+  '/p:DCC_DcuOutput=' + (Quote-CmdArgument $outputDir),
+  '/p:DCC_ExeOutput=' + (Quote-CmdArgument $outputDir)
+)
+
+$propertyText = $properties -join ' '
+$command = 'call "' + $rsvars + '" && msbuild "' + $project + '" /t:Rebuild ' + $propertyText
 & cmd.exe /d /s /c $command
 if ($LASTEXITCODE -ne 0) {
   throw "Delphi build failed with exit code $LASTEXITCODE"
 }
 
-$exe = Join-Path $repoRoot ("Output\{0}\{1}\Dext.Net.Nats.Tests.exe" -f $Platform, $Config)
+$exe = Join-Path $outputDir 'Dext.Net.Nats.Tests.exe'
 if (-not (Test-Path $exe)) {
   throw "Build completed but test executable was not found: $exe"
 }

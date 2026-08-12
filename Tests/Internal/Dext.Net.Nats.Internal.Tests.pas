@@ -31,6 +31,8 @@ type
     procedure Dispatcher_ShouldProcessQueuedItems;
     [Test, Category('Unit'), Category('Concurrency')]
     procedure Dispatcher_TryDispatch_ShouldApplyBoundedBackpressure;
+    [Test, Category('Unit'), Category('Concurrency')]
+    procedure Dispatcher_Stop_ShouldDrainAcceptedItems;
   end;
 
 implementation
@@ -144,6 +146,30 @@ begin
     Dispatcher.Free;
     ReleaseWorker.Free;
     Entered.Free;
+  end;
+end;
+
+procedure TDextNatsInternalTests.Dispatcher_Stop_ShouldDrainAcceptedItems;
+var
+  Dispatcher: TDextNatsBoundedDispatcher<Integer>;
+  Sum: Integer;
+begin
+  Sum := 0;
+  Dispatcher := TDextNatsBoundedDispatcher<Integer>.Create(1, 8,
+    procedure(const AItem: Integer)
+    begin
+      TInterlocked.Add(Sum, AItem);
+    end,
+    dopBlock);
+  try
+    Dispatcher.Dispatch(1);
+    Dispatcher.Dispatch(2);
+    Dispatcher.Dispatch(3);
+    Dispatcher.Stop;
+    Should(TInterlocked.Read(Sum)).Be(6);
+    Should(Dispatcher.IsRunning).BeFalse;
+  finally
+    Dispatcher.Free;
   end;
 end;
 

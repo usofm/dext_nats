@@ -27,9 +27,9 @@ type
   TDextNatsDispatchErrorHandler = reference to procedure(const AError: Exception);
 
   /// <summary>
-  ///   Small worker pool backed by Dext's bounded channel. It is intentionally
-  ///   generic so the core NATS client can queue a strongly typed work record
-  ///   without allocating an anonymous closure per message.
+  ///   Small worker pool backed by Dext's bounded channel. Closing the
+  ///   dispatcher stops new writes but drains all already queued items before
+  ///   worker shutdown.
   /// </summary>
   TDextNatsBoundedDispatcher<T> = class
   private
@@ -112,6 +112,9 @@ begin
   if TInterlocked.Exchange(FState, 0) = 0 then
     Exit;
 
+  // Dext Channels continue returning queued items after Close. Once the queue
+  // becomes empty, Read raises and the workers exit. This gives Stop graceful
+  // drain semantics instead of silently discarding accepted NATS messages.
   FChannel.Close;
   for I := 0 to High(FWorkers) do
     if Assigned(FWorkers[I]) then
@@ -144,7 +147,7 @@ procedure TDextNatsBoundedDispatcher<T>.WorkerLoop;
 var
   Item: T;
 begin
-  while IsRunning or not FChannel.IsClosed do
+  while True do
   begin
     try
       Item := FChannel.Read;

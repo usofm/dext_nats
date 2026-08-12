@@ -1,0 +1,64 @@
+name: JetStream Fetch Inline Completion
+
+on:
+  push:
+    branches: [perf/parser-v2-cutover]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: perf/parser-v2-cutover
+          fetch-depth: 0
+
+      - name: Expose protected internal subscription seam and use it from Fetch
+        shell: python
+        run: |
+          from pathlib import Path
+
+          client = Path('Source/Dext.Net.Nats.pas')
+          s = client.read_text(encoding='utf-8-sig')
+          old = '''    function GetMetrics: TNatsClientMetrics;\n    function NextSid: Integer;\n    function SubscribeCore(const ASubject: string; const AHandler: TNatsMsgHandler;\n      const AQueue: string; AInlineDelivery: Boolean): Integer;\n\n    procedure RecvLoop;'''
+          new = '''    function GetMetrics: TNatsClientMetrics;\n    function NextSid: Integer;\n  protected\n    /// <summary>Internal subscription seam for protocol extensions that must complete synchronously.</summary>\n    function SubscribeCore(const ASubject: string; const AHandler: TNatsMsgHandler;\n      const AQueue: string; AInlineDelivery: Boolean): Integer;\n  private\n    procedure RecvLoop;'''
+          if old not in s:
+              raise SystemExit('SubscribeCore visibility anchor missing')
+          s = s.replace(old, new, 1)
+          client.write_text(s, encoding='utf-8-sig')
+
+          fetch = Path('Source/JetStream/Dext.Net.Nats.JetStream.Fetch.pas')
+          s = fetch.read_text(encoding='utf-8-sig')
+          old = '''implementation\n\nuses\n  System.SysUtils,\n  System.SyncObjs;'''
+          new = '''implementation\n\nuses\n  System.SysUtils,\n  System.SyncObjs;\n\ntype\n  // Delphi cracker class: keeps SubscribeCore protected from the public API while\n  // allowing this protocol-extension unit to create a tiny inline completion SUB.\n  TDextNatsClientFetchAccess = class(TDextNatsClient)\n  public\n    function SubscribeInline(const ASubject: string; const AHandler: TNatsMsgHandler): Integer;\n  end;\n\nfunction TDextNatsClientFetchAccess.SubscribeInline(const ASubject: string;\n  const AHandler: TNatsMsgHandler): Integer;\nbegin\n  Result := SubscribeCore(ASubject, AHandler, '', True);\nend;'''
+          if old not in s:
+              raise SystemExit('Fetch implementation anchor missing')
+          s = s.replace(old, new, 1)
+
+          old = '''    Sid := FClient.Subscribe(Inbox,\n      procedure(const AMsg: TNatsMsg)'''
+          new = '''    // Fetch may itself be called from the sole application callback worker.\n    // Its private inbox collector therefore completes inline on RecvLoop; only this\n    // small internal collector is exempt from normal worker dispatch.\n    Sid := TDextNatsClientFetchAccess(FClient).SubscribeInline(Inbox,\n      procedure(const AMsg: TNatsMsg)'''
+          if old not in s:
+              raise SystemExit('Fetch Subscribe anchor missing')
+          s = s.replace(old, new, 1)
+          fetch.write_text(s, encoding='utf-8-sig')
+
+      - name: Enforce nested Fetch safety
+        run: |
+          grep -q '^  protected$' Source/Dext.Net.Nats.pas
+          grep -q 'function SubscribeCore' Source/Dext.Net.Nats.pas
+          grep -q 'TDextNatsClientFetchAccess = class(TDextNatsClient)' Source/JetStream/Dext.Net.Nats.JetStream.Fetch.pas
+          grep -q "Result := SubscribeCore(ASubject, AHandler, '', True);" Source/JetStream/Dext.Net.Nats.JetStream.Fetch.pas
+          grep -q 'SubscribeInline(Inbox' Source/JetStream/Dext.Net.Nats.JetStream.Fetch.pas
+          ! grep -q 'Sid := FClient.Subscribe(Inbox' Source/JetStream/Dext.Net.Nats.JetStream.Fetch.pas
+
+      - name: Commit
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add Source/Dext.Net.Nats.pas Source/JetStream/Dext.Net.Nats.JetStream.Fetch.pas
+          git commit -m 'Keep JetStream Fetch completion off callback queue'
+          git push origin HEAD:perf/parser-v2-cutover

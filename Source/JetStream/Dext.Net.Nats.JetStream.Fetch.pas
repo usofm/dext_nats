@@ -1,4 +1,4 @@
-{***************************************************************************}
+﻿{***************************************************************************}
 {                                                                           }
 {           Dext.Nats                                                       }
 {                                                                           }
@@ -34,6 +34,20 @@ implementation
 uses
   System.SysUtils,
   System.SyncObjs;
+
+type
+  // Delphi cracker class: keeps SubscribeCore protected from the public API while
+  // allowing this protocol-extension unit to create a tiny inline completion SUB.
+  TDextNatsClientFetchAccess = class(TDextNatsClient)
+  public
+    function SubscribeInline(const ASubject: string; const AHandler: TNatsMsgHandler): Integer;
+  end;
+
+function TDextNatsClientFetchAccess.SubscribeInline(const ASubject: string;
+  const AHandler: TNatsMsgHandler): Integer;
+begin
+  Result := SubscribeCore(ASubject, AHandler, '', True);
+end;
 
 function NatsJsBuildFetchRequest(ABatch, AExpiresMs: Integer): string;
 var
@@ -105,7 +119,10 @@ begin
   Lock := TCriticalSection.Create;
   try
     Inbox := FClient.NewInbox;
-    Sid := FClient.Subscribe(Inbox,
+    // Fetch may itself be called from the sole application callback worker.
+    // Its private inbox collector therefore completes inline on RecvLoop; only this
+    // small internal collector is exempt from normal worker dispatch.
+    Sid := TDextNatsClientFetchAccess(FClient).SubscribeInline(Inbox,
       procedure(const AMsg: TNatsMsg)
       var
         JsMsg: TNatsJsMsg;
