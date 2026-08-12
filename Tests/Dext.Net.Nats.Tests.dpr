@@ -38,8 +38,11 @@ uses
   Dext.Net.Nats.Services in '..\Source\Dext.Net.Nats.Services.pas',
   Dext.Net.Nats.DependencyInjection in '..\Source\Dext.Net.Nats.DependencyInjection.pas',
   Dext.Net.Nats.HealthChecks in '..\Source\Dext.Net.Nats.HealthChecks.pas',
+  Dext.Net.Nats.Internal.Buffer in '..\Source\Internal\Dext.Net.Nats.Internal.Buffer.pas',
+  Dext.Net.Nats.Internal.Dispatcher in '..\Source\Internal\Dext.Net.Nats.Internal.Dispatcher.pas',
   Dext.Net.Nats.Tests in 'Dext.Net.Nats.Tests.pas',
-  Dext.Net.Nats.Drain.Tests in 'Dext.Net.Nats.Drain.Tests.pas';
+  Dext.Net.Nats.Drain.Tests in 'Dext.Net.Nats.Drain.Tests.pas',
+  Dext.Net.Nats.Internal.Tests in 'Dext.Net.Nats.Internal.Tests.pas';
 
 var
   Config: TTestConfigurator;
@@ -82,7 +85,8 @@ begin
       TDextNatsStressTests,
       TDextNatsBenchmarkTests,
       TDextNatsDiTests,
-      TDextNatsObservabilityTests
+      TDextNatsObservabilityTests,
+      TDextNatsInternalTests
     ]));
   except
     on E: Exception do
