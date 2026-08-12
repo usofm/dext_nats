@@ -35,6 +35,10 @@ uses
   Dext.Net.Nats.Dispatching in '..\Source\Dext.Net.Nats.Dispatching.pas',
   Dext.Net.Nats.JetStream in '..\Source\Dext.Net.Nats.JetStream.pas',
   Dext.Net.Nats.JetStream.Json in '..\Source\JetStream\Dext.Net.Nats.JetStream.Json.pas',
+  Dext.Net.Nats.JetStream.Codecs in '..\Source\JetStream\Dext.Net.Nats.JetStream.Codecs.pas',
+  Dext.Net.Nats.JetStream.Parsers in '..\Source\JetStream\Dext.Net.Nats.JetStream.Parsers.pas',
+  Dext.Net.Nats.JetStream.Transport in '..\Source\JetStream\Dext.Net.Nats.JetStream.Transport.pas',
+  Dext.Net.Nats.JetStream.Streams in '..\Source\JetStream\Dext.Net.Nats.JetStream.Streams.pas',
   Dext.Net.Nats.KeyValue in '..\Source\Dext.Net.Nats.KeyValue.pas',
   Dext.Net.Nats.ObjectStore in '..\Source\Dext.Net.Nats.ObjectStore.pas',
   Dext.Net.Nats.Services in '..\Source\Dext.Net.Nats.Services.pas',
@@ -49,7 +53,8 @@ uses
   Dext.Net.Nats.Internal.Tests in 'Internal\Dext.Net.Nats.Internal.Tests.pas',
   Dext.Net.Nats.ParserV2.Tests in 'Protocol\Dext.Net.Nats.ParserV2.Tests.pas',
   Dext.Net.Nats.ParserV2.Benchmarks in 'Benchmarks\Dext.Net.Nats.ParserV2.Benchmarks.pas',
-  Dext.Net.Nats.JetStream.Json.Tests in 'JetStream\Dext.Net.Nats.JetStream.Json.Tests.pas';
+  Dext.Net.Nats.JetStream.Json.Tests in 'JetStream\Dext.Net.Nats.JetStream.Json.Tests.pas',
+  Dext.Net.Nats.JetStream.Streams.Tests in 'JetStream\Dext.Net.Nats.JetStream.Streams.Tests.pas';
 
 var
   Config: TTestConfigurator;
@@ -97,7 +102,8 @@ begin
       TDextNatsDispatchingTests,
       TDextNatsParserV2Tests,
       TDextNatsParserV2BenchmarkTests,
-      TDextNatsJetStreamJsonTests
+      TDextNatsJetStreamJsonTests,
+      TDextNatsJetStreamStreamsTests
     ]));
   except
     on E: Exception do
