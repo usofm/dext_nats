@@ -12,42 +12,163 @@ function NatsControlUnsub(ASid: Integer; AMaxMsgs: Integer = 0): TBytes;
 
 implementation
 
-uses
-  Dext.Net.Nats.Protocol;
+type
+  TNatsControlWriter = record
+  private
+    FBuffer: TBytes;
+    FLength: Integer;
+    procedure EnsureCapacity(AAdditional: Integer);
+  public
+    procedure WriteByte(AValue: Byte);
+    procedure WriteAscii(const AValue: RawByteString);
+    procedure WriteUtf8(const AValue: string);
+    procedure WriteInt(AValue: Integer);
+    procedure WriteCrLf;
+    function ToBytes: TBytes;
+  end;
 
-function AsciiBytes(const S: string): TBytes;
+procedure TNatsControlWriter.EnsureCapacity(AAdditional: Integer);
+var
+  Needed, NewCapacity: Integer;
 begin
-  Result := TEncoding.ASCII.GetBytes(S);
+  Needed := FLength + AAdditional;
+  if Needed <= Length(FBuffer) then
+    Exit;
+
+  NewCapacity := Length(FBuffer);
+  if NewCapacity < 64 then
+    NewCapacity := 64;
+  while NewCapacity < Needed do
+    NewCapacity := NewCapacity * 2;
+  SetLength(FBuffer, NewCapacity);
+end;
+
+procedure TNatsControlWriter.WriteByte(AValue: Byte);
+begin
+  EnsureCapacity(1);
+  FBuffer[FLength] := AValue;
+  Inc(FLength);
+end;
+
+procedure TNatsControlWriter.WriteAscii(const AValue: RawByteString);
+begin
+  if AValue = '' then
+    Exit;
+  EnsureCapacity(Length(AValue));
+  Move(AValue[1], FBuffer[FLength], Length(AValue));
+  Inc(FLength, Length(AValue));
+end;
+
+procedure TNatsControlWriter.WriteUtf8(const AValue: string);
+var
+  Bytes: TBytes;
+begin
+  if AValue = '' then
+    Exit;
+  Bytes := TEncoding.UTF8.GetBytes(AValue);
+  EnsureCapacity(Length(Bytes));
+  Move(Bytes[0], FBuffer[FLength], Length(Bytes));
+  Inc(FLength, Length(Bytes));
+end;
+
+procedure TNatsControlWriter.WriteInt(AValue: Integer);
+var
+  Buffer: array[0..11] of AnsiChar;
+  P: Integer;
+  Value: Cardinal;
+  Negative: Boolean;
+begin
+  if AValue = 0 then
+  begin
+    WriteByte(Ord('0'));
+    Exit;
+  end;
+
+  if AValue = Low(Integer) then
+  begin
+    WriteAscii('-2147483648');
+    Exit;
+  end;
+
+  Negative := AValue < 0;
+  if Negative then
+    Value := Cardinal(-AValue)
+  else
+    Value := Cardinal(AValue);
+
+  P := High(Buffer);
+  while Value > 0 do
+  begin
+    Buffer[P] := AnsiChar(Ord('0') + (Value mod 10));
+    Value := Value div 10;
+    Dec(P);
+  end;
+  if Negative then
+  begin
+    Buffer[P] := '-';
+    Dec(P);
+  end;
+  Inc(P);
+
+  EnsureCapacity(High(Buffer) - P + 1);
+  Move(Buffer[P], FBuffer[FLength], High(Buffer) - P + 1);
+  Inc(FLength, High(Buffer) - P + 1);
+end;
+
+procedure TNatsControlWriter.WriteCrLf;
+begin
+  WriteByte(13);
+  WriteByte(10);
+end;
+
+function TNatsControlWriter.ToBytes: TBytes;
+begin
+  SetLength(Result, FLength);
+  if FLength > 0 then
+    Move(FBuffer[0], Result[0], FLength);
 end;
 
 function NatsControlPing: TBytes;
 begin
-  Result := AsciiBytes('PING' + NATS_CRLF);
+  Result := BytesOf(RawByteString('PING'#13#10));
 end;
 
 function NatsControlPong: TBytes;
 begin
-  Result := AsciiBytes('PONG' + NATS_CRLF);
+  Result := BytesOf(RawByteString('PONG'#13#10));
 end;
 
 function NatsControlSub(const ASubject, AQueue: string;
   ASid: Integer): TBytes;
 var
-  Line: string;
+  Writer: TNatsControlWriter;
 begin
+  Writer.WriteAscii('SUB ');
+  Writer.WriteUtf8(ASubject);
+  Writer.WriteByte(Ord(' '));
   if AQueue <> '' then
-    Line := Format('SUB %s %s %d%s', [ASubject, AQueue, ASid, NATS_CRLF])
-  else
-    Line := Format('SUB %s %d%s', [ASubject, ASid, NATS_CRLF]);
-  Result := AsciiBytes(Line);
+  begin
+    Writer.WriteUtf8(AQueue);
+    Writer.WriteByte(Ord(' '));
+  end;
+  Writer.WriteInt(ASid);
+  Writer.WriteCrLf;
+  Result := Writer.ToBytes;
 end;
 
 function NatsControlUnsub(ASid, AMaxMsgs: Integer): TBytes;
+var
+  Writer: TNatsControlWriter;
 begin
+  Writer.WriteAscii('UNSUB ');
+  Writer.WriteInt(ASid);
   if AMaxMsgs > 0 then
-    Result := AsciiBytes(Format('UNSUB %d %d%s', [ASid, AMaxMsgs, NATS_CRLF]))
-  else
-    Result := AsciiBytes(Format('UNSUB %d%s', [ASid, NATS_CRLF]));
+  begin
+    Writer.WriteByte(Ord(' '));
+    Writer.WriteInt(AMaxMsgs);
+  end;
+  Writer.WriteCrLf;
+  Result := Writer.ToBytes;
 end;
 
 end.
