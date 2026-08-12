@@ -380,7 +380,8 @@ implementation
 uses
   Dext.Net.Security.OpenSSL,
   Dext.Telemetry.Metrics,
-  Dext.Net.Nats.Protocol.Writer;
+  Dext.Net.Nats.Protocol.Writer,
+  Dext.Net.Nats.Protocol.Control;
 
 { TNatsMsg }
 
@@ -928,7 +929,7 @@ begin
       '(set User/Password, AuthToken, JWT+NKeySeed, or CredentialsFile)');
 
   SendRaw(NatsV2EncodeConnect(connOpts));
-  SendRaw(NatsEncodePing);
+  SendRaw(NatsControlPing);
 
   sw := TStopwatch.StartNew;
   gotPong := False;
@@ -1071,9 +1072,9 @@ begin
   try
     for sub in FSubscriptions.Values do
     begin
-      SendRaw(NatsEncodeSub(sub.Subject, sub.Queue, sub.Sid));
+      SendRaw(NatsControlSub(sub.Subject, sub.Queue, sub.Sid));
       if sub.MaxMsgs >= 0 then
-        SendRaw(NatsEncodeUnsub(sub.Sid, sub.MaxMsgs - sub.Received));
+        SendRaw(NatsControlUnsub(sub.Sid, sub.MaxMsgs - sub.Received));
       Inc(count);
     end;
   finally
@@ -1396,7 +1397,7 @@ begin
         FLock.Leave;
       end;
       TInterlocked.Increment(FOutstandingPings);
-      SendRaw(NatsEncodePing);
+      SendRaw(NatsControlPing);
     except
       on E: Exception do
         FireError('Failed to send keepalive PING: ' + E.Message);
@@ -1425,7 +1426,7 @@ procedure TDextNatsClient.HandleFrame(const AFrame: TNatsFrame);
 begin
   case AFrame.Kind of
     nfInfo: FServerInfo := TNatsServerInfo.Parse(AFrame.InfoJson);
-    nfPing: SendRaw(NatsEncodePong);
+    nfPing: SendRaw(NatsControlPong);
     nfPong: HandlePongFrame;
     nfMsg, nfHMsg: HandleMsgFrame(AFrame);
     nfOK: ; // nothing to do
@@ -1611,7 +1612,7 @@ begin
   end;
 
   if sendNow then
-    SendRaw(NatsEncodeSub(ASubject, AQueue, sub.Sid));
+    SendRaw(NatsControlSub(ASubject, AQueue, sub.Sid));
 
   Result := sub.Sid;
 end;
@@ -1638,7 +1639,7 @@ begin
   end;
 
   if sendNow then
-    SendRaw(NatsEncodeUnsub(ASid, AMaxMsgs));
+    SendRaw(NatsControlUnsub(ASid, AMaxMsgs));
 end;
 
 procedure TDextNatsClient.UnsubscribeSubject(const ASubject: string);
@@ -1788,7 +1789,7 @@ end;
 
 procedure TDextNatsClient.Ping;
 begin
-  SendRaw(NatsEncodePing);
+  SendRaw(NatsControlPing);
 end;
 
 procedure TDextNatsClient.Flush(ATimeoutMs: Integer);
@@ -1811,7 +1812,7 @@ begin
       FLock.Leave;
     end;
 
-    SendRaw(NatsEncodePing);
+    SendRaw(NatsControlPing);
 
     if evt.WaitFor(ATimeoutMs) <> wrSignaled then
     begin
@@ -1902,7 +1903,7 @@ begin
 
     for sid in sids do
     try
-      SendRaw(NatsEncodeUnsub(sid, 0));
+      SendRaw(NatsControlUnsub(sid, 0));
     except
       on E: Exception do
         FireError('Drain UNSUB failed for sid ' + IntToStr(sid) + ': ' + E.Message);
