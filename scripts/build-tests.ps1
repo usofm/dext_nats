@@ -41,24 +41,36 @@ function Find-RsVars {
 }
 
 $rsvars = Find-RsVars -ExplicitRoot $BdsRoot
+$parserMode = if ($ParserV2) { 'ParserV2' } else { 'ParserV1' }
+$outputDir = Join-Path $repoRoot ("Output\{0}\{1}\{2}" -f $Platform, $Config, $parserMode)
+
 Write-Host "Using RAD Studio environment: $rsvars"
 Write-Host "Building: $project"
-Write-Host "Config=$Config Platform=$Platform ParserV2=$($ParserV2.IsPresent)"
+Write-Host "Config=$Config Platform=$Platform Parser=$parserMode"
+Write-Host "Output=$outputDir"
 
-$properties = '/p:Config=' + $Config + ' /p:Platform=' + $Platform
+New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
+
+# Keep parser modes physically isolated. This prevents a DCU compiled with one
+# conditional define from being reused by the other validation build.
+$properties = @(
+  '/p:Config=' + $Config,
+  '/p:Platform=' + $Platform,
+  '/p:DCC_DcuOutput=' + $outputDir,
+  '/p:DCC_ExeOutput=' + $outputDir
+)
 if ($ParserV2) {
-  # Global MSBuild property is intentional for this validation build. It selects
-  # Dext.Net.Nats.Internal.ParserSelector without changing source files.
-  $properties += ' /p:DCC_Define=DEXT_NATS_PARSER_V2'
+  $properties += '/p:DCC_Define=DEXT_NATS_PARSER_V2;$(DCC_Define)'
 }
 
-$command = 'call "' + $rsvars + '" && msbuild "' + $project + '" /t:Build ' + $properties
+$propertyText = $properties -join ' '
+$command = 'call "' + $rsvars + '" && msbuild "' + $project + '" /t:Rebuild ' + $propertyText
 & cmd.exe /d /s /c $command
 if ($LASTEXITCODE -ne 0) {
   throw "Delphi build failed with exit code $LASTEXITCODE"
 }
 
-$exe = Join-Path $repoRoot ("Output\{0}\{1}\Dext.Net.Nats.Tests.exe" -f $Platform, $Config)
+$exe = Join-Path $outputDir 'Dext.Net.Nats.Tests.exe'
 if (-not (Test-Path $exe)) {
   throw "Build completed but test executable was not found: $exe"
 }
