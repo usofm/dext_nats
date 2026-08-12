@@ -22,6 +22,7 @@ jobs:
         shell: python
         run: |
           from pathlib import Path
+          import re
 
           p = Path('Source/Dext.Net.Nats.pas')
           s = p.read_text(encoding='utf-8-sig')
@@ -42,52 +43,12 @@ jobs:
                   raise SystemExit(f'Runtime writer anchor missing: {old}')
               s = s.replace(old, new, 1)
 
-          old_flush = '''procedure TDextNatsClient.FlushOutbox;
-var
-  data: TBytes;
-begin
-  FLock.Enter;
-  try
-    while FPendingOutbox.Count > 0 do
-    begin
-      data := FPendingOutbox.Dequeue;
-      Dec(FPendingOutboxBytes, Length(data));
-      SendRaw(data);
-    end;
-  finally
-    FLock.Leave;
-  end;
-end;'''
-          new_flush = '''procedure TDextNatsClient.FlushOutbox;
-var
-  data: TBytes;
-  hasData: Boolean;
-begin
-  // Never hold the shared client-state lock across socket/TLS I/O. Dequeue one
-  // frame at a time under FLock, then send it under the dedicated send lock.
-  // FIFO ordering is preserved because this routine is the sole outbox drainer.
-  while True do
-  begin
-    FLock.Enter;
-    try
-      hasData := FPendingOutbox.Count > 0;
-      if hasData then
-      begin
-        data := FPendingOutbox.Dequeue;
-        Dec(FPendingOutboxBytes, Length(data));
-      end;
-    finally
-      FLock.Leave;
-    end;
+          pattern = r"procedure TDextNatsClient\.FlushOutbox;\nvar\n  data: TBytes;\nbegin\n  FLock\.Enter;\n  try\n    while FPendingOutbox\.Count > 0 do\n    begin\n      data := FPendingOutbox\.Dequeue;\n      Dec\(FPendingOutboxBytes, Length\(data\)\);\n      SendRaw\(data\);\n    end;\n  finally\n    FLock\.Leave;\n  end;\nend;"
+          replacement = "procedure TDextNatsClient.FlushOutbox;\nvar\n  data: TBytes;\n  hasData: Boolean;\nbegin\n  // Never hold the shared client-state lock across socket/TLS I/O. Dequeue one\n  // frame at a time under FLock, then send it under the dedicated send lock.\n  // FIFO ordering is preserved because this routine is the sole outbox drainer.\n  while True do\n  begin\n    FLock.Enter;\n    try\n      hasData := FPendingOutbox.Count > 0;\n      if hasData then\n      begin\n        data := FPendingOutbox.Dequeue;\n        Dec(FPendingOutboxBytes, Length(data));\n      end;\n    finally\n      FLock.Leave;\n    end;\n\n    if not hasData then\n      Break;\n    SendRaw(data);\n  end;\nend;"
+          s, count = re.subn(pattern, replacement, s, count=1)
+          if count != 1:
+              raise SystemExit(f'Expected one FlushOutbox implementation, replaced {count}')
 
-    if not hasData then
-      Break;
-    SendRaw(data);
-  end;
-end;'''
-          if old_flush not in s:
-              raise SystemExit('FlushOutbox implementation anchor not found')
-          s = s.replace(old_flush, new_flush, 1)
           p.write_text(s, encoding='utf-8-sig')
 
       - name: Runtime writer contract
@@ -98,7 +59,7 @@ end;'''
           grep -q 'NatsV2EncodeHPub(ASubject, AReplyTo, AHeaders, APayload)' Source/Dext.Net.Nats.pas
           grep -q 'hasData := FPendingOutbox.Count > 0' Source/Dext.Net.Nats.pas
           echo 'Remaining legacy encoder references:'
-          grep -RIn --exclude-dir=.git 'NatsEncodeConnect\|NatsEncodePub\|NatsEncodeHPub' Source Tests || true
+          grep -RIn --exclude-dir=.git -E 'NatsEncodeConnect|NatsEncodePub|NatsEncodeHPub' Source Tests || true
 
       - name: Commit
         run: |
