@@ -2,7 +2,7 @@
 {                                                                           }
 {           Dext.Nats                                                       }
 {                                                                           }
-{           Runtime parser selector facade                                  }
+{           Runtime parser facade                                           }
 {                                                                           }
 {***************************************************************************}
 unit Dext.Net.Nats.ParserRuntime;
@@ -10,31 +10,18 @@ unit Dext.Net.Nats.ParserRuntime;
 interface
 
 uses
-  Dext.Net.Nats.Protocol
-{$IFDEF DEXT_NATS_PARSER_V2}
-  , Dext.Net.Nats.Internal.Parser
-{$ENDIF}
-  ;
+  Dext.Net.Nats.Internal.Parser;
 
 type
-{$IFDEF DEXT_NATS_PARSER_V2}
   /// <summary>
-  /// Cursor-based parser selected for explicit V2 validation builds.
+  /// Production NATS frame parser. Dext.Nats has no legacy-runtime
+  /// compatibility requirement yet, so the cursor-based parser is the only
+  /// runtime implementation.
   /// </summary>
   TDextNatsRuntimeFrameParser = TDextNatsFrameParserV2;
-{$ELSE}
-  /// <summary>
-  /// Stable parser selected by default until the Delphi 13 cutover gate passes.
-  /// </summary>
-  TDextNatsRuntimeFrameParser = TDextNatsFrameParser;
-{$ENDIF}
 
 const
-{$IFDEF DEXT_NATS_PARSER_V2}
   DEXT_NATS_RUNTIME_PARSER = 'v2';
-{$ELSE}
-  DEXT_NATS_RUNTIME_PARSER = 'v1';
-{$ENDIF}
 
 implementation
 
