@@ -24,12 +24,19 @@ jobs:
           p = Path('.github/workflows/ci.yml')
           s = p.read_text(encoding='utf-8-sig')
           pairs = [
-              ('TDextNatsKeyValueWatcherGate', 'TDextNatsKeyValueWatchGate'),
-              ('TDextNatsObjectStoreWatcherGate', 'TDextNatsObjectWatchGate'),
+              (
+                  "grep -q 'TDextNatsKeyValueWatcherGate' Source/KeyValue/Dext.Net.Nats.KeyValue.WatcherGate.pas",
+                  "grep -q 'TDextNatsKeyValueWatchGate' Source/KeyValue/Dext.Net.Nats.KeyValue.WatcherGate.pas"
+              ),
+              (
+                  "grep -q 'TDextNatsObjectStoreWatcherGate' Source/ObjectStore/Dext.Net.Nats.ObjectStore.WatcherGate.pas",
+                  "grep -q 'TDextNatsObjectWatchGate' Source/ObjectStore/Dext.Net.Nats.ObjectStore.WatcherGate.pas"
+              ),
           ]
           for old, new in pairs:
-              if s.count(old) != 1:
-                  raise SystemExit(f'Expected one {old}, got {s.count(old)}')
+              count = s.count(old)
+              if count != 1:
+                  raise SystemExit(f'Expected exactly one source guard {old!r}, got {count}')
               s = s.replace(old, new, 1)
           p.write_text(s, encoding='utf-8-sig')
       - name: Commit
