@@ -180,10 +180,13 @@ type
     Subject: string;
     Queue: string;
     Handler: TNatsMsgHandler;
+    /// <summary>True only for tiny internal synchronous-request completion handlers.</summary>
+    InlineDelivery: Boolean;
     /// <summary>Absolute message count after which the subscription auto-cancels; -1 means unlimited.</summary>
     MaxMsgs: Integer;
     Received: Integer;
-    constructor Create(ASid: Integer; const ASubject, AQueue: string; AHandler: TNatsMsgHandler);
+    constructor Create(ASid: Integer; const ASubject, AQueue: string; AHandler: TNatsMsgHandler;
+      AInlineDelivery: Boolean = False);
   end;
 
   /// <summary>
@@ -247,6 +250,8 @@ type
     function GetSubscriptionCount: Integer;
     function GetMetrics: TNatsClientMetrics;
     function NextSid: Integer;
+    function SubscribeCore(const ASubject: string; const AHandler: TNatsMsgHandler;
+      const AQueue: string; AInlineDelivery: Boolean): Integer;
 
     procedure RecvLoop;
     procedure PingLoop;
@@ -454,13 +459,15 @@ end;
 
 { TDextNatsSubscription }
 
-constructor TDextNatsSubscription.Create(ASid: Integer; const ASubject, AQueue: string; AHandler: TNatsMsgHandler);
+constructor TDextNatsSubscription.Create(ASid: Integer; const ASubject, AQueue: string;
+  AHandler: TNatsMsgHandler; AInlineDelivery: Boolean);
 begin
   inherited Create;
   Sid := ASid;
   Subject := ASubject;
   Queue := AQueue;
   Handler := AHandler;
+  InlineDelivery := AInlineDelivery;
   MaxMsgs := -1;
   Received := 0;
 end;
@@ -1464,11 +1471,12 @@ var
   sub: TDextNatsSubscription;
   msg: TNatsMsg;
   item: TNatsHandlerDispatchItem;
-  found, removeAfter: Boolean;
+  found, removeAfter, inlineDelivery: Boolean;
   handler: TNatsMsgHandler;
 begin
   found := False;
   removeAfter := False;
+  inlineDelivery := False;
   handler := nil;
 
   FLock.Enter;
@@ -1478,6 +1486,7 @@ begin
     begin
       Inc(sub.Received);
       handler := sub.Handler;
+      inlineDelivery := sub.InlineDelivery;
       if (sub.MaxMsgs >= 0) and (sub.Received >= sub.MaxMsgs) then
         removeAfter := True;
     end;
@@ -1503,9 +1512,15 @@ begin
     item.Msg := msg;
     TInterlocked.Increment(FInFlightHandlers);
     try
-      FHandlerDispatcher.Dispatch(item);
+      if inlineDelivery then
+        ExecuteHandlerDispatch(item)
+      else
+        FHandlerDispatcher.Dispatch(item);
     except
-      TInterlocked.Decrement(FInFlightHandlers);
+      // ExecuteHandlerDispatch owns the decrement once it starts. Dispatch only
+      // raises before ownership is transferred to a worker.
+      if not inlineDelivery then
+        TInterlocked.Decrement(FInFlightHandlers);
       raise;
     end;
   end;
@@ -1633,6 +1648,12 @@ end;
 
 function TDextNatsClient.Subscribe(const ASubject: string; const AHandler: TNatsMsgHandler;
   const AQueue: string): Integer;
+begin
+  Result := SubscribeCore(ASubject, AHandler, AQueue, False);
+end;
+
+function TDextNatsClient.SubscribeCore(const ASubject: string; const AHandler: TNatsMsgHandler;
+  const AQueue: string; AInlineDelivery: Boolean): Integer;
 var
   sub: TDextNatsSubscription;
   sendNow: Boolean;
@@ -1642,7 +1663,7 @@ begin
   if not Assigned(AHandler) then
     raise EDextNatsException.Create('Subscribe requires a message handler');
 
-  sub := TDextNatsSubscription.Create(NextSid, ASubject, AQueue, AHandler);
+  sub := TDextNatsSubscription.Create(NextSid, ASubject, AQueue, AHandler, AInlineDelivery);
 
   FLock.Enter;
   try
@@ -1735,18 +1756,17 @@ begin
   evt := TEvent.Create(nil, True, False, '');
   gate := TNatsRequestGate.Create;
   try
-    sid := Subscribe(inbox,
+    sid := SubscribeCore(inbox,
       procedure(const AMsg: TNatsMsg)
       begin
-        // Only touch `reply`/`evt` after winning the gate, so that once the timeout path below
-        // claims it first, the handler is guaranteed never to touch either afterwards - this is
-        // what makes it safe for the timeout path to free `evt` right after claiming the gate.
+        // Internal completion only: signal the synchronous waiter immediately on
+        // RecvLoop so Request() remains safe even when called from the sole callback worker.
         if gate.TryClaim then
         begin
           reply := AMsg;
           evt.SetEvent;
         end;
-      end);
+      end, '', True);
     Unsubscribe(sid, 1); // ask the server to auto-cancel this subscription after exactly one reply
 
     if Length(AHeaders) > 0 then
