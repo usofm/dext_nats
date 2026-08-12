@@ -379,7 +379,8 @@ implementation
 
 uses
   Dext.Net.Security.OpenSSL,
-  Dext.Telemetry.Metrics;
+  Dext.Telemetry.Metrics,
+  Dext.Net.Nats.Protocol.Writer;
 
 { TNatsMsg }
 
@@ -926,7 +927,7 @@ begin
       'NATS server requires authentication but no credentials were configured ' +
       '(set User/Password, AuthToken, JWT+NKeySeed, or CredentialsFile)');
 
-  SendRaw(NatsEncodeConnect(connOpts));
+  SendRaw(NatsV2EncodeConnect(connOpts));
   SendRaw(NatsEncodePing);
 
   sw := TStopwatch.StartNew;
@@ -1088,17 +1089,28 @@ end;
 procedure TDextNatsClient.FlushOutbox;
 var
   data: TBytes;
+  hasData: Boolean;
 begin
-  FLock.Enter;
-  try
-    while FPendingOutbox.Count > 0 do
-    begin
-      data := FPendingOutbox.Dequeue;
-      Dec(FPendingOutboxBytes, Length(data));
-      SendRaw(data);
+  // Never hold the shared client-state lock across socket/TLS I/O. Dequeue one
+  // frame at a time under FLock, then send it under the dedicated send lock.
+  // FIFO ordering is preserved because this routine is the sole outbox drainer.
+  while True do
+  begin
+    FLock.Enter;
+    try
+      hasData := FPendingOutbox.Count > 0;
+      if hasData then
+      begin
+        data := FPendingOutbox.Dequeue;
+        Dec(FPendingOutboxBytes, Length(data));
+      end;
+    finally
+      FLock.Leave;
     end;
-  finally
-    FLock.Leave;
+
+    if not hasData then
+      Break;
+    SendRaw(data);
   end;
 end;
 
@@ -1549,7 +1561,7 @@ begin
   if ASubject = '' then
     raise EDextNatsException.Create('Publish requires a non-empty subject');
   EnsurePayloadAllowed(APayload);
-  DispatchOutgoing(NatsEncodePub(ASubject, AReplyTo, APayload));
+  DispatchOutgoing(NatsV2EncodePub(ASubject, AReplyTo, APayload));
   NoteMetric(NATS_METRIC_MSGS_PUBLISHED, FMetricMessagesPublished);
 end;
 
@@ -1568,7 +1580,7 @@ begin
       'The NATS server does not advertise message header support (or the client is not connected yet)');
   EnsurePayloadAllowed(APayload);
 
-  DispatchOutgoing(NatsEncodeHPub(ASubject, AReplyTo, AHeaders, APayload));
+  DispatchOutgoing(NatsV2EncodeHPub(ASubject, AReplyTo, AHeaders, APayload));
   NoteMetric(NATS_METRIC_MSGS_PUBLISHED, FMetricMessagesPublished);
 end;
 
