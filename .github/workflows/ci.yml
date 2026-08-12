@@ -26,6 +26,9 @@ jobs:
           test -f Source/Dext.Net.Nats.Services.pas
           test -f Source/Dext.Net.Nats.DependencyInjection.pas
           test -f Source/Dext.Net.Nats.HealthChecks.pas
+          test -f Source/Internal/Dext.Net.Nats.Internal.Buffer.pas
+          test -f Source/Internal/Dext.Net.Nats.Internal.Dispatcher.pas
+          test -f Tests/Dext.Net.Nats.Internal.Tests.pas
           test -f Tests/Dext.Net.Nats.Tests.dproj
           test -f Dext.Nats.groupproj
           test -f CHANGELOG.md
@@ -37,6 +40,23 @@ jobs:
           grep -q 'Version:' README.md
           grep -q 'FlushTimeoutMs' Source/Dext.Net.Nats.HealthChecks.pas
           grep -q 'GetRevision' Source/Dext.Net.Nats.KeyValue.pas
+          grep -q 'TChannel<T>.CreateBounded' Source/Internal/Dext.Net.Nats.Internal.Dispatcher.pas
+          grep -q 'FReadPos' Source/Internal/Dext.Net.Nats.Internal.Buffer.pas
+          grep -q 'TDextNatsInternalTests' Tests/Dext.Net.Nats.Tests.dpr
+
+      - name: Repository hygiene
+        run: |
+          set -e
+          if find .tools -type f ! -name README.md | grep -q .; then
+            echo "Downloaded/binary tools must not be committed under .tools/."
+            find .tools -type f ! -name README.md
+            exit 1
+          fi
+          if find . -type f \( -name '*.zip' -o -name '*.7z' \) | grep -q .; then
+            echo "Archive artifacts must be downloaded by scripts, not committed."
+            find . -type f \( -name '*.zip' -o -name '*.7z' \)
+            exit 1
+          fi
 
       - name: Remind Delphi build is local
         run: |
@@ -44,6 +64,7 @@ jobs:
           echo "Reproduce locally (README):"
           echo "  set BDS=C:\\Program Files (x86)\\Embarcadero\\Studio\\23.0"
           echo "  msbuild Tests\\Dext.Net.Nats.Tests.dproj /p:Config=Debug /p:Platform=Win32"
+          echo "  powershell -ExecutionPolicy Bypass -File scripts\\download-nats-server.ps1"
           echo "  nats-server -js"
           echo "  set DEXT_NATS_REQUIRE_LIVE=1"
           echo "  Output\\Win32\\Debug\\Dext.Net.Nats.Tests.exe"
