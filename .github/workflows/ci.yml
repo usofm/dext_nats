@@ -1,5 +1,5 @@
 ﻿# Structure checks (no Delphi compiler on hosted runners).
-# Full Win32 test build remains local / self-hosted — see README Tests section.
+# Full Delphi compile/test can run on the manual self-hosted Windows workflow.
 
 name: ci
 
@@ -39,6 +39,9 @@ jobs:
           test -f Docs/TEST_PLAN.md
           test -f Docs/MQTT_VS_NATS.md
           test -f Docs/ARCHITECTURE_V2.md
+          test -f scripts/build-tests.ps1
+          test -f scripts/download-nats-server.ps1
+          test -f .github/workflows/delphi-build.yml
           grep -q '1.0.0' CHANGELOG.md
           grep -q 'Version:' README.md
           grep -q 'FlushTimeoutMs' Source/Dext.Net.Nats.HealthChecks.pas
@@ -63,13 +66,8 @@ jobs:
             exit 1
           fi
 
-      - name: Remind Delphi build is local
+      - name: Remind Delphi build is self-hosted
         run: |
-          echo "Hosted CI does not run dcc32/msbuild."
-          echo "Reproduce locally (README):"
-          echo "  set BDS=C:\\Program Files (x86)\\Embarcadero\\Studio\\23.0"
-          echo "  msbuild Tests\\Dext.Net.Nats.Tests.dproj /p:Config=Debug /p:Platform=Win32"
-          echo "  powershell -ExecutionPolicy Bypass -File scripts\\download-nats-server.ps1"
-          echo "  nats-server -js"
-          echo "  set DEXT_NATS_REQUIRE_LIVE=1"
-          echo "  Output\\Win32\\Debug\\Dext.Net.Nats.Tests.exe"
+          echo "Hosted CI performs structure/hygiene checks only."
+          echo "Compile locally or use the manual 'Delphi Build' workflow on a Windows self-hosted runner."
+          echo "Local build: powershell -ExecutionPolicy Bypass -File scripts\\build-tests.ps1"
