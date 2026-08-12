@@ -71,5 +71,5 @@ jobs:
         shell: powershell
         run: |
           if ($env:DEXT_NATS_SERVER_PID) {
-            Stop-Process -Id ([int]$env:DEXT_NATS_SERVER_PID -Force -ErrorAction SilentlyContinue
+            Stop-Process -Id ([int]$env:DEXT_NATS_SERVER_PID) -Force -ErrorAction SilentlyContinue
           }
