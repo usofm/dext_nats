@@ -73,9 +73,9 @@ jobs:
           grep -q 'FLastActivityMs' Source/JetStream/Dext.Net.Nats.JetStream.Ordered.pas
           grep -q 'TDextNatsJetStreamRuntime' Source/JetStream/Dext.Net.Nats.JetStream.Runtime.pas
           grep -q 'NatsKvSubjectForKey' Source/KeyValue/Dext.Net.Nats.KeyValue.Subjects.pas
-          grep -q 'TDextNatsKeyValueWatcherGate' Source/KeyValue/Dext.Net.Nats.KeyValue.WatcherGate.pas
+          grep -q 'TDextNatsKeyValueWatchGate' Source/KeyValue/Dext.Net.Nats.KeyValue.WatcherGate.pas
           grep -q 'NatsObjectMetaSubject' Source/ObjectStore/Dext.Net.Nats.ObjectStore.Subjects.pas
-          grep -q 'TDextNatsObjectStoreWatcherGate' Source/ObjectStore/Dext.Net.Nats.ObjectStore.WatcherGate.pas
+          grep -q 'TDextNatsObjectWatchGate' Source/ObjectStore/Dext.Net.Nats.ObjectStore.WatcherGate.pas
           grep -q 'TDextNatsObjectReaderEngine' Source/ObjectStore/Dext.Net.Nats.ObjectStore.Reader.pas
           grep -q 'NatsServiceDiscoverySubject' Source/Services/Dext.Net.Nats.Services.Subjects.pas
           grep -q 'NatsServiceValidateName' Source/Services/Dext.Net.Nats.Services.Validation.pas
