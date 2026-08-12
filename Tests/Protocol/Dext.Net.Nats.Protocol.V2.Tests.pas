@@ -9,7 +9,8 @@ uses
   Dext.Testing.Fluent,
   Dext.Net.Nats.Protocol,
   Dext.Net.Nats.Protocol.Headers,
-  Dext.Net.Nats.Protocol.Control;
+  Dext.Net.Nats.Protocol.Control,
+  Dext.Net.Nats.Protocol.Writer;
 
 type
   [TestFixture('NATS Protocol V2 Codecs')]
@@ -17,9 +18,12 @@ type
   public
     [Test, Category('Unit'), Category('Protocol'), Category('Parity')]
     procedure HeaderCodec_ShouldMatchFacade;
-
     [Test, Category('Unit'), Category('Protocol'), Category('Parity')]
     procedure ControlFrames_ShouldMatchFacade;
+    [Test, Category('Unit'), Category('Protocol'), Category('Parity')]
+    procedure PublishFrames_ShouldMatchFacade;
+    [Test, Category('Unit'), Category('Protocol'), Category('Parity')]
+    procedure ConnectFrame_ShouldMatchFacade;
   end;
 
 implementation
@@ -52,6 +56,34 @@ begin
     TEncoding.ASCII.GetString(NatsEncodeSub('a.b', 'q', 7)));
   Should(TEncoding.ASCII.GetString(NatsControlUnsub(7, 10))).Be(
     TEncoding.ASCII.GetString(NatsEncodeUnsub(7, 10)));
+end;
+
+procedure TDextNatsProtocolV2Tests.PublishFrames_ShouldMatchFacade;
+var
+  Payload: TBytes;
+  Headers: TNatsHeaders;
+begin
+  Payload := TEncoding.UTF8.GetBytes('hello');
+  Headers := nil;
+  Headers.Add('X-Test', '1');
+  Should(TEncoding.UTF8.GetString(NatsV2EncodePub('orders.a', '', Payload))).Be(
+    TEncoding.UTF8.GetString(NatsEncodePub('orders.a', '', Payload)));
+  Should(TEncoding.UTF8.GetString(NatsV2EncodePub('orders.a', '_INBOX.x', Payload))).Be(
+    TEncoding.UTF8.GetString(NatsEncodePub('orders.a', '_INBOX.x', Payload)));
+  Should(TEncoding.UTF8.GetString(NatsV2EncodeHPub('orders.a', '', Headers, Payload))).Be(
+    TEncoding.UTF8.GetString(NatsEncodeHPub('orders.a', '', Headers, Payload)));
+end;
+
+procedure TDextNatsProtocolV2Tests.ConnectFrame_ShouldMatchFacade;
+var
+  Options: TNatsConnectOptions;
+begin
+  Options := TNatsConnectOptions.CreateDefault;
+  Options.Name := 'dext-test';
+  Options.User := 'u';
+  Options.Password := 'p';
+  Should(TEncoding.UTF8.GetString(NatsV2EncodeConnect(Options))).Be(
+    TEncoding.UTF8.GetString(NatsEncodeConnect(Options)));
 end;
 
 end.
