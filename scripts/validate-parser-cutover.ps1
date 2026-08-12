@@ -16,13 +16,9 @@ $ErrorActionPreference = 'Stop'
 function Invoke-TestExe {
   param(
     [string]$Exe,
-    [string]$ParserName,
     [bool]$RunLive,
     [bool]$RunBenchmark
   )
-
-  Write-Host ''
-  Write-Host "=== $ParserName tests ==="
 
   $oldRequireLive = $env:DEXT_NATS_REQUIRE_LIVE
   $oldSkipLive = $env:DEXT_NATS_SKIP_LIVE
@@ -44,7 +40,7 @@ function Invoke-TestExe {
 
     & $Exe
     if ($LASTEXITCODE -ne 0) {
-      throw "$ParserName tests failed with exit code $LASTEXITCODE"
+      throw "Parser V2 tests failed with exit code $LASTEXITCODE"
     }
   }
   finally {
@@ -59,22 +55,16 @@ function Invoke-TestExe {
   }
 }
 
-$common = @('-Config', $Config, '-Platform', $Platform)
-if ($BdsRoot) { $common += @('-BdsRoot', $BdsRoot) }
+$args = @('-Config', $Config, '-Platform', $Platform)
+if ($BdsRoot) { $args += @('-BdsRoot', $BdsRoot) }
 
-Write-Host 'Dext.Nats parser runtime cutover validation'
+Write-Host 'Dext.Nats Parser V2 validation'
 Write-Host "Config=$Config Platform=$Platform LiveNats=$($LiveNats.IsPresent) Benchmark=$($Benchmark.IsPresent)"
 
-$v1Exe = & (Join-Path $PSScriptRoot 'build-tests.ps1') @common
-if (-not $v1Exe) { throw 'Parser V1 build did not return an executable path.' }
-Invoke-TestExe -Exe $v1Exe -ParserName 'Parser V1 runtime' -RunLive $LiveNats.IsPresent -RunBenchmark $Benchmark.IsPresent
-
-$v2Args = $common + '-ParserV2'
-$v2Exe = & (Join-Path $PSScriptRoot 'build-tests.ps1') @v2Args
-if (-not $v2Exe) { throw 'Parser V2 build did not return an executable path.' }
-Invoke-TestExe -Exe $v2Exe -ParserName 'Parser V2 runtime' -RunLive $LiveNats.IsPresent -RunBenchmark $Benchmark.IsPresent
+$exe = & (Join-Path $PSScriptRoot 'build-tests.ps1') @args
+if (-not $exe) { throw 'Parser V2 build did not return an executable path.' }
+Invoke-TestExe -Exe $exe -RunLive $LiveNats.IsPresent -RunBenchmark $Benchmark.IsPresent
 
 Write-Host ''
-Write-Host 'Parser cutover compile/test gate PASSED for both V1 and V2.'
-Write-Host "V1: $v1Exe"
-Write-Host "V2: $v2Exe"
+Write-Host 'Parser V2 compile/test gate PASSED.'
+Write-Host "Executable: $exe"
