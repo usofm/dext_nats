@@ -30,8 +30,9 @@ jobs:
           test -f Source/Internal/Dext.Net.Nats.Internal.Buffer.pas
           test -f Source/Internal/Dext.Net.Nats.Internal.Dispatcher.pas
           test -f Source/Internal/Dext.Net.Nats.Internal.Parser.pas
-          test -f Tests/Dext.Net.Nats.Internal.Tests.pas
-          test -f Tests/Dext.Net.Nats.Dispatching.Tests.pas
+          test -f Tests/Core/Dext.Net.Nats.Drain.Tests.pas
+          test -f Tests/Core/Dext.Net.Nats.Dispatching.Tests.pas
+          test -f Tests/Internal/Dext.Net.Nats.Internal.Tests.pas
           test -f Tests/Protocol/Dext.Net.Nats.ParserV2.Tests.pas
           test -f Tests/Benchmarks/Dext.Net.Nats.ParserV2.Benchmarks.pas
           test -f Tests/Dext.Net.Nats.Tests.dproj
@@ -58,8 +59,21 @@ jobs:
           grep -q 'TDextNatsDispatchingTests' Tests/Dext.Net.Nats.Tests.dpr
           grep -q 'TDextNatsParserV2Tests' Tests/Dext.Net.Nats.Tests.dpr
           grep -q 'TDextNatsParserV2BenchmarkTests' Tests/Dext.Net.Nats.Tests.dpr
+          grep -q 'Core\\Dext.Net.Nats.Drain.Tests.pas' Tests/Dext.Net.Nats.Tests.dpr
+          grep -q 'Core\\Dext.Net.Nats.Dispatching.Tests.pas' Tests/Dext.Net.Nats.Tests.dpr
+          grep -q 'Internal\\Dext.Net.Nats.Internal.Tests.pas' Tests/Dext.Net.Nats.Tests.dpr
           grep -q 'Protocol\\Dext.Net.Nats.ParserV2.Tests.pas' Tests/Dext.Net.Nats.Tests.dpr
           grep -q 'Benchmarks\\Dext.Net.Nats.ParserV2.Benchmarks.pas' Tests/Dext.Net.Nats.Tests.dpr
+
+      - name: Test layout guard
+        run: |
+          set -e
+          echo "Focused V2 tests must live in feature folders."
+          test -f Tests/Core/Dext.Net.Nats.Drain.Tests.pas
+          test -f Tests/Core/Dext.Net.Nats.Dispatching.Tests.pas
+          test -f Tests/Internal/Dext.Net.Nats.Internal.Tests.pas
+          test -f Tests/Protocol/Dext.Net.Nats.ParserV2.Tests.pas
+          test -f Tests/Benchmarks/Dext.Net.Nats.ParserV2.Benchmarks.pas
 
       - name: Repository hygiene
         run: |
