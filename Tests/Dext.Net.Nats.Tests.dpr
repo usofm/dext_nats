@@ -15,6 +15,7 @@
 {           "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,    }
 {           either express or implied. See the License for the specific     }
 {           language governing permissions and limitations under the        }
+{           License.                                                        }
 {                                                                           }
 {***************************************************************************}
 program DextNetNatsTests;
@@ -33,6 +34,7 @@ uses
   Dext.Net.Nats in '..\Source\Dext.Net.Nats.pas',
   Dext.Net.Nats.Dispatching in '..\Source\Dext.Net.Nats.Dispatching.pas',
   Dext.Net.Nats.JetStream in '..\Source\Dext.Net.Nats.JetStream.pas',
+  Dext.Net.Nats.JetStream.Json in '..\Source\JetStream\Dext.Net.Nats.JetStream.Json.pas',
   Dext.Net.Nats.KeyValue in '..\Source\Dext.Net.Nats.KeyValue.pas',
   Dext.Net.Nats.ObjectStore in '..\Source\Dext.Net.Nats.ObjectStore.pas',
   Dext.Net.Nats.Services in '..\Source\Dext.Net.Nats.Services.pas',
@@ -46,7 +48,8 @@ uses
   Dext.Net.Nats.Dispatching.Tests in 'Core\Dext.Net.Nats.Dispatching.Tests.pas',
   Dext.Net.Nats.Internal.Tests in 'Internal\Dext.Net.Nats.Internal.Tests.pas',
   Dext.Net.Nats.ParserV2.Tests in 'Protocol\Dext.Net.Nats.ParserV2.Tests.pas',
-  Dext.Net.Nats.ParserV2.Benchmarks in 'Benchmarks\Dext.Net.Nats.ParserV2.Benchmarks.pas';
+  Dext.Net.Nats.ParserV2.Benchmarks in 'Benchmarks\Dext.Net.Nats.ParserV2.Benchmarks.pas',
+  Dext.Net.Nats.JetStream.Json.Tests in 'JetStream\Dext.Net.Nats.JetStream.Json.Tests.pas';
 
 var
   Config: TTestConfigurator;
@@ -93,7 +96,8 @@ begin
       TDextNatsInternalTests,
       TDextNatsDispatchingTests,
       TDextNatsParserV2Tests,
-      TDextNatsParserV2BenchmarkTests
+      TDextNatsParserV2BenchmarkTests,
+      TDextNatsJetStreamJsonTests
     ]));
   except
     on E: Exception do
