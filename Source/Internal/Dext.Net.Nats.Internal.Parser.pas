@@ -39,6 +39,7 @@ type
     function TryParseIntDec(AOffset, ALength: Integer; out AValue: Integer): Boolean;
     function ParseControlLine(AOffset, ALength: Integer; out AFrame: TNatsFrame;
       out AHeaderBytes, ATotalBytes: Integer): Boolean;
+    function GetBufferCompactions: Int64;
   public
     constructor Create;
     destructor Destroy; override;
@@ -49,6 +50,8 @@ type
     function TryReadFrame(out AFrame: TNatsFrame): Boolean;
 
     property MaxFrameBytes: Int64 read FMaxFrameBytes write FMaxFrameBytes;
+    /// <summary>Physical unread-tail compactions performed by the cursor buffer.</summary>
+    property BufferCompactions: Int64 read GetBufferCompactions;
   end;
 
 implementation
@@ -64,6 +67,11 @@ destructor TDextNatsFrameParserV2.Destroy;
 begin
   FBuffer.Free;
   inherited;
+end;
+
+function TDextNatsFrameParserV2.GetBufferCompactions: Int64;
+begin
+  Result := FBuffer.CompactionCount;
 end;
 
 procedure TDextNatsFrameParserV2.Append(const AData: TByteSpan);
