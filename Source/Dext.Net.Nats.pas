@@ -51,7 +51,8 @@ uses
   Dext.Net.Security,
   Dext.Net.Nats.Protocol,
   Dext.Net.Nats.NKeys,
-  Dext.Net.Nats.ParserRuntime;
+  Dext.Net.Nats.ParserRuntime,
+  Dext.Net.Nats.Internal.Dispatcher;
 
 const
   /// <summary>Messages delivered to a subscription handler (MSG/HMSG).</summary>
@@ -99,6 +100,12 @@ type
   TNatsDisconnectedEvent = reference to procedure;
   TNatsRequestTimeoutHandler = reference to procedure;
 
+  /// <summary>Internal work item queued from RecvLoop to subscription workers.</summary>
+  TNatsHandlerDispatchItem = record
+    Handler: TNatsMsgHandler;
+    Msg: TNatsMsg;
+  end;
+
   /// <summary>Process-local counters for a <see cref="TDextNatsClient"/> (thread-safe snapshot).</summary>
   TNatsClientMetrics = record
     MessagesReceived: Int64;
@@ -143,6 +150,10 @@ type
     ReconnectWaitMs: Integer;
     /// <summary>Upper bound, in bytes, for outgoing data buffered while a reconnect is in progress.</summary>
     MaxPendingBufferBytes: Int64;
+    /// <summary>Subscription callback worker count. Default 1 preserves global delivery order.</summary>
+    HandlerWorkerCount: Integer;
+    /// <summary>Bounded callback queue capacity. When full, RecvLoop applies backpressure instead of dropping messages.</summary>
+    HandlerQueueCapacity: Integer;
     /// <summary>
     ///   Optional TLS settings (same record as Redis/Security). When Enabled is True the client
     ///   upgrades the TCP socket after the cleartext INFO frame. A server that advertises
@@ -177,12 +188,14 @@ type
 
   /// <summary>
   ///   NATS client. Thread-safe: Publish/Subscribe/Request/Flush may be called
-  ///   from any thread while message handlers run on an internal receive thread.
+  ///   from any thread. RecvLoop parses frames and enqueues subscription callbacks
+  ///   onto a bounded Dext-channel worker dispatcher.
   /// </summary>
   TDextNatsClient = class
   private
     FTcpClient: TDextTcpClient;
     FParser: TDextNatsRuntimeFrameParser;
+    FHandlerDispatcher: TDextNatsBoundedDispatcher<TNatsHandlerDispatchItem>;
     FOptions: TDextNatsOptions;
     FHost: string;
     FPort: Word;
@@ -213,7 +226,7 @@ type
     FClosing: Boolean;
     /// <summary>True while <see cref="Drain"/> is winding the connection down (UNSUB → flush → close).</summary>
     FDraining: Boolean;
-    /// <summary>Handlers currently executing on the receive thread; Drain waits for this to reach 0.</summary>
+    /// <summary>Handlers queued or executing on callback workers; Drain waits for this to reach 0.</summary>
     FInFlightHandlers: Integer;
 
     FRecvThread: TThread;
@@ -241,6 +254,8 @@ type
 
     procedure HandleFrame(const AFrame: TNatsFrame);
     procedure HandleMsgFrame(const AFrame: TNatsFrame);
+    procedure ExecuteHandlerDispatch(const AItem: TNatsHandlerDispatchItem);
+    procedure HandleDispatcherError(const AError: Exception);
     procedure HandlePongFrame;
     procedure HandleConnectionLost(const AReason: string);
 
@@ -317,7 +332,7 @@ type
     /// when AHeaders is empty, without requiring the server to advertise header support in that case.</summary>
     function RequestWithHeaders(const ASubject: string; const APayload: TBytes; const AHeaders: TNatsHeaders;
       ATimeoutMs: Integer = 0): TNatsMsg;
-    /// <summary>Non-blocking request/reply: AOnReply fires on the receive thread when a reply arrives;
+    /// <summary>Non-blocking request/reply: AOnReply fires on a callback worker when a reply arrives;
     /// AOnTimeout (optional) fires from a helper thread if no reply arrives within ATimeoutMs.</summary>
     procedure RequestAsync(const ASubject: string; const APayload: TBytes; const AOnReply: TNatsMsgHandler;
       const AOnTimeout: TNatsRequestTimeoutHandler = nil; ATimeoutMs: Integer = 0); overload;
@@ -426,6 +441,8 @@ begin
   Result.MaxReconnectAttempts := -1;
   Result.ReconnectWaitMs := 2000;
   Result.MaxPendingBufferBytes := 8 * 1024 * 1024;
+  Result.HandlerWorkerCount := 1;
+  Result.HandlerQueueCapacity := 8192;
   Result.EnableMetrics := False;
   FillChar(Result.TLS, SizeOf(Result.TLS), 0);
   Result.TLS.Enabled := False;
@@ -512,11 +529,21 @@ begin
   FSubscriptions := TCollections.CreateDictionary<Integer, TDextNatsSubscription>(True);
   FPongWaiters := TCollections.CreateQueue<TEvent>;
   FPendingOutbox := TCollections.CreateQueue<TBytes>;
+
+  if FOptions.HandlerWorkerCount <= 0 then
+    raise EArgumentOutOfRangeException.Create('HandlerWorkerCount must be > 0');
+  if FOptions.HandlerQueueCapacity <= 0 then
+    raise EArgumentOutOfRangeException.Create('HandlerQueueCapacity must be > 0');
+  FHandlerDispatcher := TDextNatsBoundedDispatcher<TNatsHandlerDispatchItem>.Create(
+    FOptions.HandlerWorkerCount, FOptions.HandlerQueueCapacity,
+    ExecuteHandlerDispatch, dopBlock);
+  FHandlerDispatcher.OnError := HandleDispatcherError;
 end;
 
 destructor TDextNatsClient.Destroy;
 begin
   Disconnect;
+  FreeAndNil(FHandlerDispatcher);
   ResetTls;
   FTlsIoLock.Free;
   FSendLock.Free;
@@ -974,8 +1001,6 @@ begin
   FPort := APort;
   FClosing := False;
   FDraining := False;
-  TInterlocked.Exchange(FInFlightHandlers, 0);
-
   ResetTls;
   FTcpClient.Connect(AHost, APort);
   try
@@ -1438,6 +1463,7 @@ procedure TDextNatsClient.HandleMsgFrame(const AFrame: TNatsFrame);
 var
   sub: TDextNatsSubscription;
   msg: TNatsMsg;
+  item: TNatsHandlerDispatchItem;
   found, removeAfter: Boolean;
   handler: TNatsMsgHandler;
 begin
@@ -1460,7 +1486,7 @@ begin
   end;
 
   if not found then
-    Exit; // message for a subscription we no longer track (e.g. just unsubscribed); ignore it
+    Exit;
 
   msg.Subject := AFrame.Subject;
   msg.ReplyTo := AFrame.ReplyTo;
@@ -1473,19 +1499,19 @@ begin
 
   if Assigned(handler) then
   begin
+    item.Handler := handler;
+    item.Msg := msg;
     TInterlocked.Increment(FInFlightHandlers);
     try
-      try
-        handler(msg);
-      except
-        on E: Exception do
-          FireError('Unhandled exception in NATS message handler for subject "' + msg.Subject + '": ' + E.Message);
-      end;
-    finally
+      FHandlerDispatcher.Dispatch(item);
+    except
       TInterlocked.Decrement(FInFlightHandlers);
+      raise;
     end;
   end;
 
+  // Server-side MaxMsgs semantics are based on messages received, not callback
+  // completion, so local interest can be removed immediately after enqueue.
   if removeAfter then
   begin
     FLock.Enter;
@@ -1495,6 +1521,26 @@ begin
       FLock.Leave;
     end;
   end;
+end;
+
+procedure TDextNatsClient.ExecuteHandlerDispatch(const AItem: TNatsHandlerDispatchItem);
+begin
+  try
+    try
+      AItem.Handler(AItem.Msg);
+    except
+      on E: Exception do
+        FireError('Unhandled exception in NATS message handler for subject "' +
+          AItem.Msg.Subject + '": ' + E.Message);
+    end;
+  finally
+    TInterlocked.Decrement(FInFlightHandlers);
+  end;
+end;
+
+procedure TDextNatsClient.HandleDispatcherError(const AError: Exception);
+begin
+  FireError('NATS handler dispatcher error: ' + AError.Message);
 end;
 
 procedure TDextNatsClient.DispatchOutgoing(const AData: TBytes);
