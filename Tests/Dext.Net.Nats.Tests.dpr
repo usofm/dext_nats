@@ -41,10 +41,12 @@ uses
   Dext.Net.Nats.HealthChecks in '..\Source\Dext.Net.Nats.HealthChecks.pas',
   Dext.Net.Nats.Internal.Buffer in '..\Source\Internal\Dext.Net.Nats.Internal.Buffer.pas',
   Dext.Net.Nats.Internal.Dispatcher in '..\Source\Internal\Dext.Net.Nats.Internal.Dispatcher.pas',
+  Dext.Net.Nats.Internal.Parser in '..\Source\Internal\Dext.Net.Nats.Internal.Parser.pas',
   Dext.Net.Nats.Tests in 'Dext.Net.Nats.Tests.pas',
   Dext.Net.Nats.Drain.Tests in 'Dext.Net.Nats.Drain.Tests.pas',
   Dext.Net.Nats.Internal.Tests in 'Dext.Net.Nats.Internal.Tests.pas',
-  Dext.Net.Nats.Dispatching.Tests in 'Dext.Net.Nats.Dispatching.Tests.pas';
+  Dext.Net.Nats.Dispatching.Tests in 'Dext.Net.Nats.Dispatching.Tests.pas',
+  Dext.Net.Nats.ParserV2.Tests in 'Dext.Net.Nats.ParserV2.Tests.pas';
 
 var
   Config: TTestConfigurator;
@@ -89,7 +91,8 @@ begin
       TDextNatsDiTests,
       TDextNatsObservabilityTests,
       TDextNatsInternalTests,
-      TDextNatsDispatchingTests
+      TDextNatsDispatchingTests,
+      TDextNatsParserV2Tests
     ]));
   except
     on E: Exception do
