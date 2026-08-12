@@ -40,6 +40,11 @@ function Find-RsVars {
   return (Resolve-Path $found).Path
 }
 
+function Quote-CmdArgument {
+  param([string]$Value)
+  return '"' + ($Value -replace '"', '""') + '"'
+}
+
 $rsvars = Find-RsVars -ExplicitRoot $BdsRoot
 $parserMode = if ($ParserV2) { 'ParserV2' } else { 'ParserV1' }
 $outputDir = Join-Path $repoRoot ("Output\{0}\{1}\{2}" -f $Platform, $Config, $parserMode)
@@ -49,6 +54,9 @@ Write-Host "Building: $project"
 Write-Host "Config=$Config Platform=$Platform Parser=$parserMode"
 Write-Host "Output=$outputDir"
 
+if (Test-Path $outputDir) {
+  Remove-Item $outputDir -Recurse -Force
+}
 New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
 
 # Keep parser modes physically isolated. This prevents a DCU compiled with one
@@ -56,11 +64,16 @@ New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
 $properties = @(
   '/p:Config=' + $Config,
   '/p:Platform=' + $Platform,
-  '/p:DCC_DcuOutput=' + $outputDir,
-  '/p:DCC_ExeOutput=' + $outputDir
+  '/p:DCC_DcuOutput=' + (Quote-CmdArgument $outputDir),
+  '/p:DCC_ExeOutput=' + (Quote-CmdArgument $outputDir)
 )
+
 if ($ParserV2) {
-  $properties += '/p:DCC_Define=DEXT_NATS_PARSER_V2;$(DCC_Define)'
+  # Command-line global properties replace the project property. Preserve the
+  # conventional configuration symbol explicitly rather than relying on a
+  # literal $(DCC_Define) reference supplied on the command line.
+  $configDefine = if ($Config -eq 'Release') { 'RELEASE' } else { 'DEBUG' }
+  $properties += '/p:DCC_Define=' + (Quote-CmdArgument ("DEXT_NATS_PARSER_V2;$configDefine"))
 }
 
 $propertyText = $properties -join ' '
