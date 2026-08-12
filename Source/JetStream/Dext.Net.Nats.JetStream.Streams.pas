@@ -10,6 +10,7 @@ unit Dext.Net.Nats.JetStream.Streams;
 interface
 
 uses
+  Dext.Collections,
   Dext.Net.Nats.JetStream,
   Dext.Net.Nats.JetStream.Transport;
 
@@ -32,6 +33,7 @@ type
     function PurgeStream(const AStreamName: string;
       const ARequest: TNatsStreamPurgeRequest): Boolean; overload;
     function PurgeStream(const AStreamName: string): Boolean; overload;
+    function ListStreamNames(const ASubjectFilter: string = ''): IList<string>;
     function GetLastMessage(const AStreamName, ASubject: string;
       ATimeoutMs: Integer = 0): TNatsStoredMsg;
     function GetMessage(const AStreamName: string; ASequence: UInt64;
@@ -45,7 +47,8 @@ uses
   Dext.Net.Nats,
   Dext.Net.Nats.JetStream.Json,
   Dext.Net.Nats.JetStream.Codecs,
-  Dext.Net.Nats.JetStream.Parsers;
+  Dext.Net.Nats.JetStream.Parsers,
+  Dext.Net.Nats.JetStream.Paging;
 
 constructor TDextNatsJetStreamStreams.Create(
   const ATransport: INatsJetStreamApiTransport);
@@ -125,6 +128,25 @@ function TDextNatsJetStreamStreams.PurgeStream(
   const AStreamName: string): Boolean;
 begin
   Result := PurgeStream(AStreamName, TNatsStreamPurgeRequest.CreateDefault);
+end;
+
+function TDextNatsJetStreamStreams.ListStreamNames(
+  const ASubjectFilter: string): IList<string>;
+var
+  Offset, I: Integer;
+  Page: TNatsJsNamePage;
+begin
+  Result := TCollections.CreateList<string>;
+  Offset := 0;
+  repeat
+    Page := NatsJsParseNamePage(FTransport.Request('STREAM.NAMES',
+      NatsJsBuildPagedListRequest(Offset, ASubjectFilter)), 'streams');
+    for I := 0 to High(Page.Items) do
+      Result.Add(Page.Items[I]);
+    if Length(Page.Items) = 0 then
+      Break;
+    Inc(Offset, Length(Page.Items));
+  until Offset >= Page.Total;
 end;
 
 function TDextNatsJetStreamStreams.GetLastMessage(const AStreamName,
