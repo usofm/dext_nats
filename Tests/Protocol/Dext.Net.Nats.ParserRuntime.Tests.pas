@@ -9,22 +9,18 @@ uses
   Dext.Net.Nats.ParserRuntime;
 
 type
-  [TestFixture('NATS Runtime Parser Selector')]
+  [TestFixture('NATS Runtime Parser')]
   TDextNatsParserRuntimeTests = class
   public
     [Test, Category('Unit'), Category('Protocol')]
-    procedure RuntimeParser_ShouldMatchCompileDefine;
+    procedure RuntimeParser_ShouldBeV2;
   end;
 
 implementation
 
-procedure TDextNatsParserRuntimeTests.RuntimeParser_ShouldMatchCompileDefine;
+procedure TDextNatsParserRuntimeTests.RuntimeParser_ShouldBeV2;
 begin
-{$IFDEF DEXT_NATS_PARSER_V2}
   Should(string(DEXT_NATS_RUNTIME_PARSER)).Be('v2');
-{$ELSE}
-  Should(string(DEXT_NATS_RUNTIME_PARSER)).Be('v1');
-{$ENDIF}
 end;
 
 end.
