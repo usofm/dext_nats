@@ -39,6 +39,9 @@ type
 
 implementation
 
+uses
+  Dext.Net.Nats.Protocol;
+
 constructor TDextNatsJetStreamRuntime.Create(AClient: TDextNatsClient;
   const AApiPrefix: string);
 begin
