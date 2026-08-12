@@ -1,0 +1,68 @@
+name: Parser V2 Cutover Patch
+
+on:
+  push:
+    branches:
+      - perf/parser-v2-cutover
+
+permissions:
+  contents: write
+
+jobs:
+  patch-client:
+    if: ${{ github.actor != 'github-actions[bot]' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: perf/parser-v2-cutover
+          fetch-depth: 0
+
+      - name: Wire TDextNatsClient through parser selector
+        shell: python
+        run: |
+          from pathlib import Path
+
+          path = Path('Source/Dext.Net.Nats.pas')
+          text = path.read_text(encoding='utf-8-sig')
+
+          replacements = [
+              (
+                  '  Dext.Net.Nats.Protocol,\n  Dext.Net.Nats.NKeys;',
+                  '  Dext.Net.Nats.Protocol,\n  Dext.Net.Nats.NKeys,\n  Dext.Net.Nats.Internal.ParserSelector;'
+              ),
+              ('    FParser: TDextNatsFrameParser;',
+               '    FParser: TDextNatsSelectedFrameParser;'),
+              ('  FParser := TDextNatsFrameParser.Create;',
+               '  FParser := TDextNatsSelectedFrameParser.Create;'),
+          ]
+
+          for old, new in replacements:
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'Expected exactly one occurrence of {old!r}, found {count}')
+              text = text.replace(old, new, 1)
+
+          path.write_text(text, encoding='utf-8-sig')
+
+      - name: Verify selector wiring
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'Dext.Net.Nats.Internal.ParserSelector' Source/Dext.Net.Nats.pas
+          grep -q 'FParser: TDextNatsSelectedFrameParser;' Source/Dext.Net.Nats.pas
+          grep -q 'FParser := TDextNatsSelectedFrameParser.Create;' Source/Dext.Net.Nats.pas
+
+      - name: Commit parser selector wiring
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add Source/Dext.Net.Nats.pas
+          if git diff --cached --quiet; then
+            echo 'Client is already wired through the parser selector.'
+            exit 0
+          fi
+          git commit -m 'Wire client runtime parser through selector'
+          git push origin HEAD:perf/parser-v2-cutover
