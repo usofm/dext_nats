@@ -50,6 +50,7 @@ type
     procedure TeardownPushAndConsumer;
     procedure InstallDelivery(ASerial: Integer);
     function TryReset(AInitial: Boolean = False): Boolean;
+    procedure HandleRawMsg(ASerial: Integer; const AMsg: TNatsMsg);
     procedure MonitorLoop;
     function GetActive: Boolean;
     function GetConsumerName: string;
@@ -74,7 +75,9 @@ type
 implementation
 
 uses
-  System.SysUtils;
+  System.SysUtils,
+  Dext.Net.Nats.Protocol,
+  Dext.Net.Nats.JetStream.Fetch;
 
 const
   NATS_JS_ORDERED_HB_NS = Int64(5) * 1000000000;
@@ -158,19 +161,14 @@ end;
 procedure TDextNatsOrderedConsumerEngine.TouchActivity;
 begin
   FLock.Enter;
-  try
-    FLastActivityMs := TThread.GetTickCount64;
-  finally
-    FLock.Leave;
-  end;
+  try FLastActivityMs := TThread.GetTickCount64; finally FLock.Leave; end;
 end;
 
 procedure TDextNatsOrderedConsumerEngine.RequestReset;
 begin
   FLock.Enter;
   try
-    if FStopping or (not FActive) or FResetPending then
-      Exit;
+    if FStopping or (not FActive) or FResetPending then Exit;
     FResetPending := True;
   finally
     FLock.Leave;
@@ -234,6 +232,7 @@ begin
   Result.Name := Format('%s_%d', [FOptions.NamePrefix, ASerial]);
   Result.FilterSubject := FOptions.FilterSubject;
   Result.DeliverSubject := ADeliver;
+  Result.DeliverGroup := '';
   Result.AckPolicy := apNone;
   Result.MaxAckPending := 0;
   Result.MaxDeliver := 1;
@@ -258,14 +257,16 @@ begin
   else
   begin
     Result.DeliverPolicy := FOptions.DeliverPolicy;
-    if FOptions.DeliverPolicy = dpByStartSequence then
-    begin
-      if FOptions.OptStartSeq > 0 then Result.OptStartSeq := FOptions.OptStartSeq
-      else Result.OptStartSeq := 1;
-    end
-    else if (FOptions.DeliverPolicy = dpLastPerSubject) and
-      (Result.FilterSubject = '') then
-      Result.FilterSubject := '>';
+    case FOptions.DeliverPolicy of
+      dpByStartSequence:
+        if FOptions.OptStartSeq > 0 then
+          Result.OptStartSeq := FOptions.OptStartSeq
+        else
+          Result.OptStartSeq := 1;
+      dpLastPerSubject:
+        if Result.FilterSubject = '' then
+          Result.FilterSubject := '>';
+    end;
   end;
 end;
 
@@ -297,38 +298,89 @@ var
 begin
   Deliver := FClient.NewInbox;
   SelfRef := Self;
-  FPush := FPushService.Subscribe(Deliver,
-    procedure(const AMsg: TNatsJsMsg)
-    var
-      NeedReset: Boolean;
-      Handler: TNatsOrderedConsumerHandler;
+  FPush := FPushService.SubscribeRaw(Deliver,
+    procedure(const AMsg: TNatsMsg)
     begin
-      NeedReset := False;
-      Handler := nil;
-      SelfRef.FLock.Enter;
-      try
-        if SelfRef.FStopping or (ASerial <> SelfRef.FSerial) then Exit;
-        SelfRef.FLastActivityMs := TThread.GetTickCount64;
-        if AMsg.ConsumerSequence <> SelfRef.FExpectedDseq then
-        begin
-          SelfRef.FResetPending := True;
-          NeedReset := True;
-        end
-        else
-        begin
-          SelfRef.FExpectedDseq := AMsg.ConsumerSequence + 1;
-          SelfRef.FLastStreamSeq := AMsg.StreamSequence;
-          SelfRef.FLastConsumerSeq := AMsg.ConsumerSequence;
-          Handler := SelfRef.FHandler;
-        end;
-      finally
-        SelfRef.FLock.Leave;
-      end;
-      if NeedReset then SelfRef.FWake.SetEvent
-      else if Assigned(Handler) then
-      try Handler(AMsg); except end;
+      SelfRef.HandleRawMsg(ASerial, AMsg);
     end);
   FDeliverSubject := Deliver;
+end;
+
+procedure TDextNatsOrderedConsumerEngine.HandleRawMsg(ASerial: Integer;
+  const AMsg: TNatsMsg);
+var
+  JsMsg: TNatsJsMsg;
+  Handler: TNatsOrderedConsumerHandler;
+  LastConsHeader: string;
+  LastCons: UInt64;
+  NeedReset: Boolean;
+  Empty: TBytes;
+begin
+  NeedReset := False;
+  Handler := nil;
+
+  FLock.Enter;
+  try
+    if FStopping or (not FActive) or (ASerial <> FSerial) then Exit;
+    FLastActivityMs := TThread.GetTickCount64;
+  finally
+    FLock.Leave;
+  end;
+
+  { Status 100 carries idle heartbeat and optional flow-control reply. }
+  if AMsg.StatusCode = 100 then
+  begin
+    if AMsg.ReplyTo <> '' then
+    begin
+      SetLength(Empty, 0);
+      try FClient.Publish(AMsg.ReplyTo, Empty); except end;
+    end;
+
+    LastConsHeader := AMsg.Headers.GetValue('Nats-Last-Consumer');
+    if LastConsHeader <> '' then
+    begin
+      LastCons := UInt64(StrToInt64Def(LastConsHeader, 0));
+      FLock.Enter;
+      try
+        if (ASerial = FSerial) and (FLastConsumerSeq > 0) and
+          (LastCons <> FLastConsumerSeq) then
+          NeedReset := True;
+      finally
+        FLock.Leave;
+      end;
+      if NeedReset then RequestReset;
+    end;
+    Exit;
+  end;
+
+  { 404/408/409 and other status frames are pull/push control, not data. }
+  if NatsJsIsControlMessage(AMsg) then Exit;
+
+  JsMsg := TNatsJsMsg.FromNatsMsg(AMsg);
+  FLock.Enter;
+  try
+    if FStopping or (not FActive) or (ASerial <> FSerial) then Exit;
+    if JsMsg.ConsumerSequence <> FExpectedDseq then
+      NeedReset := True
+    else
+    begin
+      FExpectedDseq := JsMsg.ConsumerSequence + 1;
+      FLastStreamSeq := JsMsg.StreamSequence;
+      FLastConsumerSeq := JsMsg.ConsumerSequence;
+      Handler := FHandler;
+    end;
+  finally
+    FLock.Leave;
+  end;
+
+  if NeedReset then
+  begin
+    RequestReset;
+    Exit;
+  end;
+
+  if Assigned(Handler) then
+  try Handler(JsMsg); except end;
 end;
 
 function TDextNatsOrderedConsumerEngine.TryReset(AInitial: Boolean): Boolean;
@@ -343,13 +395,23 @@ var
 begin
   Result := False;
   FLock.Enter;
-  try MaxAttempts := FOptions.MaxResetAttempts; finally FLock.Leave; end;
-  if AInitial then MaxAttempts := 1 else if MaxAttempts = 0 then MaxAttempts := -1;
+  try
+    if FStopping then Exit;
+    MaxAttempts := FOptions.MaxResetAttempts;
+  finally
+    FLock.Leave;
+  end;
+  if AInitial then MaxAttempts := 1
+  else if MaxAttempts = 0 then MaxAttempts := -1;
+
   Attempts := 0;
   DelayMs := 200;
   LastError := '';
-  while not FStopping do
+  while True do
   begin
+    FLock.Enter;
+    try if FStopping then Exit; finally FLock.Leave; end;
+
     TeardownPushAndConsumer;
     FLock.Enter;
     try
@@ -359,7 +421,10 @@ begin
       FLastConsumerSeq := 0;
       LastStreamSeq := FLastStreamSeq;
       Recreate := LastStreamSeq > 0;
-    finally FLock.Leave; end;
+    finally
+      FLock.Leave;
+    end;
+
     try
       InstallDelivery(Serial);
       Config := BuildConsumerConfig(Serial, FDeliverSubject, Recreate, LastStreamSeq);
@@ -372,11 +437,14 @@ begin
         FResetPending := False;
         if Recreate then Inc(FResetCount);
         FLastActivityMs := TThread.GetTickCount64;
-      finally FLock.Leave; end;
+      finally
+        FLock.Leave;
+      end;
       Exit(True);
     except
       on E: Exception do
       begin
+        TeardownPushAndConsumer;
         LastError := E.Message;
         Inc(Attempts);
         if (MaxAttempts > 0) and (Attempts >= MaxAttempts) then
@@ -403,6 +471,7 @@ begin
   if HbMs < 1000 then HbMs := 1000;
   WaitMs := Cardinal(HbMs);
   if WaitMs > 5000 then WaitMs := 5000;
+
   while True do
   begin
     FWake.WaitFor(WaitMs);
@@ -418,7 +487,9 @@ begin
         FResetPending := True;
         DoReset := True;
       end;
-    finally FLock.Leave; end;
+    finally
+      FLock.Leave;
+    end;
     if Stopping then Break;
     if DoReset then TryReset(False);
   end;
@@ -430,7 +501,8 @@ var
 begin
   FLock.Enter;
   try
-    if FStopping then Monitor := nil
+    if FStopping then
+      Monitor := nil
     else
     begin
       FStopping := True;
@@ -439,7 +511,10 @@ begin
       Monitor := FMonitor;
       FMonitor := nil;
     end;
-  finally FLock.Leave; end;
+  finally
+    FLock.Leave;
+  end;
+
   if FWake <> nil then FWake.SetEvent;
   if Monitor <> nil then
   begin
