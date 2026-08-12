@@ -1,0 +1,93 @@
+name: Remove Legacy Protocol Encoders
+
+on:
+  push:
+    branches: [perf/parser-v2-cutover]
+
+permissions:
+  contents: write
+
+jobs:
+  remove:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: perf/parser-v2-cutover
+          fetch-depth: 0
+
+      - name: Remove duplicate protocol encoders and migrate mega tests
+        shell: python
+        run: |
+          from pathlib import Path
+          import re
+
+          protocol = Path('Source/Dext.Net.Nats.Protocol.pas')
+          s = protocol.read_text(encoding='utf-8-sig')
+
+          declarations = [
+            "/// <summary>Encodes a CONNECT control line from the given options.</summary>\nfunction NatsEncodeConnect(const AOptions: TNatsConnectOptions): TBytes;\n",
+            "/// <summary>Encodes a PUB frame (control line + payload + trailing CRLF).</summary>\nfunction NatsEncodePub(const ASubject, AReplyTo: string; const APayload: TBytes): TBytes;\n",
+            "/// <summary>Encodes an HPUB frame (control line + header block + payload + trailing CRLF).</summary>\nfunction NatsEncodeHPub(const ASubject, AReplyTo: string; const AHeaders: TNatsHeaders;\n  const APayload: TBytes): TBytes;\n",
+            "/// <summary>Encodes a SUB control line.</summary>\nfunction NatsEncodeSub(const ASubject, AQueue: string; ASid: Integer): TBytes;\n",
+            "/// <summary>Encodes an UNSUB control line. AMaxMsgs &lt;= 0 unsubscribes immediately.</summary>\nfunction NatsEncodeUnsub(ASid: Integer; AMaxMsgs: Integer): TBytes;\n",
+            "/// <summary>Encodes a PING control line.</summary>\nfunction NatsEncodePing: TBytes;\n",
+            "/// <summary>Encodes a PONG control line.</summary>\nfunction NatsEncodePong: TBytes;\n",
+          ]
+          for d in declarations:
+              if d not in s:
+                  raise SystemExit(f'Missing protocol declaration: {d[:60]!r}')
+              s = s.replace(d, '', 1)
+
+          s = s.replace("var\n  GNatsEncodedPing: TBytes;\n  GNatsEncodedPong: TBytes;\n\n", '', 1)
+
+          s, count = re.subn(
+              r"\n\{ Frame encoders \}\n.*?\ninitialization\n  GNatsEncodedPing := BytesOf\(RawByteString\('PING'#13#10\)\);\n  GNatsEncodedPong := BytesOf\(RawByteString\('PONG'#13#10\)\);\n\nend\.",
+              "\nend.",
+              s,
+              count=1,
+              flags=re.S,
+          )
+          if count != 1:
+              raise SystemExit(f'Expected one legacy encoder implementation block, removed {count}')
+          protocol.write_text(s, encoding='utf-8-sig')
+
+          mega = Path('Tests/Dext.Net.Nats.Tests.pas')
+          t = mega.read_text(encoding='utf-8-sig')
+          anchor = '  Dext.Net.Nats.Internal.Parser,\n'
+          additions = '  Dext.Net.Nats.Protocol.Writer,\n  Dext.Net.Nats.Protocol.Control,\n'
+          if additions not in t:
+              if anchor not in t:
+                  raise SystemExit('Mega test parser uses anchor missing')
+              t = t.replace(anchor, anchor + additions, 1)
+          replacements = [
+            ('NatsEncodeConnect(', 'NatsV2EncodeConnect('),
+            ('NatsEncodeHPub(', 'NatsV2EncodeHPub('),
+            ('NatsEncodePub(', 'NatsV2EncodePub('),
+            ('NatsEncodeSub(', 'NatsControlSub('),
+            ('NatsEncodeUnsub(', 'NatsControlUnsub('),
+            ('NatsEncodePing', 'NatsControlPing'),
+            ('NatsEncodePong', 'NatsControlPong'),
+          ]
+          for old, new in replacements:
+              t = t.replace(old, new)
+          mega.write_text(t, encoding='utf-8-sig')
+
+      - name: Enforce legacy encoder removal
+        run: |
+          if grep -RIn --exclude-dir=.git -E 'NatsEncode(Connect|Pub|HPub|Sub|Unsub|Ping|Pong)' Source Tests; then
+            echo 'Legacy encoder reference remains.'
+            exit 1
+          fi
+          grep -q 'NatsV2EncodePub' Tests/Dext.Net.Nats.Tests.pas
+          grep -q 'NatsControlSub' Tests/Dext.Net.Nats.Tests.pas
+          ! grep -q 'GNatsEncodedPing' Source/Dext.Net.Nats.Protocol.pas
+
+      - name: Commit
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add Source/Dext.Net.Nats.Protocol.pas Tests/Dext.Net.Nats.Tests.pas
+          git commit -m 'Remove duplicate protocol encoder implementation'
+          git push origin HEAD:perf/parser-v2-cutover
