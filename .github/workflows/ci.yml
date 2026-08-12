@@ -82,6 +82,40 @@ jobs:
           grep -q 'NatsServiceResolveQueue' Source/Services/Dext.Net.Nats.Services.Routing.pas
           grep -q 'NatsEncodeHeaderBlock' Source/Protocol/Dext.Net.Nats.Protocol.Headers.pas
 
+      - name: Production protocol hot-path contract
+        run: |
+          set -e
+          if grep -RInP --exclude-dir=.git '\bTDextNatsFrameParser\b' Source Tests; then
+            echo 'Legacy Parser V1 must not return.'
+            exit 1
+          fi
+          ! grep -q 'ShiftBuffer' Source/Dext.Net.Nats.Protocol.pas
+          ! grep -q 'FBufferLen' Source/Dext.Net.Nats.Protocol.pas
+          if grep -RInP --exclude-dir=.git 'NatsEncode(Connect|Pub|HPub|Sub|Unsub|Ping|Pong)\b' Source Tests; then
+            echo 'Legacy duplicate protocol encoder must not return.'
+            exit 1
+          fi
+          grep -q 'Dext.Net.Nats.Protocol.Writer' Source/Dext.Net.Nats.pas
+          grep -q 'Dext.Net.Nats.Protocol.Control' Source/Dext.Net.Nats.pas
+          grep -q 'NatsV2EncodeConnect(connOpts)' Source/Dext.Net.Nats.pas
+          grep -q 'NatsV2EncodePub(ASubject, AReplyTo, APayload)' Source/Dext.Net.Nats.pas
+          grep -q 'NatsV2EncodeHPub(ASubject, AReplyTo, AHeaders, APayload)' Source/Dext.Net.Nats.pas
+          grep -q 'NatsControlSub(' Source/Dext.Net.Nats.pas
+          grep -q 'NatsControlUnsub(' Source/Dext.Net.Nats.pas
+          grep -q 'NatsControlPing' Source/Dext.Net.Nats.pas
+          grep -q 'NatsControlPong' Source/Dext.Net.Nats.pas
+          grep -q 'GNatsPingFrame' Source/Protocol/Dext.Net.Nats.Protocol.Control.pas
+          python - <<'PY'
+          from pathlib import Path
+          s = Path('Source/Dext.Net.Nats.pas').read_text(encoding='utf-8-sig')
+          start = s.index('procedure TDextNatsClient.FlushOutbox;')
+          end = s.index('\nend;', start) + len('\nend;')
+          body = s[start:end]
+          leave = body.find('FLock.Leave;')
+          send = body.rfind('SendRaw(data);')
+          assert leave >= 0 and send > leave, 'FlushOutbox must release FLock before SendRaw'
+          PY
+
       - name: Feature-oriented tests contract
         run: |
           set -e
