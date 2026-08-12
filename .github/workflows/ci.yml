@@ -32,8 +32,8 @@ jobs:
           test -f Source/Internal/Dext.Net.Nats.Internal.Parser.pas
           test -f Tests/Dext.Net.Nats.Internal.Tests.pas
           test -f Tests/Dext.Net.Nats.Dispatching.Tests.pas
-          test -f Tests/Dext.Net.Nats.ParserV2.Tests.pas
-          test -f Tests/Dext.Net.Nats.ParserV2.Benchmarks.pas
+          test -f Tests/Protocol/Dext.Net.Nats.ParserV2.Tests.pas
+          test -f Tests/Benchmarks/Dext.Net.Nats.ParserV2.Benchmarks.pas
           test -f Tests/Dext.Net.Nats.Tests.dproj
           test -f Dext.Nats.groupproj
           test -f CHANGELOG.md
@@ -58,6 +58,8 @@ jobs:
           grep -q 'TDextNatsDispatchingTests' Tests/Dext.Net.Nats.Tests.dpr
           grep -q 'TDextNatsParserV2Tests' Tests/Dext.Net.Nats.Tests.dpr
           grep -q 'TDextNatsParserV2BenchmarkTests' Tests/Dext.Net.Nats.Tests.dpr
+          grep -q 'Protocol\\Dext.Net.Nats.ParserV2.Tests.pas' Tests/Dext.Net.Nats.Tests.dpr
+          grep -q 'Benchmarks\\Dext.Net.Nats.ParserV2.Benchmarks.pas' Tests/Dext.Net.Nats.Tests.dpr
 
       - name: Repository hygiene
         run: |
