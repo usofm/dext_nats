@@ -46,7 +46,8 @@ uses
   Dext.Net.Nats.Drain.Tests in 'Dext.Net.Nats.Drain.Tests.pas',
   Dext.Net.Nats.Internal.Tests in 'Dext.Net.Nats.Internal.Tests.pas',
   Dext.Net.Nats.Dispatching.Tests in 'Dext.Net.Nats.Dispatching.Tests.pas',
-  Dext.Net.Nats.ParserV2.Tests in 'Dext.Net.Nats.ParserV2.Tests.pas';
+  Dext.Net.Nats.ParserV2.Tests in 'Dext.Net.Nats.ParserV2.Tests.pas',
+  Dext.Net.Nats.ParserV2.Benchmarks in 'Dext.Net.Nats.ParserV2.Benchmarks.pas';
 
 var
   Config: TTestConfigurator;
@@ -92,7 +93,8 @@ begin
       TDextNatsObservabilityTests,
       TDextNatsInternalTests,
       TDextNatsDispatchingTests,
-      TDextNatsParserV2Tests
+      TDextNatsParserV2Tests,
+      TDextNatsParserV2BenchmarkTests
     ]));
   except
     on E: Exception do
