@@ -27,6 +27,7 @@ jobs:
             Source/Internal/Dext.Net.Nats.Internal.ParserSelector.pas \
             Source/Protocol/Dext.Net.Nats.Protocol.Headers.pas \
             Source/Protocol/Dext.Net.Nats.Protocol.Control.pas \
+            Source/Protocol/Dext.Net.Nats.Protocol.Writer.pas \
             Source/JetStream/Dext.Net.Nats.JetStream.Json.pas \
             Source/JetStream/Dext.Net.Nats.JetStream.Codecs.pas \
             Source/JetStream/Dext.Net.Nats.JetStream.Parsers.pas \
@@ -40,18 +41,27 @@ jobs:
             Source/JetStream/Dext.Net.Nats.JetStream.Ordered.pas \
             Source/JetStream/Dext.Net.Nats.JetStream.Runtime.pas \
             Source/KeyValue/Dext.Net.Nats.KeyValue.Subjects.pas \
+            Source/KeyValue/Dext.Net.Nats.KeyValue.WatcherGate.pas \
             Source/ObjectStore/Dext.Net.Nats.ObjectStore.Subjects.pas \
             Source/ObjectStore/Dext.Net.Nats.ObjectStore.Crypto.pas \
-            Source/Services/Dext.Net.Nats.Services.Subjects.pas; do
+            Source/ObjectStore/Dext.Net.Nats.ObjectStore.WatcherGate.pas \
+            Source/ObjectStore/Dext.Net.Nats.ObjectStore.Reader.pas \
+            Source/Services/Dext.Net.Nats.Services.Subjects.pas \
+            Source/Services/Dext.Net.Nats.Services.Validation.pas \
+            Source/Services/Dext.Net.Nats.Services.Routing.pas; do
             test -f "$f"
           done
 
           grep -q 'TDextNatsFrameParserV2' Source/Internal/Dext.Net.Nats.Internal.Parser.pas
           grep -q 'TDextNatsSelectedFrameParser' Source/Internal/Dext.Net.Nats.Internal.ParserSelector.pas
           grep -q 'DEXT_NATS_PARSER_V2' Source/Internal/Dext.Net.Nats.Internal.ParserSelector.pas
+          grep -q 'Dext.Net.Nats.Internal.ParserSelector' Source/Dext.Net.Nats.pas
+          grep -q 'FParser: TDextNatsSelectedFrameParser;' Source/Dext.Net.Nats.pas
+          grep -q 'FParser := TDextNatsSelectedFrameParser.Create;' Source/Dext.Net.Nats.pas
           grep -q 'TChannel<T>.CreateBounded' Source/Internal/Dext.Net.Nats.Internal.Dispatcher.pas
           grep -q 'FReadPos' Source/Internal/Dext.Net.Nats.Internal.Buffer.pas
           grep -q 'TDextNatsDispatchedSubscription' Source/Dext.Net.Nats.Dispatching.pas
+          grep -q 'NatsV2EncodePub' Source/Protocol/Dext.Net.Nats.Protocol.Writer.pas
           grep -q 'NatsJsUtf8Write' Source/JetStream/Dext.Net.Nats.JetStream.ObjectPaging.pas
           ! grep -q 'DextNatsJsUtf8SinkWrite' Source/JetStream/Dext.Net.Nats.JetStream.ObjectPaging.pas
           grep -q 'NatsJsParseStreamInfoPage' Source/JetStream/Dext.Net.Nats.JetStream.ObjectPaging.pas
@@ -63,8 +73,13 @@ jobs:
           grep -q 'FLastActivityMs' Source/JetStream/Dext.Net.Nats.JetStream.Ordered.pas
           grep -q 'TDextNatsJetStreamRuntime' Source/JetStream/Dext.Net.Nats.JetStream.Runtime.pas
           grep -q 'NatsKvSubjectForKey' Source/KeyValue/Dext.Net.Nats.KeyValue.Subjects.pas
+          grep -q 'TDextNatsKeyValueWatcherGate' Source/KeyValue/Dext.Net.Nats.KeyValue.WatcherGate.pas
           grep -q 'NatsObjectMetaSubject' Source/ObjectStore/Dext.Net.Nats.ObjectStore.Subjects.pas
+          grep -q 'TDextNatsObjectStoreWatcherGate' Source/ObjectStore/Dext.Net.Nats.ObjectStore.WatcherGate.pas
+          grep -q 'TDextNatsObjectReaderEngine' Source/ObjectStore/Dext.Net.Nats.ObjectStore.Reader.pas
           grep -q 'NatsServiceDiscoverySubject' Source/Services/Dext.Net.Nats.Services.Subjects.pas
+          grep -q 'NatsServiceValidateName' Source/Services/Dext.Net.Nats.Services.Validation.pas
+          grep -q 'NatsServiceResolveQueue' Source/Services/Dext.Net.Nats.Services.Routing.pas
           grep -q 'NatsEncodeHeaderBlock' Source/Protocol/Dext.Net.Nats.Protocol.Headers.pas
 
       - name: Feature-oriented tests contract
@@ -83,8 +98,12 @@ jobs:
             Tests/JetStream/Dext.Net.Nats.JetStream.ObjectPaging.Tests.pas \
             Tests/JetStream/Dext.Net.Nats.JetStream.Fetch.Tests.pas \
             Tests/KeyValue/Dext.Net.Nats.KeyValue.Subjects.Tests.pas \
+            Tests/KeyValue/Dext.Net.Nats.KeyValue.WatcherGate.Tests.pas \
             Tests/ObjectStore/Dext.Net.Nats.ObjectStore.Subjects.Tests.pas \
+            Tests/ObjectStore/Dext.Net.Nats.ObjectStore.WatcherGate.Tests.pas \
             Tests/Services/Dext.Net.Nats.Services.Subjects.Tests.pas \
+            Tests/Services/Dext.Net.Nats.Services.Validation.Tests.pas \
+            Tests/Services/Dext.Net.Nats.Services.Routing.Tests.pas \
             Tests/Benchmarks/Dext.Net.Nats.ParserV2.Benchmarks.pas; do
             test -f "$f"
           done
@@ -93,20 +112,27 @@ jobs:
           grep -q 'TDextNatsJetStreamFetchTests' Tests/Dext.Net.Nats.Tests.dpr
           grep -q 'TDextNatsProtocolV2Tests' Tests/Dext.Net.Nats.Tests.dpr
           grep -q 'TDextNatsKeyValueSubjectsTests' Tests/Dext.Net.Nats.Tests.dpr
+          grep -q 'TDextNatsKeyValueWatcherGateTests' Tests/Dext.Net.Nats.Tests.dpr
           grep -q 'TDextNatsObjectStoreSubjectsTests' Tests/Dext.Net.Nats.Tests.dpr
+          grep -q 'TDextNatsObjectStoreWatcherGateTests' Tests/Dext.Net.Nats.Tests.dpr
           grep -q 'TDextNatsServicesSubjectsTests' Tests/Dext.Net.Nats.Tests.dpr
+          grep -q 'TDextNatsServicesValidationTests' Tests/Dext.Net.Nats.Tests.dpr
+          grep -q 'TDextNatsServicesRoutingTests' Tests/Dext.Net.Nats.Tests.dpr
 
-      - name: Delphi project and validation tooling
+      - name: Delphi project and parser cutover tooling
         run: |
           set -e
           test -f Tests/Dext.Net.Nats.Tests.dproj
           test -f Docs/ARCHITECTURE_V2.md
           test -f Tests/README.md
           test -f scripts/build-tests.ps1
+          test -f scripts/validate-parser-cutover.ps1
           test -f scripts/download-nats-server.ps1
           test -f .github/workflows/delphi-build.yml
+          grep -q 'ParserV1' scripts/build-tests.ps1
           grep -q 'ParserV2' scripts/build-tests.ps1
-          grep -q 'parser_v2' .github/workflows/delphi-build.yml
+          grep -q '/t:Rebuild' scripts/build-tests.ps1
+          grep -q 'validate-parser-cutover.ps1' .github/workflows/delphi-build.yml
           grep -q 'Dext.Net.Nats.JetStream.Runtime.pas' Tests/Dext.Net.Nats.Tests.dproj
           grep -q 'Dext.Net.Nats.Internal.ParserSelector.pas' Tests/Dext.Net.Nats.Tests.dproj
           grep -q 'Source\\JetStream' Tests/Dext.Net.Nats.Tests.dproj
@@ -131,6 +157,6 @@ jobs:
       - name: Delphi compile gate reminder
         run: |
           echo "Hosted Linux CI verifies architecture and hygiene only."
-          echo "Validate V1: scripts/build-tests.ps1"
-          echo "Validate V2: scripts/build-tests.ps1 -ParserV2"
+          echo "Full gate: scripts/validate-parser-cutover.ps1 -Config Release -Platform Win32 -LiveNats -Benchmark"
+          echo "V1 and V2 use isolated DCU/EXE output directories and Rebuild."
           echo "Merge remains gated on Delphi 13 compile + live NATS tests."
