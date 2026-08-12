@@ -19,6 +19,11 @@ on:
         options:
           - Win32
           - Win64
+      parser_v2:
+        description: Build with DEXT_NATS_PARSER_V2 selector
+        required: true
+        default: false
+        type: boolean
       live_nats:
         description: Start local NATS + JetStream and require live integration tests
         required: true
@@ -35,7 +40,9 @@ jobs:
       - name: Build with installed RAD Studio
         shell: powershell
         run: |
-          $exe = & .\scripts\build-tests.ps1 -Config '${{ inputs.config }}' -Platform '${{ inputs.platform }}'
+          $args = @('-Config', '${{ inputs.config }}', '-Platform', '${{ inputs.platform }}')
+          if ('${{ inputs.parser_v2 }}' -eq 'true') { $args += '-ParserV2' }
+          $exe = & .\scripts\build-tests.ps1 @args
           if (-not $exe) { throw 'Build script did not return the test executable path.' }
           "DEXT_NATS_TEST_EXE=$exe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
