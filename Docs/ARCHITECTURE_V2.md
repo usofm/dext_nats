@@ -2,210 +2,208 @@
 
 This document defines the refactor path for Dext.Nats after the 1.0 feature-complete baseline.
 
-The primary rule is **public API stability**: existing consumer units such as `Dext.Net.Nats`, `Dext.Net.Nats.JetStream`, `Dext.Net.Nats.KeyValue`, and `Dext.Net.Nats.ObjectStore` remain the supported public surface. Internal implementation can be decomposed without forcing application code to change.
+The primary rule is **public API stability**: existing consumer units such as `Dext.Net.Nats`, `Dext.Net.Nats.JetStream`, `Dext.Net.Nats.KeyValue`, `Dext.Net.Nats.ObjectStore`, and `Dext.Net.Nats.Services` remain the supported public surface while implementation is decomposed behind them.
 
 ## Goals
 
 1. Reduce oversized units and AI/context cost.
 2. Move reusable hot-path mechanics into small internal units.
-3. Use Dext-native primitives before introducing custom equivalents.
-4. Remove receive-thread head-of-line blocking through an optional bounded dispatcher.
+3. Use Dext-native primitives before custom equivalents.
+4. Remove receive-thread head-of-line blocking through optional bounded dispatch.
 5. Replace parser tail-shifting with read/write cursors.
-6. Preserve safe owned-message APIs while adding opt-in high-performance borrowed/Span paths later.
+6. Preserve safe owned-message APIs while preparing opt-in borrowed/Span paths.
 7. Keep benchmarks repeatable and separate from correctness tests.
+8. Keep the refactor reversible until Delphi 13 compile/integration validation passes.
 
-## Target source layout
+## Current source layout
 
 ```text
 Source/
-  Dext.Net.Nats.pas
-  Dext.Net.Nats.Protocol.pas
-  Dext.Net.Nats.NKeys.pas
-  Dext.Net.Nats.JetStream.pas
-  Dext.Net.Nats.KeyValue.pas
-  Dext.Net.Nats.ObjectStore.pas
-  Dext.Net.Nats.Services.pas
-  Dext.Net.Nats.DependencyInjection.pas
-  Dext.Net.Nats.HealthChecks.pas
+  Dext.Net.Nats.pas                     # public facade/client
+  Dext.Net.Nats.Protocol.pas            # public compatibility facade
+  Dext.Net.Nats.JetStream.pas           # public compatibility facade
+  Dext.Net.Nats.KeyValue.pas            # public compatibility facade
+  Dext.Net.Nats.ObjectStore.pas         # public compatibility facade
+  Dext.Net.Nats.Services.pas            # public compatibility facade
 
   Internal/
     Dext.Net.Nats.Internal.Buffer.pas
     Dext.Net.Nats.Internal.Dispatcher.pas
     Dext.Net.Nats.Internal.Parser.pas
 
+  Protocol/
+    Dext.Net.Nats.Protocol.Headers.pas
+    Dext.Net.Nats.Protocol.Control.pas
+
   JetStream/
-    Dext.Net.Nats.JetStream.Models.pas
     Dext.Net.Nats.JetStream.Json.pas
     Dext.Net.Nats.JetStream.Codecs.pas
     Dext.Net.Nats.JetStream.Parsers.pas
+    Dext.Net.Nats.JetStream.Paging.pas
+    Dext.Net.Nats.JetStream.ObjectPaging.pas
     Dext.Net.Nats.JetStream.Transport.pas
     Dext.Net.Nats.JetStream.Streams.pas
     Dext.Net.Nats.JetStream.Consumers.pas
+    Dext.Net.Nats.JetStream.Fetch.pas
+    Dext.Net.Nats.JetStream.Push.pas
     Dext.Net.Nats.JetStream.Ordered.pas
 
   KeyValue/
-    Dext.Net.Nats.KeyValue.Models.pas
-    Dext.Net.Nats.KeyValue.Watcher.pas
+    Dext.Net.Nats.KeyValue.Subjects.pas
 
   ObjectStore/
-    Dext.Net.Nats.ObjectStore.Models.pas
-    Dext.Net.Nats.ObjectStore.Reader.pas
-    Dext.Net.Nats.ObjectStore.Watcher.pas
+    Dext.Net.Nats.ObjectStore.Subjects.pas
+    Dext.Net.Nats.ObjectStore.Crypto.pas
 
   Services/
-    Dext.Net.Nats.Services.Endpoint.pas
-    Dext.Net.Nats.Services.Group.pas
+    Dext.Net.Nats.Services.Subjects.pas
 ```
-
-The top-level public units stay as facades/composition roots. Internal units may move over time, but existing consumer `uses` clauses must remain valid.
 
 ## Naming rules
 
-- `TDextNats*`: framework-facing classes and services.
+- `TDextNats*`: framework-facing classes/services.
 - `TNats*`: protocol/config/value records.
-- `EDextNats*`: exceptions rooted in the library exception hierarchy.
-- `Dext.Net.Nats.Internal.*`: non-public infrastructure that applications should not depend on.
-- Feature implementation units use the existing namespace followed by the responsibility, for example `Dext.Net.Nats.JetStream.Consumers`.
-
-Avoid generic names such as `Utils`, `Helpers`, or `Common` when a responsibility-specific name is possible.
+- `EDextNats*`: library exception hierarchy.
+- `Dext.Net.Nats.Internal.*`: non-public infrastructure.
+- Feature implementation units use responsibility-specific suffixes such as `.Streams`, `.Consumers`, `.Fetch`, `.Subjects`, `.Headers`.
+- Avoid generic `Utils`, `Helpers`, or `Common` units.
 
 ## Phase 1 — internal performance primitives
 
-Status: **implemented on the V2 refactor branch**.
+Status: **implemented**.
 
-- `TDextNatsReadBuffer`: read/write cursor buffer; no per-frame tail shift.
-- `TDextNatsBoundedDispatcher<T>`: bounded Dext Channel worker pool with explicit backpressure.
-- Dedicated tests under `Tests/Internal/`.
-- `CompactionCount` instrumentation proves when a physical unread-tail move actually occurs.
+- `TDextNatsReadBuffer`: cursor-based read/write buffer.
+- `CompactionCount`: proves physical compaction frequency.
+- `TDextNatsBoundedDispatcher<T>`: bounded `Dext.Collections.Channels` worker pool with explicit backpressure.
 - Vendored NATS server archive removed; reproducible download script added.
 
 ## Phase 2 — parser migration
 
-Status: **parity implementation ready; runtime cut-over pending Delphi compile/test**.
+Status: **V2 implementation + parity + benchmark ready; runtime cut-over gated by Delphi compile/integration**.
 
-`TDextNatsFrameParserV2` in `Dext.Net.Nats.Internal.Parser.pas` uses `TDextNatsReadBuffer` and returns the same owned `TNatsFrame` contract as the current parser.
+`TDextNatsFrameParserV2` uses `TDextNatsReadBuffer` and preserves the owned `TNatsFrame` contract. Parity tests cover control frames, INFO, MSG/HMSG, fragmented input, multi-frame input, Clear and max-frame rejection. A V1/V2 benchmark and compaction assertion are included.
 
-Parity coverage is isolated in `Tests/Protocol/Dext.Net.Nats.ParserV2.Tests.pas` and compares V1/V2 behavior for PING/PONG/+OK/-ERR/INFO, MSG, fragmented MSG, multi-frame input, HMSG, Clear, and max-frame rejection.
-
-`Tests/Benchmarks/Dext.Net.Nats.ParserV2.Benchmarks.pas` provides an explicit V1-vs-V2 throughput benchmark and a non-explicit assertion that multi-frame consumption performs zero physical compactions.
-
-Acceptance criteria before runtime cut-over:
-
-- Delphi build succeeds;
-- parity fixture passes;
-- existing protocol/integration fixtures still pass after cut-over;
-- benchmark reports V1/V2 throughput and does not show a material regression;
-- multi-frame batch consumption does not compact per frame.
+The old parser remains the runtime parser until the self-hosted Delphi 13 gate passes. This is intentional rollback safety, not forgotten work.
 
 ## Phase 3 — bounded message dispatch
 
-Status: **opt-in implementation ready; legacy inline Subscribe remains unchanged**.
+Status: **opt-in implementation ready**.
 
-`Dext.Net.Nats.Dispatching.pas` adds a dispatched subscription backed by `TDextNatsBoundedDispatcher<TNatsMsg>` and `Dext.Collections.Channels`.
-
-The compatibility model remains:
+`Dext.Net.Nats.Dispatching.pas` adds bounded worker dispatch backed by Dext Channels. Existing inline `Subscribe` behavior remains unchanged for compatibility.
 
 ```text
 Inline          existing TDextNatsClient.Subscribe behavior
-BoundedWorkers  opt-in dispatched subscription with bounded Dext Channel
+BoundedWorkers  opt-in channel-backed worker dispatch
 ```
 
-The bounded mode exposes capacity/worker settings and deterministic full-queue behavior. It does not create a thread per message.
+## Phase 4 — JetStream decomposition
 
-## Phase 4 — split large implementation units
+Status: **all major implementation seams extracted; facade delegation/cut-over gated by Delphi 13**.
 
-Status: **JetStream extraction in progress**.
+### Serialization and parsing
 
-Extracted JetStream implementation units now include:
+- `Json`: UTF-8 sink and small request builders.
+- `Codecs`: stream/consumer/purge serialization with parity tests.
+- `Parsers`: StreamInfo, ConsumerInfo, StoredMsg, PublishAck and success/error parsing.
+- `Paging`: paged name responses.
+- `ObjectPaging`: paged StreamInfo/ConsumerInfo responses while reusing canonical parsers.
 
-```text
-Source/JetStream/
-  Dext.Net.Nats.JetStream.Json.pas
-  Dext.Net.Nats.JetStream.Codecs.pas
-  Dext.Net.Nats.JetStream.Parsers.pas
-  Dext.Net.Nats.JetStream.Transport.pas
-  Dext.Net.Nats.JetStream.Streams.pas
-```
+### API/service boundaries
 
-Responsibilities:
+- `Transport`: `INatsJetStreamApiTransport` plus `TDextNatsClient` adapter.
+- `Streams`: create/update/info/exists/delete/purge/list names/list objects/get stored message.
+- `Consumers`: create/info/delete/list names/list objects.
+- `Fetch`: pull-consumer inbox/batch/timeout lifecycle.
+- `Push`: push subscription orchestration and consumer deliver-subject resolution.
+- `Ordered`: extracted ordered-consumer engine/state machine prepared for facade cut-over.
 
-- `Json`: allocation-conscious UTF-8 sink and small request-body builders.
-- `Codecs`: stream/consumer/purge serialization with byte-for-byte parity tests against the existing public records.
-- `Parsers`: StreamInfo, ConsumerInfo, StoredMsg, PublishAck and success/error response parsing with parity/error-semantics tests.
-- `Transport`: the small `INatsJetStreamApiTransport` request/reply boundary plus production `TDextNatsClient` adapter.
-- `Streams`: extracted stream administration core for create/update/info/exists/delete/purge and stored-message get operations.
+The historical `TDextNatsJetStreamContext` remains the public ABI/API facade until the Windows Delphi gate validates all extracted units. At cut-over, facade methods become thin delegators and duplicate implementations can be removed.
 
-`TDextNatsJetStreamStreams` is intentionally tested through a fake transport. This verifies `$JS.API.*` subject suffixes, JSON request bodies, timeout forwarding and response/error parsing without requiring a live server.
+## Phase 5 — large non-JetStream units
 
-`ListStreams` and `ListStreamNames` remain temporarily in the facade until paged response parsing is extracted. After that, the complete stream administration surface can delegate to `Streams.pas`.
+Status: **first extraction seams implemented**.
 
-During this transition the historical facade remains authoritative until Delphi 13 compile/tests confirm the extracted implementation. After that gate, existing `TDextNatsJetStreamContext` methods will delegate to the extracted services and duplicate private helpers will be removed.
+### KeyValue
 
-Next extraction order:
+`Dext.Net.Nats.KeyValue.Subjects.pas` owns bucket/key/search-key validation, stream/subject mapping, TTL validation and operation-header decoding. This is shared by Get/Put/History/Watch paths and is independently tested.
 
-1. paged stream-name / stream-info parsing and list operations;
-2. consumer administration + Fetch;
-3. ordered consumer implementation;
-4. ObjectStore reader/watcher;
-5. KeyValue watcher;
-6. Services and protocol writer/parser separation.
+Next physical move after compile gate: watcher lifecycle and entry mapping out of the public facade.
 
-No public unit rename is allowed during this phase.
+### ObjectStore
 
-## Phase 5 — split tests by feature
+- `Dext.Net.Nats.ObjectStore.Subjects.pas`: OBJ stream name, Base64URL object-name mapping, metadata/chunk subjects and bucket-character contract.
+- `Dext.Net.Nats.ObjectStore.Crypto.pas`: NUID and SHA-256 wire digest helpers.
 
-Status: **in progress**.
+Next physical move after compile gate: lazy reader and watcher lifecycle.
 
-Focused tests are now organized as:
+### Services
+
+`Dext.Net.Nats.Services.Subjects.pas` owns ADR-32 discovery subjects, prefix joining and service-name validation. Endpoint/group lifecycle remains in the public facade until compile validation.
+
+### Protocol
+
+- `Dext.Net.Nats.Protocol.Headers.pas`: extracted header codec with parity fixture.
+- `Dext.Net.Nats.Protocol.Control.pas`: extracted PING/PONG/SUB/UNSUB writer with parity fixture.
+- Parser V2 already lives in `Internal.Parser`.
+
+The remaining PUB/HPUB/CONNECT writer will be migrated after the extracted units compile on Delphi 13, because that path is throughput-sensitive and should be benchmarked before replacing the current byte writer.
+
+## Phase 6 — feature-oriented tests
+
+Status: **active and enforced by CI**.
+
+New/refactored tests now live under:
 
 ```text
 Tests/
   Core/
-    Dext.Net.Nats.Drain.Tests.pas
-    Dext.Net.Nats.Dispatching.Tests.pas
   Internal/
-    Dext.Net.Nats.Internal.Tests.pas
   Protocol/
-    Dext.Net.Nats.ParserV2.Tests.pas
   JetStream/
-    Dext.Net.Nats.JetStream.Json.Tests.pas
-    Dext.Net.Nats.JetStream.Streams.Tests.pas
+  KeyValue/
+  ObjectStore/
+  Services/
   Benchmarks/
-    Dext.Net.Nats.ParserV2.Benchmarks.pas
 ```
 
-`Tests/README.md` defines the complete target layout and migration rule. The historical `Dext.Net.Nats.Tests.pas` mega-unit remains temporary technical debt; new tests must not be added to it. Existing fixtures will move out feature-by-feature when touched.
+The historical `Tests/Dext.Net.Nats.Tests.pas` mega-unit remains temporary debt. New tests must not be added to it. Existing fixtures migrate out when the corresponding production feature is touched.
 
-The root Dext.Testing runner remains the single composition point and explicitly references the feature-folder paths.
+## Phase 7 — advanced performance API
 
-## Phase 6 — advanced performance API
+Status: **not cut over yet; design prepared**.
 
-Only after safe APIs are stable and benchmarked:
+After compile/integration stability:
 
-- borrowed/Span message callback with explicitly bounded lifetime;
-- pooled encode buffers;
-- optimized header parser/writer;
-- possible vectored-write support if added to `Dext.Net.Tcp`;
-- allocation and throughput baselines for owned vs borrowed modes.
+1. borrowed/Span callback with explicit lifetime contract;
+2. pooled encode buffers;
+3. Span-oriented header parser/writer;
+4. optional vectored write if `Dext.Net.Tcp` exposes a suitable primitive;
+5. owned-vs-borrowed allocation/throughput baselines;
+6. evaluate making bounded dispatch the recommended server-workload mode while preserving inline compatibility.
 
 ## Performance rule
 
-No optimization is accepted only because it looks faster. A hot-path change must have:
+No optimization is accepted because it merely looks faster. A hot-path change requires:
 
-1. a correctness test,
-2. a stress test where relevant,
-3. a repeatable benchmark,
-4. documented ownership/lifetime semantics.
+1. correctness/parity test;
+2. stress test where relevant;
+3. repeatable benchmark;
+4. documented ownership/lifetime semantics;
+5. rollback path until runtime validation succeeds.
 
-## Merge gate for Architecture V2
+## Remaining compile/runtime gate
 
-Before the branch is merged to `main`:
+Hosted Linux GitHub Actions performs structural/hygiene checks only. It does **not** prove Delphi compilation.
 
-1. hosted structure/hygiene CI must be green;
-2. `scripts/build-tests.ps1` must compile the Dext.Testing project on Delphi 13;
-3. parser parity tests must pass;
-4. dispatched-subscription tests must pass;
-5. JetStream extracted JSON/codec/parser/stream-admin tests must pass;
-6. existing integration tests should run against a local `nats-server -js`;
-7. the parser benchmark must be captured for V1 and V2;
-8. public API compatibility must be reviewed from the PR diff.
+Before merging Architecture V2 to `main`:
+
+1. run `scripts/build-tests.ps1` on Windows with Delphi 13;
+2. compile every extracted unit through `Tests/Dext.Net.Nats.Tests.dproj`;
+3. run focused and legacy tests;
+4. run integration tests against `nats-server -js`;
+5. capture Parser V1/V2 benchmark output;
+6. resolve any Delphi language/API mismatches;
+7. cut over `TDextNatsClient` to Parser V2 behind a reversible define first;
+8. convert JetStream public methods into thin delegates to extracted services;
+9. repeat integration/stress tests;
+10. only then remove duplicated old implementations and merge the PR.
