@@ -1,0 +1,106 @@
+name: Remove Parser V1
+
+on:
+  push:
+    branches:
+      - perf/parser-v2-cutover
+
+permissions:
+  contents: write
+
+jobs:
+  remove-v1:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: perf/parser-v2-cutover
+          fetch-depth: 0
+
+      - name: Inspect parser references
+        run: |
+          echo 'References before removal:'
+          grep -RIn --exclude-dir=.git 'TDextNatsFrameParser' Source Tests || true
+
+      - name: Remove legacy parser from Protocol unit and legacy parity dependencies
+        shell: python
+        run: |
+          from pathlib import Path
+          import re
+
+          p = Path('Source/Dext.Net.Nats.Protocol.pas')
+          s = p.read_text(encoding='utf-8-sig')
+
+          # Remove the public V1 parser declaration. Parser V2 is now the only runtime parser.
+          s, n1 = re.subn(
+              r"\n  /// <summary>\n  ///   Incremental, allocation-conscious decoder for the NATS text protocol\..*?\n  TDextNatsFrameParser = class\n.*?\n  end;\n\n/// <summary>Generates a process-unique inbox subject",
+              "\n/// <summary>Generates a process-unique inbox subject",
+              s,
+              count=1,
+              flags=re.S,
+          )
+          if n1 != 1:
+              raise SystemExit(f'Expected one V1 parser declaration, removed {n1}')
+
+          # Remove byte/token helpers used only by the removed V1 parser.
+          s, n2 = re.subn(
+              r"\nfunction NatsBytesToUtf8\(.*?\nfunction NatsNewInbox: string;",
+              "\nfunction NatsNewInbox: string;",
+              s,
+              count=1,
+              flags=re.S,
+          )
+          if n2 != 1:
+              raise SystemExit(f'Expected one V1 helper block, removed {n2}')
+
+          # Remove the complete V1 parser implementation.
+          s, n3 = re.subn(
+              r"\n\{ TDextNatsFrameParser \}\n.*?\ninitialization\n",
+              "\ninitialization\n",
+              s,
+              count=1,
+              flags=re.S,
+          )
+          if n3 != 1:
+              raise SystemExit(f'Expected one V1 parser implementation, removed {n3}')
+
+          s = s.replace(
+              '  payloads, headers, frame encoders and the incremental frame parser.      ',
+              '  payloads, headers and protocol frame encoders.                          ',
+              1,
+          )
+          p.write_text(s, encoding='utf-8-sig')
+
+          # Legacy parity/benchmark tests may still refer directly to V1. Convert them to
+          # V2-only behavioral coverage rather than preserving a dead implementation.
+          for test_path in [
+              Path('Tests/Protocol/Dext.Net.Nats.ParserV2.Tests.pas'),
+              Path('Tests/Benchmarks/Dext.Net.Nats.ParserV2.Benchmarks.pas'),
+          ]:
+              if not test_path.exists():
+                  continue
+              t = test_path.read_text(encoding='utf-8-sig')
+              t = t.replace('TDextNatsFrameParser;', 'TDextNatsFrameParserV2;')
+              t = t.replace('TDextNatsFrameParser.Create', 'TDextNatsFrameParserV2.Create')
+              t = t.replace('V1', 'baseline')
+              test_path.write_text(t, encoding='utf-8-sig')
+
+      - name: Enforce V2-only parser references
+        run: |
+          if grep -RIn --exclude-dir=.git 'TDextNatsFrameParser\b' Source Tests; then
+            echo 'Legacy parser reference remains.'
+            exit 1
+          fi
+          grep -q 'TDextNatsFrameParserV2' Source/Internal/Dext.Net.Nats.Internal.Parser.pas
+          grep -q 'TDextNatsRuntimeFrameParser = TDextNatsFrameParserV2' Source/Dext.Net.Nats.ParserRuntime.pas
+          ! grep -q 'ShiftBuffer' Source/Dext.Net.Nats.Protocol.pas
+          ! grep -q 'FBufferLen' Source/Dext.Net.Nats.Protocol.pas
+
+      - name: Commit
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add Source/Dext.Net.Nats.Protocol.pas Tests/Protocol/Dext.Net.Nats.ParserV2.Tests.pas Tests/Benchmarks/Dext.Net.Nats.ParserV2.Benchmarks.pas
+          git commit -m 'Remove legacy Parser V1 implementation'
+          git push origin HEAD:perf/parser-v2-cutover
