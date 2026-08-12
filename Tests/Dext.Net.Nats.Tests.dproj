@@ -38,6 +38,7 @@
     <DCCReference Include="..\Source\JetStream\Dext.Net.Nats.JetStream.Fetch.pas"/>
     <DCCReference Include="..\Source\JetStream\Dext.Net.Nats.JetStream.Push.pas"/>
     <DCCReference Include="..\Source\JetStream\Dext.Net.Nats.JetStream.Ordered.pas"/>
+    <DCCReference Include="..\Source\JetStream\Dext.Net.Nats.JetStream.Runtime.pas"/>
     <DCCReference Include="..\Source\Dext.Net.Nats.KeyValue.pas"/>
     <DCCReference Include="..\Source\KeyValue\Dext.Net.Nats.KeyValue.Subjects.pas"/>
     <DCCReference Include="..\Source\Dext.Net.Nats.ObjectStore.pas"/>
@@ -50,11 +51,13 @@
     <DCCReference Include="..\Source\Internal\Dext.Net.Nats.Internal.Buffer.pas"/>
     <DCCReference Include="..\Source\Internal\Dext.Net.Nats.Internal.Dispatcher.pas"/>
     <DCCReference Include="..\Source\Internal\Dext.Net.Nats.Internal.Parser.pas"/>
+    <DCCReference Include="..\Source\Internal\Dext.Net.Nats.Internal.ParserSelector.pas"/>
     <DCCReference Include="Dext.Net.Nats.Tests.pas"/>
     <DCCReference Include="Core\Dext.Net.Nats.Drain.Tests.pas"/>
     <DCCReference Include="Core\Dext.Net.Nats.Dispatching.Tests.pas"/>
     <DCCReference Include="Internal\Dext.Net.Nats.Internal.Tests.pas"/>
     <DCCReference Include="Protocol\Dext.Net.Nats.ParserV2.Tests.pas"/>
+    <DCCReference Include="Protocol\Dext.Net.Nats.ParserSelector.Tests.pas"/>
     <DCCReference Include="Protocol\Dext.Net.Nats.Protocol.V2.Tests.pas"/>
     <DCCReference Include="JetStream\Dext.Net.Nats.JetStream.Json.Tests.pas"/>
     <DCCReference Include="JetStream\Dext.Net.Nats.JetStream.Streams.Tests.pas"/>
