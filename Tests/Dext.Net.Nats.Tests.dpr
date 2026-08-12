@@ -12,6 +12,7 @@ uses
   Dext.Net.Nats.Protocol in '..\Source\Dext.Net.Nats.Protocol.pas',
   Dext.Net.Nats.Protocol.Headers in '..\Source\Protocol\Dext.Net.Nats.Protocol.Headers.pas',
   Dext.Net.Nats.Protocol.Control in '..\Source\Protocol\Dext.Net.Nats.Protocol.Control.pas',
+  Dext.Net.Nats.Protocol.Writer in '..\Source\Protocol\Dext.Net.Nats.Protocol.Writer.pas',
   Dext.Net.Nats.NKeys in '..\Source\Dext.Net.Nats.NKeys.pas',
   Dext.Net.Nats in '..\Source\Dext.Net.Nats.pas',
   Dext.Net.Nats.Dispatching in '..\Source\Dext.Net.Nats.Dispatching.pas',
@@ -30,11 +31,16 @@ uses
   Dext.Net.Nats.JetStream.Runtime in '..\Source\JetStream\Dext.Net.Nats.JetStream.Runtime.pas',
   Dext.Net.Nats.KeyValue in '..\Source\Dext.Net.Nats.KeyValue.pas',
   Dext.Net.Nats.KeyValue.Subjects in '..\Source\KeyValue\Dext.Net.Nats.KeyValue.Subjects.pas',
+  Dext.Net.Nats.KeyValue.WatcherGate in '..\Source\KeyValue\Dext.Net.Nats.KeyValue.WatcherGate.pas',
   Dext.Net.Nats.ObjectStore in '..\Source\Dext.Net.Nats.ObjectStore.pas',
   Dext.Net.Nats.ObjectStore.Subjects in '..\Source\ObjectStore\Dext.Net.Nats.ObjectStore.Subjects.pas',
   Dext.Net.Nats.ObjectStore.Crypto in '..\Source\ObjectStore\Dext.Net.Nats.ObjectStore.Crypto.pas',
+  Dext.Net.Nats.ObjectStore.WatcherGate in '..\Source\ObjectStore\Dext.Net.Nats.ObjectStore.WatcherGate.pas',
+  Dext.Net.Nats.ObjectStore.Reader in '..\Source\ObjectStore\Dext.Net.Nats.ObjectStore.Reader.pas',
   Dext.Net.Nats.Services in '..\Source\Dext.Net.Nats.Services.pas',
   Dext.Net.Nats.Services.Subjects in '..\Source\Services\Dext.Net.Nats.Services.Subjects.pas',
+  Dext.Net.Nats.Services.Validation in '..\Source\Services\Dext.Net.Nats.Services.Validation.pas',
+  Dext.Net.Nats.Services.Routing in '..\Source\Services\Dext.Net.Nats.Services.Routing.pas',
   Dext.Net.Nats.DependencyInjection in '..\Source\Dext.Net.Nats.DependencyInjection.pas',
   Dext.Net.Nats.HealthChecks in '..\Source\Dext.Net.Nats.HealthChecks.pas',
   Dext.Net.Nats.Internal.Buffer in '..\Source\Internal\Dext.Net.Nats.Internal.Buffer.pas',
@@ -55,8 +61,12 @@ uses
   Dext.Net.Nats.JetStream.ObjectPaging.Tests in 'JetStream\Dext.Net.Nats.JetStream.ObjectPaging.Tests.pas',
   Dext.Net.Nats.JetStream.Fetch.Tests in 'JetStream\Dext.Net.Nats.JetStream.Fetch.Tests.pas',
   Dext.Net.Nats.ObjectStore.Subjects.Tests in 'ObjectStore\Dext.Net.Nats.ObjectStore.Subjects.Tests.pas',
+  Dext.Net.Nats.ObjectStore.WatcherGate.Tests in 'ObjectStore\Dext.Net.Nats.ObjectStore.WatcherGate.Tests.pas',
   Dext.Net.Nats.KeyValue.Subjects.Tests in 'KeyValue\Dext.Net.Nats.KeyValue.Subjects.Tests.pas',
-  Dext.Net.Nats.Services.Subjects.Tests in 'Services\Dext.Net.Nats.Services.Subjects.Tests.pas';
+  Dext.Net.Nats.KeyValue.WatcherGate.Tests in 'KeyValue\Dext.Net.Nats.KeyValue.WatcherGate.Tests.pas',
+  Dext.Net.Nats.Services.Subjects.Tests in 'Services\Dext.Net.Nats.Services.Subjects.Tests.pas',
+  Dext.Net.Nats.Services.Validation.Tests in 'Services\Dext.Net.Nats.Services.Validation.Tests.pas',
+  Dext.Net.Nats.Services.Routing.Tests in 'Services\Dext.Net.Nats.Services.Routing.Tests.pas';
 
 var
   Config: TTestConfigurator;
@@ -74,8 +84,7 @@ begin
       or SameText(Trim(GetEnvironmentVariable('DEXT_NATS_RUN_BENCH')), 'true');
 
     Config := ConfigureTests.Verbose;
-    if RunStress or RunBench then
-      Config := Config.IncludeExplicitTests;
+    if RunStress or RunBench then Config := Config.IncludeExplicitTests;
 
     RunTests(Config.RegisterFixtures([
       TDextNatsProtocolTests,
@@ -103,8 +112,12 @@ begin
       TDextNatsJetStreamObjectPagingTests,
       TDextNatsJetStreamFetchTests,
       TDextNatsObjectStoreSubjectsTests,
+      TDextNatsObjectStoreWatcherGateTests,
       TDextNatsKeyValueSubjectsTests,
-      TDextNatsServicesSubjectsTests
+      TDextNatsKeyValueWatcherGateTests,
+      TDextNatsServicesSubjectsTests,
+      TDextNatsServicesValidationTests,
+      TDextNatsServicesRoutingTests
     ]));
   except
     on E: Exception do
