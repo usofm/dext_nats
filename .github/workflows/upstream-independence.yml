@@ -1,0 +1,40 @@
+name: Upstream Independence
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  canonical-upstream:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Reject legacy upstream dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # UPSTREAM.md and CONTRIBUTING.md intentionally name the historical
+          # repository to document that it is NOT an upstream dependency.
+          matches=$(grep -RniF 'kitesoft/dext_nats' . \
+            --exclude='UPSTREAM.md' \
+            --exclude='CONTRIBUTING.md' \
+            --exclude-dir='.git' || true)
+
+          if [ -n "$matches" ]; then
+            echo 'Legacy upstream dependency/reference detected:'
+            echo "$matches"
+            exit 1
+          fi
+
+      - name: Verify canonical upstream policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f UPSTREAM.md
+          test -f CONTRIBUTING.md
+          grep -qF 'https://github.com/usofm/dext_nats' UPSTREAM.md
+          grep -qF 'https://github.com/usofm/dext_nats' CONTRIBUTING.md
+          echo 'Canonical upstream: usofm/dext_nats'
