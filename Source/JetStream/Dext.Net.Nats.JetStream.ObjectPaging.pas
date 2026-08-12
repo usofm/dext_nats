@@ -36,7 +36,6 @@ uses
   System.SysUtils,
   Dext.Core.Span,
   Dext.Json.Utf8,
-  Dext.Net.Nats,
   Dext.Net.Nats.Protocol,
   Dext.Net.Nats.JetStream.Json,
   Dext.Net.Nats.JetStream.Parsers;
@@ -49,10 +48,8 @@ begin
   AWriter.WriteStartObject;
   while AReader.Read do
   begin
-    if AReader.TokenType = TJsonTokenType.EndObject then
-      Break;
-    if AReader.TokenType <> TJsonTokenType.PropertyName then
-      Continue;
+    if AReader.TokenType = TJsonTokenType.EndObject then Break;
+    if AReader.TokenType <> TJsonTokenType.PropertyName then Continue;
     AWriter.WritePropertyName(AReader.GetString);
     if not AReader.Read then
       raise EDextNatsProtocolError.Create('Unexpected end of JetStream JSON object');
@@ -66,8 +63,7 @@ begin
   AWriter.WriteStartArray;
   while AReader.Read do
   begin
-    if AReader.TokenType = TJsonTokenType.EndArray then
-      Break;
+    if AReader.TokenType = TJsonTokenType.EndArray then Break;
     CopyCurrentValue(AReader, AWriter);
   end;
   AWriter.WriteEndArray;
@@ -77,20 +73,13 @@ procedure CopyCurrentValue(var AReader: TUtf8JsonReader;
   var AWriter: TUtf8JsonWriter);
 begin
   case AReader.TokenType of
-    TJsonTokenType.StartObject:
-      CopyObject(AReader, AWriter);
-    TJsonTokenType.StartArray:
-      CopyArray(AReader, AWriter);
-    TJsonTokenType.StringValue:
-      AWriter.WriteString(AReader.GetString);
-    TJsonTokenType.Number:
-      AWriter.WriteNumber(AReader.GetInt64);
-    TJsonTokenType.TrueValue:
-      AWriter.WriteBoolean(True);
-    TJsonTokenType.FalseValue:
-      AWriter.WriteBoolean(False);
-    TJsonTokenType.NullValue:
-      AWriter.WriteNull;
+    TJsonTokenType.StartObject: CopyObject(AReader, AWriter);
+    TJsonTokenType.StartArray: CopyArray(AReader, AWriter);
+    TJsonTokenType.StringValue: AWriter.WriteString(AReader.GetString);
+    TJsonTokenType.Number: AWriter.WriteNumber(AReader.GetInt64);
+    TJsonTokenType.TrueValue: AWriter.WriteBoolean(True);
+    TJsonTokenType.FalseValue: AWriter.WriteBoolean(False);
+    TJsonTokenType.NullValue: AWriter.WriteNull;
   else
     raise EDextNatsProtocolError.Create('Unsupported JetStream JSON token while paging');
   end;
@@ -102,9 +91,8 @@ var
   Writer: TUtf8JsonWriter;
 begin
   Sink.Reset;
-  Writer := TUtf8JsonWriter.Create(@Sink, DextNatsJsUtf8SinkWrite, False);
+  Writer := TUtf8JsonWriter.Create(@Sink, NatsJsUtf8Write, False);
   CopyObject(AReader, Writer);
-  Writer.Flush;
   Result := Sink.ToUtf8String;
 end;
 
@@ -137,26 +125,14 @@ begin
   Reader := OpenReader(AJson, Bytes);
   while Reader.Read do
   begin
-    if Reader.TokenType = TJsonTokenType.EndObject then
-      Break;
-    if Reader.TokenType <> TJsonTokenType.PropertyName then
-      Continue;
-
+    if Reader.TokenType = TJsonTokenType.EndObject then Break;
+    if Reader.TokenType <> TJsonTokenType.PropertyName then Continue;
     if Reader.ValueSpanEquals('total') then
-    begin
-      if Reader.Read and (Reader.TokenType = TJsonTokenType.Number) then
-        Result.Total := Reader.GetInt32;
-    end
+    begin if Reader.Read and (Reader.TokenType = TJsonTokenType.Number) then Result.Total := Reader.GetInt32; end
     else if Reader.ValueSpanEquals('offset') then
-    begin
-      if Reader.Read and (Reader.TokenType = TJsonTokenType.Number) then
-        Result.Offset := Reader.GetInt32;
-    end
+    begin if Reader.Read and (Reader.TokenType = TJsonTokenType.Number) then Result.Offset := Reader.GetInt32; end
     else if Reader.ValueSpanEquals('limit') then
-    begin
-      if Reader.Read and (Reader.TokenType = TJsonTokenType.Number) then
-        Result.Limit := Reader.GetInt32;
-    end
+    begin if Reader.Read and (Reader.TokenType = TJsonTokenType.Number) then Result.Limit := Reader.GetInt32; end
     else if Reader.ValueSpanEquals('error') then
     begin
       if Reader.Read and (Reader.TokenType = TJsonTokenType.StartObject) then
@@ -170,8 +146,7 @@ begin
       if Reader.Read and (Reader.TokenType = TJsonTokenType.StartArray) then
         while Reader.Read do
         begin
-          if Reader.TokenType = TJsonTokenType.EndArray then
-            Break;
+          if Reader.TokenType = TJsonTokenType.EndArray then Break;
           if Reader.TokenType = TJsonTokenType.StartObject then
           begin
             ItemJson := CurrentObjectToJson(Reader);
@@ -179,12 +154,10 @@ begin
             SetLength(Result.Items, Length(Result.Items) + 1);
             Result.Items[High(Result.Items)] := Info;
           end
-          else if Reader.TokenType in [TJsonTokenType.StartArray, TJsonTokenType.StartObject] then
-            Reader.Skip;
+          else if Reader.TokenType in [TJsonTokenType.StartArray, TJsonTokenType.StartObject] then Reader.Skip;
         end;
     end
-    else if Reader.Read and (Reader.TokenType in [TJsonTokenType.StartObject, TJsonTokenType.StartArray]) then
-      Reader.Skip;
+    else if Reader.Read and (Reader.TokenType in [TJsonTokenType.StartObject, TJsonTokenType.StartArray]) then Reader.Skip;
   end;
 end;
 
@@ -199,26 +172,14 @@ begin
   Reader := OpenReader(AJson, Bytes);
   while Reader.Read do
   begin
-    if Reader.TokenType = TJsonTokenType.EndObject then
-      Break;
-    if Reader.TokenType <> TJsonTokenType.PropertyName then
-      Continue;
-
+    if Reader.TokenType = TJsonTokenType.EndObject then Break;
+    if Reader.TokenType <> TJsonTokenType.PropertyName then Continue;
     if Reader.ValueSpanEquals('total') then
-    begin
-      if Reader.Read and (Reader.TokenType = TJsonTokenType.Number) then
-        Result.Total := Reader.GetInt32;
-    end
+    begin if Reader.Read and (Reader.TokenType = TJsonTokenType.Number) then Result.Total := Reader.GetInt32; end
     else if Reader.ValueSpanEquals('offset') then
-    begin
-      if Reader.Read and (Reader.TokenType = TJsonTokenType.Number) then
-        Result.Offset := Reader.GetInt32;
-    end
+    begin if Reader.Read and (Reader.TokenType = TJsonTokenType.Number) then Result.Offset := Reader.GetInt32; end
     else if Reader.ValueSpanEquals('limit') then
-    begin
-      if Reader.Read and (Reader.TokenType = TJsonTokenType.Number) then
-        Result.Limit := Reader.GetInt32;
-    end
+    begin if Reader.Read and (Reader.TokenType = TJsonTokenType.Number) then Result.Limit := Reader.GetInt32; end
     else if Reader.ValueSpanEquals('error') then
     begin
       if Reader.Read and (Reader.TokenType = TJsonTokenType.StartObject) then
@@ -232,8 +193,7 @@ begin
       if Reader.Read and (Reader.TokenType = TJsonTokenType.StartArray) then
         while Reader.Read do
         begin
-          if Reader.TokenType = TJsonTokenType.EndArray then
-            Break;
+          if Reader.TokenType = TJsonTokenType.EndArray then Break;
           if Reader.TokenType = TJsonTokenType.StartObject then
           begin
             ItemJson := CurrentObjectToJson(Reader);
@@ -241,12 +201,10 @@ begin
             SetLength(Result.Items, Length(Result.Items) + 1);
             Result.Items[High(Result.Items)] := Info;
           end
-          else if Reader.TokenType in [TJsonTokenType.StartArray, TJsonTokenType.StartObject] then
-            Reader.Skip;
+          else if Reader.TokenType in [TJsonTokenType.StartArray, TJsonTokenType.StartObject] then Reader.Skip;
         end;
     end
-    else if Reader.Read and (Reader.TokenType in [TJsonTokenType.StartObject, TJsonTokenType.StartArray]) then
-      Reader.Skip;
+    else if Reader.Read and (Reader.TokenType in [TJsonTokenType.StartObject, TJsonTokenType.StartArray]) then Reader.Skip;
   end;
 end;
 
