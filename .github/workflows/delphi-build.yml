@@ -31,7 +31,7 @@ on:
         type: boolean
 
 jobs:
-  build-test-both-parsers:
+  build-test-parser-v2:
     runs-on: [self-hosted, Windows]
     timeout-minutes: 45
     steps:
@@ -57,19 +57,19 @@ jobs:
           Start-Sleep -Seconds 2
           if ($proc.HasExited) { throw "nats-server exited with code $($proc.ExitCode)" }
 
-      - name: Build and test Parser V1 + Parser V2 runtimes
+      - name: Build and test Parser V2 runtime
         shell: powershell
         run: |
           $args = @('-Config', '${{ inputs.config }}', '-Platform', '${{ inputs.platform }}')
           if ('${{ inputs.live_nats }}' -eq 'true') { $args += '-LiveNats' }
           if ('${{ inputs.benchmark }}' -eq 'true') { $args += '-Benchmark' }
           & .\scripts\validate-parser-cutover.ps1 @args
-          if ($LASTEXITCODE -ne 0) { throw "Parser cutover validation failed with exit code $LASTEXITCODE" }
+          if ($LASTEXITCODE -ne 0) { throw "Parser V2 validation failed with exit code $LASTEXITCODE" }
 
       - name: Stop NATS Server
         if: ${{ always() && inputs.live_nats }}
         shell: powershell
         run: |
           if ($env:DEXT_NATS_SERVER_PID) {
-            Stop-Process -Id ([int]$env:DEXT_NATS_SERVER_PID) -Force -ErrorAction SilentlyContinue
+            Stop-Process -Id ([int]$env:DEXT_NATS_SERVER_PID -Force -ErrorAction SilentlyContinue
           }
