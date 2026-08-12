@@ -27,6 +27,10 @@ type
     function ToBytes: TBytes;
   end;
 
+var
+  GNatsPingFrame: TBytes;
+  GNatsPongFrame: TBytes;
+
 procedure TNatsControlWriter.EnsureCapacity(AAdditional: Integer);
 var
   Needed, NewCapacity: Integer;
@@ -130,12 +134,12 @@ end;
 
 function NatsControlPing: TBytes;
 begin
-  Result := BytesOf(RawByteString('PING'#13#10));
+  Result := GNatsPingFrame;
 end;
 
 function NatsControlPong: TBytes;
 begin
-  Result := BytesOf(RawByteString('PONG'#13#10));
+  Result := GNatsPongFrame;
 end;
 
 function NatsControlSub(const ASubject, AQueue: string;
@@ -170,5 +174,9 @@ begin
   Writer.WriteCrLf;
   Result := Writer.ToBytes;
 end;
+
+initialization
+  GNatsPingFrame := BytesOf(RawByteString('PING'#13#10));
+  GNatsPongFrame := BytesOf(RawByteString('PONG'#13#10));
 
 end.
