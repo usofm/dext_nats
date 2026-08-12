@@ -25,7 +25,6 @@ jobs:
             Source/Internal/Dext.Net.Nats.Internal.Buffer.pas \
             Source/Internal/Dext.Net.Nats.Internal.Dispatcher.pas \
             Source/Internal/Dext.Net.Nats.Internal.Parser.pas \
-            Source/Internal/Dext.Net.Nats.Internal.ParserSelector.pas \
             Source/Protocol/Dext.Net.Nats.Protocol.Headers.pas \
             Source/Protocol/Dext.Net.Nats.Protocol.Control.pas \
             Source/Protocol/Dext.Net.Nats.Protocol.Writer.pas \
@@ -54,12 +53,9 @@ jobs:
           done
 
           grep -q 'TDextNatsFrameParserV2' Source/Internal/Dext.Net.Nats.Internal.Parser.pas
-          grep -q 'TDextNatsSelectedFrameParser' Source/Internal/Dext.Net.Nats.Internal.ParserSelector.pas
-          grep -q 'DEXT_NATS_PARSER_V2' Source/Internal/Dext.Net.Nats.Internal.ParserSelector.pas
-          grep -q 'TDextNatsRuntimeFrameParser' Source/Dext.Net.Nats.ParserRuntime.pas
-          grep -q 'DEXT_NATS_RUNTIME_PARSER' Source/Dext.Net.Nats.ParserRuntime.pas
+          grep -q 'TDextNatsRuntimeFrameParser = TDextNatsFrameParserV2' Source/Dext.Net.Nats.ParserRuntime.pas
+          grep -q "DEXT_NATS_RUNTIME_PARSER = 'v2'" Source/Dext.Net.Nats.ParserRuntime.pas
           grep -q 'Dext.Net.Nats.ParserRuntime' Source/Dext.Net.Nats.pas
-          ! grep -q 'Dext.Net.Nats.Internal.ParserSelector' Source/Dext.Net.Nats.pas
           grep -q 'FParser: TDextNatsRuntimeFrameParser;' Source/Dext.Net.Nats.pas
           grep -q 'FParser := TDextNatsRuntimeFrameParser.Create;' Source/Dext.Net.Nats.pas
           grep -q 'TChannel<T>.CreateBounded' Source/Internal/Dext.Net.Nats.Internal.Dispatcher.pas
@@ -94,7 +90,6 @@ jobs:
             Tests/Core/Dext.Net.Nats.Dispatching.Tests.pas \
             Tests/Internal/Dext.Net.Nats.Internal.Tests.pas \
             Tests/Protocol/Dext.Net.Nats.ParserV2.Tests.pas \
-            Tests/Protocol/Dext.Net.Nats.ParserSelector.Tests.pas \
             Tests/Protocol/Dext.Net.Nats.ParserRuntime.Tests.pas \
             Tests/Protocol/Dext.Net.Nats.Protocol.V2.Tests.pas \
             Tests/JetStream/Dext.Net.Nats.JetStream.Json.Tests.pas \
@@ -112,7 +107,6 @@ jobs:
             Tests/Benchmarks/Dext.Net.Nats.ParserV2.Benchmarks.pas; do
             test -f "$f"
           done
-          grep -q 'TDextNatsParserSelectorTests' Tests/Dext.Net.Nats.Tests.dpr
           grep -q 'TDextNatsParserRuntimeTests' Tests/Dext.Net.Nats.Tests.dpr
           grep -q 'TDextNatsJetStreamObjectPagingTests' Tests/Dext.Net.Nats.Tests.dpr
           grep -q 'TDextNatsJetStreamFetchTests' Tests/Dext.Net.Nats.Tests.dpr
@@ -125,7 +119,7 @@ jobs:
           grep -q 'TDextNatsServicesValidationTests' Tests/Dext.Net.Nats.Tests.dpr
           grep -q 'TDextNatsServicesRoutingTests' Tests/Dext.Net.Nats.Tests.dpr
 
-      - name: Delphi project and parser cutover tooling
+      - name: Delphi project and V2 validation tooling
         run: |
           set -e
           test -f Tests/Dext.Net.Nats.Tests.dproj
@@ -135,14 +129,14 @@ jobs:
           test -f scripts/validate-parser-cutover.ps1
           test -f scripts/download-nats-server.ps1
           test -f .github/workflows/delphi-build.yml
-          grep -q 'ParserV1' scripts/build-tests.ps1
-          grep -q 'ParserV2' scripts/build-tests.ps1
+          grep -q 'Parser=V2' scripts/build-tests.ps1
           grep -q '/t:Rebuild' scripts/build-tests.ps1
+          ! grep -q 'ParserV1' scripts/build-tests.ps1
+          ! grep -q 'DEXT_NATS_PARSER_V2' scripts/build-tests.ps1
           grep -q 'validate-parser-cutover.ps1' .github/workflows/delphi-build.yml
           grep -q 'Dext.Net.Nats.ParserRuntime.pas' Tests/Dext.Net.Nats.Tests.dproj
           grep -q 'Dext.Net.Nats.ParserRuntime.Tests.pas' Tests/Dext.Net.Nats.Tests.dproj
           grep -q 'Dext.Net.Nats.JetStream.Runtime.pas' Tests/Dext.Net.Nats.Tests.dproj
-          grep -q 'Dext.Net.Nats.Internal.ParserSelector.pas' Tests/Dext.Net.Nats.Tests.dproj
           grep -q 'Source\\JetStream' Tests/Dext.Net.Nats.Tests.dproj
           grep -q 'Source\\KeyValue' Tests/Dext.Net.Nats.Tests.dproj
           grep -q 'Source\\ObjectStore' Tests/Dext.Net.Nats.Tests.dproj
@@ -166,5 +160,5 @@ jobs:
         run: |
           echo "Hosted Linux CI verifies architecture and hygiene only."
           echo "Full gate: scripts/validate-parser-cutover.ps1 -Config Release -Platform Win32 -LiveNats -Benchmark"
-          echo "V1 and V2 use isolated DCU/EXE output directories and Rebuild."
-          echo "Merge remains gated on Delphi 13 compile + live NATS tests."
+          echo "Parser V2 is the only runtime parser; build uses a clean Rebuild."
+          echo "Release remains gated on Delphi 13 compile + live NATS tests."
