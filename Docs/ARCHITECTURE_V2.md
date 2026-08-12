@@ -33,20 +33,15 @@ Source/
     Dext.Net.Nats.Internal.Dispatcher.pas
     Dext.Net.Nats.Internal.Parser.pas
 
-  Protocol/
-    Dext.Net.Nats.Protocol.Parser.pas
-    Dext.Net.Nats.Protocol.Writer.pas
-    Dext.Net.Nats.Protocol.Headers.pas
-    Dext.Net.Nats.Protocol.Info.pas
-
   JetStream/
     Dext.Net.Nats.JetStream.Models.pas
-    Dext.Net.Nats.JetStream.Streams.pas
-    Dext.Net.Nats.JetStream.Consumers.pas
-    Dext.Net.Nats.JetStream.Ordered.pas
     Dext.Net.Nats.JetStream.Json.pas
     Dext.Net.Nats.JetStream.Codecs.pas
     Dext.Net.Nats.JetStream.Parsers.pas
+    Dext.Net.Nats.JetStream.Transport.pas
+    Dext.Net.Nats.JetStream.Streams.pas
+    Dext.Net.Nats.JetStream.Consumers.pas
+    Dext.Net.Nats.JetStream.Ordered.pas
 
   KeyValue/
     Dext.Net.Nats.KeyValue.Models.pas
@@ -119,37 +114,41 @@ The bounded mode exposes capacity/worker settings and deterministic full-queue b
 
 ## Phase 4 — split large implementation units
 
-Status: **JetStream JSON, serializers, and response parsers extracted with parity coverage**.
+Status: **JetStream extraction in progress**.
 
-Extracted implementation units:
+Extracted JetStream implementation units now include:
 
 ```text
 Source/JetStream/
   Dext.Net.Nats.JetStream.Json.pas
   Dext.Net.Nats.JetStream.Codecs.pas
   Dext.Net.Nats.JetStream.Parsers.pas
+  Dext.Net.Nats.JetStream.Transport.pas
+  Dext.Net.Nats.JetStream.Streams.pas
 ```
 
-`Json` owns the allocation-conscious UTF-8 sink and common request-body builders. `Codecs` contains stateless serialization for stream configuration, consumer configuration, and purge requests. `Parsers` contains stateless parsing for stream info, consumer info, stored messages, publish acknowledgements, and success/error responses.
+Responsibilities:
 
-Focused parity coverage lives in:
+- `Json`: allocation-conscious UTF-8 sink and small request-body builders.
+- `Codecs`: stream/consumer/purge serialization with byte-for-byte parity tests against the existing public records.
+- `Parsers`: StreamInfo, ConsumerInfo, StoredMsg, PublishAck and success/error response parsing with parity/error-semantics tests.
+- `Transport`: the small `INatsJetStreamApiTransport` request/reply boundary plus production `TDextNatsClient` adapter.
+- `Streams`: extracted stream administration core for create/update/info/exists/delete/purge and stored-message get operations.
 
-```text
-Tests/JetStream/Dext.Net.Nats.JetStream.Json.Tests.pas
-```
+`TDextNatsJetStreamStreams` is intentionally tested through a fake transport. This verifies `$JS.API.*` subject suffixes, JSON request bodies, timeout forwarding and response/error parsing without requiring a live server.
 
-The tests compare extracted serializer output to the current public record `ToJson` methods and compare extracted parser results to the current public `.Parse` methods. Error parity explicitly checks JetStream `Code` and `ErrCode` semantics.
+`ListStreams` and `ListStreamNames` remain temporarily in the facade until paged response parsing is extracted. After that, the complete stream administration surface can delegate to `Streams.pas`.
 
-During this transition the historical facade implementation remains authoritative until Delphi 13 compile/tests confirm the extracted units. After that gate, existing JetStream record methods and context operations can delegate to the extracted code and duplicated private helpers can be removed.
+During this transition the historical facade remains authoritative until Delphi 13 compile/tests confirm the extracted implementation. After that gate, existing `TDextNatsJetStreamContext` methods will delegate to the extracted services and duplicate private helpers will be removed.
 
 Next extraction order:
 
-1. stream administration operations;
-2. consumer/fetch operations;
+1. paged stream-name / stream-info parsing and list operations;
+2. consumer administration + Fetch;
 3. ordered consumer implementation;
-4. optional final movement of model declarations only if it can be done without circular dependencies or API churn.
-
-Then continue with ObjectStore reader/watcher, KeyValue watcher, Services, and protocol writer/parser separation.
+4. ObjectStore reader/watcher;
+5. KeyValue watcher;
+6. Services and protocol writer/parser separation.
 
 No public unit rename is allowed during this phase.
 
@@ -170,6 +169,7 @@ Tests/
     Dext.Net.Nats.ParserV2.Tests.pas
   JetStream/
     Dext.Net.Nats.JetStream.Json.Tests.pas
+    Dext.Net.Nats.JetStream.Streams.Tests.pas
   Benchmarks/
     Dext.Net.Nats.ParserV2.Benchmarks.pas
 ```
@@ -205,7 +205,7 @@ Before the branch is merged to `main`:
 2. `scripts/build-tests.ps1` must compile the Dext.Testing project on Delphi 13;
 3. parser parity tests must pass;
 4. dispatched-subscription tests must pass;
-5. JetStream JSON/codec/parser parity tests must pass;
+5. JetStream extracted JSON/codec/parser/stream-admin tests must pass;
 6. existing integration tests should run against a local `nats-server -js`;
 7. the parser benchmark must be captured for V1 and V2;
 8. public API compatibility must be reviewed from the PR diff.
