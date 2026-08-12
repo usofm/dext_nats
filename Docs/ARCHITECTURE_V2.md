@@ -31,6 +31,7 @@ Source/
   Internal/
     Dext.Net.Nats.Internal.Buffer.pas
     Dext.Net.Nats.Internal.Dispatcher.pas
+    Dext.Net.Nats.Internal.Parser.pas
 
   Protocol/
     Dext.Net.Nats.Protocol.Parser.pas
@@ -73,39 +74,53 @@ Avoid generic names such as `Utils`, `Helpers`, or `Common` when a responsibilit
 
 ## Phase 1 — internal performance primitives
 
-Status: **started**.
+Status: **implemented on the V2 refactor branch**.
 
 - `TDextNatsReadBuffer`: read/write cursor buffer; no per-frame tail shift.
 - `TDextNatsBoundedDispatcher<T>`: bounded Dext Channel worker pool with explicit backpressure.
 - Dedicated tests in `Dext.Net.Nats.Internal.Tests.pas`.
+- `CompactionCount` instrumentation proves when a physical unread-tail move actually occurs.
 - Vendored NATS server archive removed; reproducible download script added.
-
-These primitives are introduced and tested before being connected to the client/parser hot paths.
 
 ## Phase 2 — parser migration
 
-Replace `TDextNatsFrameParser`'s `FBufferLen + ShiftBuffer` model with `TDextNatsReadBuffer`.
+Status: **parity implementation ready; runtime cut-over pending Delphi compile/test**.
 
-Acceptance criteria:
+`TDextNatsFrameParserV2` in `Dext.Net.Nats.Internal.Parser.pas` uses `TDextNatsReadBuffer` and returns the same owned `TNatsFrame` contract as the current parser.
 
-- framing behavior unchanged;
-- incremental fragments still pass;
-- multiple frames per receive still pass;
-- malformed and oversized frames behave identically;
-- benchmark reports parser throughput/allocation delta.
+Parity coverage is isolated in `Tests/Dext.Net.Nats.ParserV2.Tests.pas` and compares V1/V2 behavior for:
+
+- PING/PONG/+OK/-ERR/INFO control frames;
+- MSG with and without fragmentation;
+- multiple frames in one receive buffer;
+- HMSG headers/payload;
+- Clear after an incomplete frame;
+- max-frame rejection.
+
+`Tests/Dext.Net.Nats.ParserV2.Benchmarks.pas` provides an explicit V1-vs-V2 throughput benchmark and a non-explicit correctness/performance-shape test asserting that consuming many pre-buffered frames performs zero physical compactions.
+
+Acceptance criteria before runtime cut-over:
+
+- Delphi build succeeds;
+- parity fixture passes;
+- existing protocol/integration fixtures still pass after cut-over;
+- benchmark reports V1/V2 throughput and does not show a material regression;
+- multi-frame batch consumption does not compact per frame.
 
 ## Phase 3 — bounded message dispatch
 
-Add an opt-in dispatch configuration while preserving inline delivery as the compatibility default.
+Status: **opt-in implementation ready; legacy inline Subscribe remains unchanged**.
 
-Proposed modes:
+`Dext.Net.Nats.Dispatching.pas` adds a dispatched subscription backed by `TDextNatsBoundedDispatcher<TNatsMsg>` and `Dext.Collections.Channels`.
+
+The compatibility model remains:
 
 ```text
-Inline          receive thread invokes handler directly
-BoundedWorkers  receive thread enqueues typed work into a bounded Dext Channel
+Inline          existing TDextNatsClient.Subscribe behavior
+BoundedWorkers  opt-in dispatched subscription with bounded Dext Channel
 ```
 
-The bounded mode must expose capacity/worker settings and a deterministic overflow policy. The implementation must not create a thread per message and should not allocate an anonymous closure per message.
+The bounded mode exposes capacity/worker settings and deterministic full-queue behavior. It does not create a thread per message.
 
 ## Phase 4 — split large implementation units
 
@@ -119,9 +134,13 @@ The first candidates are:
 4. KeyValue watcher.
 5. Protocol parser/writer.
 
+No public unit rename is allowed during this phase.
+
 ## Phase 5 — split tests by feature
 
-The current mega test unit is intentionally treated as technical debt. Target layout:
+The current mega test unit is intentionally treated as technical debt. New V2 tests already use dedicated units; existing fixtures will be migrated feature-by-feature.
+
+Target layout:
 
 ```text
 Tests/
@@ -158,3 +177,15 @@ No optimization is accepted only because it looks faster. A hot-path change must
 2. a stress test where relevant,
 3. a repeatable benchmark,
 4. documented ownership/lifetime semantics.
+
+## Merge gate for Architecture V2
+
+Before the branch is merged to `main`:
+
+1. hosted structure/hygiene CI must be green;
+2. `scripts/build-tests.ps1` must compile the Dext.Testing project on Delphi 13;
+3. parser parity tests must pass;
+4. dispatched-subscription tests must pass;
+5. existing integration tests should run against a local `nats-server -js`;
+6. the parser benchmark must be captured for V1 and V2;
+7. public API compatibility must be reviewed from the PR diff.
