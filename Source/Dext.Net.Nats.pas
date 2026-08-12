@@ -50,7 +50,8 @@ uses
   Dext.Net.Tcp,
   Dext.Net.Security,
   Dext.Net.Nats.Protocol,
-  Dext.Net.Nats.NKeys;
+  Dext.Net.Nats.NKeys,
+  Dext.Net.Nats.Internal.ParserSelector;
 
 const
   /// <summary>Messages delivered to a subscription handler (MSG/HMSG).</summary>
@@ -181,7 +182,7 @@ type
   TDextNatsClient = class
   private
     FTcpClient: TDextTcpClient;
-    FParser: TDextNatsFrameParser;
+    FParser: TDextNatsSelectedFrameParser;
     FOptions: TDextNatsOptions;
     FHost: string;
     FPort: Word;
@@ -501,7 +502,7 @@ begin
   FPort := NATS_DEFAULT_PORT;
 
   FTcpClient := TDextTcpClient.Create;
-  FParser := TDextNatsFrameParser.Create;
+  FParser := TDextNatsSelectedFrameParser.Create;
   FLock := TCriticalSection.Create;
   FSendLock := TCriticalSection.Create;
   FTlsIoLock := TCriticalSection.Create;
