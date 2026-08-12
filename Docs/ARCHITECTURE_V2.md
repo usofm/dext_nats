@@ -45,6 +45,8 @@ Source/
     Dext.Net.Nats.JetStream.Consumers.pas
     Dext.Net.Nats.JetStream.Ordered.pas
     Dext.Net.Nats.JetStream.Json.pas
+    Dext.Net.Nats.JetStream.Codecs.pas
+    Dext.Net.Nats.JetStream.Parsers.pas
 
   KeyValue/
     Dext.Net.Nats.KeyValue.Models.pas
@@ -117,29 +119,35 @@ The bounded mode exposes capacity/worker settings and deterministic full-queue b
 
 ## Phase 4 — split large implementation units
 
-Status: **started with JetStream JSON extraction**.
+Status: **JetStream JSON, serializers, and response parsers extracted with parity coverage**.
 
-The first extracted JetStream implementation unit is:
+Extracted implementation units:
 
 ```text
-Source/JetStream/Dext.Net.Nats.JetStream.Json.pas
+Source/JetStream/
+  Dext.Net.Nats.JetStream.Json.pas
+  Dext.Net.Nats.JetStream.Codecs.pas
+  Dext.Net.Nats.JetStream.Parsers.pas
 ```
 
-It owns the allocation-conscious UTF-8 sink and common request-body builders that were historically private implementation details inside the 120KB+ `Dext.Net.Nats.JetStream.pas` unit. Focused wire-contract tests live in:
+`Json` owns the allocation-conscious UTF-8 sink and common request-body builders. `Codecs` contains stateless serialization for stream configuration, consumer configuration, and purge requests. `Parsers` contains stateless parsing for stream info, consumer info, stored messages, publish acknowledgements, and success/error responses.
+
+Focused parity coverage lives in:
 
 ```text
 Tests/JetStream/Dext.Net.Nats.JetStream.Json.Tests.pas
 ```
 
-During this transition the historical facade implementation remains authoritative until Delphi 13 compile/tests confirm the extracted codec. After that gate, existing JetStream methods will delegate to the extracted codec and the duplicate private helpers will be removed.
+The tests compare extracted serializer output to the current public record `ToJson` methods and compare extracted parser results to the current public `.Parse` methods. Error parity explicitly checks JetStream `Code` and `ErrCode` semantics.
+
+During this transition the historical facade implementation remains authoritative until Delphi 13 compile/tests confirm the extracted units. After that gate, existing JetStream record methods and context operations can delegate to the extracted code and duplicated private helpers can be removed.
 
 Next extraction order:
 
-1. stream/consumer serialization codecs (`ToJson` support);
-2. stream/consumer response parsers;
-3. stream administration operations;
-4. consumer/fetch operations;
-5. ordered consumer implementation.
+1. stream administration operations;
+2. consumer/fetch operations;
+3. ordered consumer implementation;
+4. optional final movement of model declarations only if it can be done without circular dependencies or API churn.
 
 Then continue with ObjectStore reader/watcher, KeyValue watcher, Services, and protocol writer/parser separation.
 
@@ -197,7 +205,7 @@ Before the branch is merged to `main`:
 2. `scripts/build-tests.ps1` must compile the Dext.Testing project on Delphi 13;
 3. parser parity tests must pass;
 4. dispatched-subscription tests must pass;
-5. JetStream extracted JSON wire-contract tests must pass;
+5. JetStream JSON/codec/parser parity tests must pass;
 6. existing integration tests should run against a local `nats-server -js`;
 7. the parser benchmark must be captured for V1 and V2;
 8. public API compatibility must be reviewed from the PR diff.
