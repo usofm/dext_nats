@@ -184,23 +184,8 @@ function NatsBoolStr(AValue: Boolean): string;
 /// <summary>Escapes a string for safe embedding inside a JSON string literal.</summary>
 function NatsJsonEscape(const S: string): string;
 
-/// <summary>Encodes a CONNECT control line from the given options.</summary>
-function NatsEncodeConnect(const AOptions: TNatsConnectOptions): TBytes;
-/// <summary>Encodes a PUB frame (control line + payload + trailing CRLF).</summary>
-function NatsEncodePub(const ASubject, AReplyTo: string; const APayload: TBytes): TBytes;
-/// <summary>Encodes an HPUB frame (control line + header block + payload + trailing CRLF).</summary>
-function NatsEncodeHPub(const ASubject, AReplyTo: string; const AHeaders: TNatsHeaders;
-  const APayload: TBytes): TBytes;
 /// <summary>Parses a decoded NATS header block (NATS/1.0 status line + name: value lines).</summary>
 procedure NatsParseHeaderBlock(const ABlock: string; out AHeaders: TNatsHeaders; out AStatusCode: Integer);
-/// <summary>Encodes a SUB control line.</summary>
-function NatsEncodeSub(const ASubject, AQueue: string; ASid: Integer): TBytes;
-/// <summary>Encodes an UNSUB control line. AMaxMsgs &lt;= 0 unsubscribes immediately.</summary>
-function NatsEncodeUnsub(ASid: Integer; AMaxMsgs: Integer): TBytes;
-/// <summary>Encodes a PING control line.</summary>
-function NatsEncodePing: TBytes;
-/// <summary>Encodes a PONG control line.</summary>
-function NatsEncodePong: TBytes;
 
 implementation
 
@@ -223,10 +208,6 @@ type
     procedure WriteIntDec(AValue: Integer);
     function ToBytes: TBytes;
   end;
-
-var
-  GNatsEncodedPing: TBytes;
-  GNatsEncodedPong: TBytes;
 
 { TNatsByteWriter }
 
@@ -842,113 +823,5 @@ begin
   WriteConnectJson(Self, w);
   Result := TEncoding.UTF8.GetString(w.ToBytes);
 end;
-
-{ Frame encoders }
-
-function NatsEncodeConnect(const AOptions: TNatsConnectOptions): TBytes;
-var
-  w: TNatsByteWriter;
-begin
-  w.Reset;
-  w.WriteAscii('CONNECT ');
-  WriteConnectJson(AOptions, w);
-  w.WriteCrLf;
-  Result := w.ToBytes;
-end;
-
-function NatsEncodePub(const ASubject, AReplyTo: string; const APayload: TBytes): TBytes;
-var
-  w: TNatsByteWriter;
-begin
-  w.Reset;
-  w.WriteAscii('PUB ');
-  w.WriteUtf8(ASubject);
-  w.WriteByte(Ord(' '));
-  if AReplyTo <> '' then
-  begin
-    w.WriteUtf8(AReplyTo);
-    w.WriteByte(Ord(' '));
-  end;
-  w.WriteIntDec(Length(APayload));
-  w.WriteCrLf;
-  w.WriteBytes(APayload);
-  w.WriteCrLf;
-  Result := w.ToBytes;
-end;
-
-function NatsEncodeHPub(const ASubject, AReplyTo: string; const AHeaders: TNatsHeaders;
-  const APayload: TBytes): TBytes;
-var
-  w: TNatsByteWriter;
-  headerBlock: TBytes;
-begin
-  headerBlock := AHeaders.Encode;
-
-  w.Reset;
-  w.WriteAscii('HPUB ');
-  w.WriteUtf8(ASubject);
-  w.WriteByte(Ord(' '));
-  if AReplyTo <> '' then
-  begin
-    w.WriteUtf8(AReplyTo);
-    w.WriteByte(Ord(' '));
-  end;
-  w.WriteIntDec(Length(headerBlock));
-  w.WriteByte(Ord(' '));
-  w.WriteIntDec(Length(headerBlock) + Length(APayload));
-  w.WriteCrLf;
-  w.WriteBytes(headerBlock);
-  w.WriteBytes(APayload);
-  w.WriteCrLf;
-  Result := w.ToBytes;
-end;
-
-function NatsEncodeSub(const ASubject, AQueue: string; ASid: Integer): TBytes;
-var
-  w: TNatsByteWriter;
-begin
-  w.Reset;
-  w.WriteAscii('SUB ');
-  w.WriteUtf8(ASubject);
-  w.WriteByte(Ord(' '));
-  if AQueue <> '' then
-  begin
-    w.WriteUtf8(AQueue);
-    w.WriteByte(Ord(' '));
-  end;
-  w.WriteIntDec(ASid);
-  w.WriteCrLf;
-  Result := w.ToBytes;
-end;
-
-function NatsEncodeUnsub(ASid: Integer; AMaxMsgs: Integer): TBytes;
-var
-  w: TNatsByteWriter;
-begin
-  w.Reset;
-  w.WriteAscii('UNSUB ');
-  w.WriteIntDec(ASid);
-  if AMaxMsgs > 0 then
-  begin
-    w.WriteByte(Ord(' '));
-    w.WriteIntDec(AMaxMsgs);
-  end;
-  w.WriteCrLf;
-  Result := w.ToBytes;
-end;
-
-function NatsEncodePing: TBytes;
-begin
-  Result := GNatsEncodedPing;
-end;
-
-function NatsEncodePong: TBytes;
-begin
-  Result := GNatsEncodedPong;
-end;
-
-initialization
-  GNatsEncodedPing := BytesOf(RawByteString('PING'#13#10));
-  GNatsEncodedPong := BytesOf(RawByteString('PONG'#13#10));
 
 end.

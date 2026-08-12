@@ -43,6 +43,8 @@ uses
   Dext.Net.Security,
   Dext.Net.Nats.Protocol,
   Dext.Net.Nats.Internal.Parser,
+  Dext.Net.Nats.Protocol.Writer,
+  Dext.Net.Nats.Protocol.Control,
   Dext.Net.Nats.NKeys,
   Dext.Net.Nats,
   Dext.Net.Nats.JetStream,
@@ -1181,10 +1183,10 @@ procedure TDextNatsProtocolTests.Encode_ShouldBuildPubAndSubFrames;
 var
   pubBytes, subBytes: TBytes;
 begin
-  pubBytes := NatsEncodePub('orders', '', BytesOfUtf8('x'));
+  pubBytes := NatsV2EncodePub('orders', '', BytesOfUtf8('x'));
   Should(Utf8OfBytes(pubBytes)).Be('PUB orders 1' + #13#10 + 'x' + #13#10);
 
-  subBytes := NatsEncodeSub('orders.*', 'workers', 42);
+  subBytes := NatsControlSub('orders.*', 'workers', 42);
   Should(Utf8OfBytes(subBytes)).Be('SUB orders.* workers 42' + #13#10);
 end;
 
@@ -1192,7 +1194,7 @@ procedure TDextNatsProtocolTests.Encode_ShouldBuildPubWithReplyTo;
 var
   pubBytes: TBytes;
 begin
-  pubBytes := NatsEncodePub('orders', '_INBOX.r1', BytesOfUtf8('hi'));
+  pubBytes := NatsV2EncodePub('orders', '_INBOX.r1', BytesOfUtf8('hi'));
   Should(Utf8OfBytes(pubBytes)).Be('PUB orders _INBOX.r1 2' + #13#10 + 'hi' + #13#10);
 end;
 
@@ -1204,13 +1206,13 @@ var
 begin
   headers.Add('X-A', '1');
   headerBlock := headers.Encode;
-  encoded := NatsEncodeHPub('subj', '', headers, BytesOfUtf8('Z'));
+  encoded := NatsV2EncodeHPub('subj', '', headers, BytesOfUtf8('Z'));
   Should(Utf8OfBytes(encoded).StartsWith(
     Format('HPUB subj %d %d', [Length(headerBlock), Length(headerBlock) + 1]) + #13#10)).BeTrue;
   Should(Utf8OfBytes(encoded).Contains('NATS/1.0')).BeTrue;
   Should(Utf8OfBytes(encoded).Contains('X-A: 1')).BeTrue;
 
-  encodedReply := NatsEncodeHPub('subj', 'reply.1', headers, BytesOfUtf8('Z'));
+  encodedReply := NatsV2EncodeHPub('subj', 'reply.1', headers, BytesOfUtf8('Z'));
   Should(Utf8OfBytes(encodedReply).StartsWith(
     Format('HPUB subj reply.1 %d %d', [Length(headerBlock), Length(headerBlock) + 1]) + #13#10)).BeTrue;
 end;
@@ -1221,7 +1223,7 @@ var
   encoded: string;
 begin
   opts := TNatsConnectOptions.CreateDefault;
-  encoded := Utf8OfBytes(NatsEncodeConnect(opts));
+  encoded := Utf8OfBytes(NatsV2EncodeConnect(opts));
   Should(encoded.StartsWith('CONNECT {')).BeTrue;
   Should(encoded.EndsWith(#13#10)).BeTrue;
   Should(encoded.Contains('"no_responders":true')).BeTrue;
@@ -1229,10 +1231,10 @@ end;
 
 procedure TDextNatsProtocolTests.Encode_ShouldBuildUnsubPingPong;
 begin
-  Should(Utf8OfBytes(NatsEncodeUnsub(9, 0))).Be('UNSUB 9' + #13#10);
-  Should(Utf8OfBytes(NatsEncodeUnsub(9, 3))).Be('UNSUB 9 3' + #13#10);
-  Should(Utf8OfBytes(NatsEncodePing)).Be('PING' + #13#10);
-  Should(Utf8OfBytes(NatsEncodePong)).Be('PONG' + #13#10);
+  Should(Utf8OfBytes(NatsControlUnsub(9, 0))).Be('UNSUB 9' + #13#10);
+  Should(Utf8OfBytes(NatsControlUnsub(9, 3))).Be('UNSUB 9 3' + #13#10);
+  Should(Utf8OfBytes(NatsControlPing)).Be('PING' + #13#10);
+  Should(Utf8OfBytes(NatsControlPong)).Be('PONG' + #13#10);
 end;
 
 procedure TDextNatsProtocolTests.Encode_MicroBenchmark_PubAndCachedPing;
@@ -1246,16 +1248,16 @@ var
   opsPerSec: Double;
 begin
   // Cached PING/PONG: same dynamic-array reference (no per-call allocation).
-  ping1 := NatsEncodePing;
-  ping2 := NatsEncodePing;
+  ping1 := NatsControlPing;
+  ping2 := NatsControlPing;
   Should(Pointer(ping1) = Pointer(ping2)).BeTrue;
-  Should(Pointer(NatsEncodePong) = Pointer(NatsEncodePong)).BeTrue;
+  Should(Pointer(NatsControlPong) = Pointer(NatsControlPong)).BeTrue;
 
   payload := BytesOfUtf8('bench-payload');
   sw := TStopwatch.StartNew;
   frame := nil;
   for i := 1 to Iterations do
-    frame := NatsEncodePub('bench.subject', '', payload);
+    frame := NatsV2EncodePub('bench.subject', '', payload);
   sw.Stop;
   ms := sw.ElapsedMilliseconds;
   if ms < 1 then
@@ -5748,7 +5750,7 @@ begin
   sw := TStopwatch.StartNew;
   frame := nil;
   for i := 1 to Iterations do
-    frame := NatsEncodePub('bench.subject', '', payload);
+    frame := NatsV2EncodePub('bench.subject', '', payload);
   sw.Stop;
   ms := sw.ElapsedMilliseconds;
   if ms < 1 then
