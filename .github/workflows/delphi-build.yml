@@ -6,7 +6,7 @@ on:
       config:
         description: Build configuration
         required: true
-        default: Debug
+        default: Release
         type: choice
         options:
           - Debug
@@ -19,32 +19,23 @@ on:
         options:
           - Win32
           - Win64
-      parser_v2:
-        description: Build with DEXT_NATS_PARSER_V2 selector
-        required: true
-        default: false
-        type: boolean
       live_nats:
         description: Start local NATS + JetStream and require live integration tests
         required: true
         default: false
         type: boolean
+      benchmark:
+        description: Include explicit parser/throughput benchmarks
+        required: true
+        default: false
+        type: boolean
 
 jobs:
-  build-test:
+  build-test-both-parsers:
     runs-on: [self-hosted, Windows]
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
-
-      - name: Build with installed RAD Studio
-        shell: powershell
-        run: |
-          $args = @('-Config', '${{ inputs.config }}', '-Platform', '${{ inputs.platform }}')
-          if ('${{ inputs.parser_v2 }}' -eq 'true') { $args += '-ParserV2' }
-          $exe = & .\scripts\build-tests.ps1 @args
-          if (-not $exe) { throw 'Build script did not return the test executable path.' }
-          "DEXT_NATS_TEST_EXE=$exe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Install NATS Server
         if: ${{ inputs.live_nats }}
@@ -59,22 +50,21 @@ jobs:
         shell: powershell
         run: |
           $dataDir = Join-Path $env:RUNNER_TEMP 'dext-nats-js'
+          if (Test-Path $dataDir) { Remove-Item $dataDir -Recurse -Force }
           New-Item -ItemType Directory -Path $dataDir -Force | Out-Null
           $proc = Start-Process -FilePath $env:DEXT_NATS_SERVER_EXE -ArgumentList @('-js', '-sd', $dataDir, '-p', '4222') -PassThru
           "DEXT_NATS_SERVER_PID=$($proc.Id)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           Start-Sleep -Seconds 2
           if ($proc.HasExited) { throw "nats-server exited with code $($proc.ExitCode)" }
 
-      - name: Run tests
+      - name: Build and test Parser V1 + Parser V2 runtimes
         shell: powershell
         run: |
-          if ('${{ inputs.live_nats }}' -eq 'true') {
-            $env:DEXT_NATS_REQUIRE_LIVE = '1'
-          } else {
-            $env:DEXT_NATS_SKIP_LIVE = '1'
-          }
-          & $env:DEXT_NATS_TEST_EXE
-          if ($LASTEXITCODE -ne 0) { throw "Tests failed with exit code $LASTEXITCODE" }
+          $args = @('-Config', '${{ inputs.config }}', '-Platform', '${{ inputs.platform }}')
+          if ('${{ inputs.live_nats }}' -eq 'true') { $args += '-LiveNats' }
+          if ('${{ inputs.benchmark }}' -eq 'true') { $args += '-Benchmark' }
+          & .\scripts\validate-parser-cutover.ps1 @args
+          if ($LASTEXITCODE -ne 0) { throw "Parser cutover validation failed with exit code $LASTEXITCODE" }
 
       - name: Stop NATS Server
         if: ${{ always() && inputs.live_nats }}
