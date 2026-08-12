@@ -19,6 +19,7 @@ jobs:
           set -e
           for f in \
             Source/Dext.Net.Nats.pas \
+            Source/Dext.Net.Nats.ParserRuntime.pas \
             Source/Dext.Net.Nats.Protocol.pas \
             Source/Dext.Net.Nats.Dispatching.pas \
             Source/Internal/Dext.Net.Nats.Internal.Buffer.pas \
@@ -55,9 +56,12 @@ jobs:
           grep -q 'TDextNatsFrameParserV2' Source/Internal/Dext.Net.Nats.Internal.Parser.pas
           grep -q 'TDextNatsSelectedFrameParser' Source/Internal/Dext.Net.Nats.Internal.ParserSelector.pas
           grep -q 'DEXT_NATS_PARSER_V2' Source/Internal/Dext.Net.Nats.Internal.ParserSelector.pas
-          grep -q 'Dext.Net.Nats.Internal.ParserSelector' Source/Dext.Net.Nats.pas
-          grep -q 'FParser: TDextNatsSelectedFrameParser;' Source/Dext.Net.Nats.pas
-          grep -q 'FParser := TDextNatsSelectedFrameParser.Create;' Source/Dext.Net.Nats.pas
+          grep -q 'TDextNatsRuntimeFrameParser' Source/Dext.Net.Nats.ParserRuntime.pas
+          grep -q 'DEXT_NATS_RUNTIME_PARSER' Source/Dext.Net.Nats.ParserRuntime.pas
+          grep -q 'Dext.Net.Nats.ParserRuntime' Source/Dext.Net.Nats.pas
+          ! grep -q 'Dext.Net.Nats.Internal.ParserSelector' Source/Dext.Net.Nats.pas
+          grep -q 'FParser: TDextNatsRuntimeFrameParser;' Source/Dext.Net.Nats.pas
+          grep -q 'FParser := TDextNatsRuntimeFrameParser.Create;' Source/Dext.Net.Nats.pas
           grep -q 'TChannel<T>.CreateBounded' Source/Internal/Dext.Net.Nats.Internal.Dispatcher.pas
           grep -q 'FReadPos' Source/Internal/Dext.Net.Nats.Internal.Buffer.pas
           grep -q 'TDextNatsDispatchedSubscription' Source/Dext.Net.Nats.Dispatching.pas
@@ -91,6 +95,7 @@ jobs:
             Tests/Internal/Dext.Net.Nats.Internal.Tests.pas \
             Tests/Protocol/Dext.Net.Nats.ParserV2.Tests.pas \
             Tests/Protocol/Dext.Net.Nats.ParserSelector.Tests.pas \
+            Tests/Protocol/Dext.Net.Nats.ParserRuntime.Tests.pas \
             Tests/Protocol/Dext.Net.Nats.Protocol.V2.Tests.pas \
             Tests/JetStream/Dext.Net.Nats.JetStream.Json.Tests.pas \
             Tests/JetStream/Dext.Net.Nats.JetStream.Streams.Tests.pas \
@@ -108,6 +113,7 @@ jobs:
             test -f "$f"
           done
           grep -q 'TDextNatsParserSelectorTests' Tests/Dext.Net.Nats.Tests.dpr
+          grep -q 'TDextNatsParserRuntimeTests' Tests/Dext.Net.Nats.Tests.dpr
           grep -q 'TDextNatsJetStreamObjectPagingTests' Tests/Dext.Net.Nats.Tests.dpr
           grep -q 'TDextNatsJetStreamFetchTests' Tests/Dext.Net.Nats.Tests.dpr
           grep -q 'TDextNatsProtocolV2Tests' Tests/Dext.Net.Nats.Tests.dpr
@@ -133,6 +139,8 @@ jobs:
           grep -q 'ParserV2' scripts/build-tests.ps1
           grep -q '/t:Rebuild' scripts/build-tests.ps1
           grep -q 'validate-parser-cutover.ps1' .github/workflows/delphi-build.yml
+          grep -q 'Dext.Net.Nats.ParserRuntime.pas' Tests/Dext.Net.Nats.Tests.dproj
+          grep -q 'Dext.Net.Nats.ParserRuntime.Tests.pas' Tests/Dext.Net.Nats.Tests.dproj
           grep -q 'Dext.Net.Nats.JetStream.Runtime.pas' Tests/Dext.Net.Nats.Tests.dproj
           grep -q 'Dext.Net.Nats.Internal.ParserSelector.pas' Tests/Dext.Net.Nats.Tests.dproj
           grep -q 'Source\\JetStream' Tests/Dext.Net.Nats.Tests.dproj
