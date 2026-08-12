@@ -15,10 +15,6 @@ uses
   Dext.Net.Nats.JetStream.Transport;
 
 type
-  /// <summary>
-  /// Extracted consumer administration implementation. Pull Fetch and push /
-  /// ordered subscription lifecycles remain separate concerns.
-  /// </summary>
   TDextNatsJetStreamConsumers = class
   private
     FTransport: INatsJetStreamApiTransport;
@@ -34,6 +30,7 @@ type
     function DeleteConsumer(const AStreamName,
       AConsumerName: string): Boolean;
     function ListConsumerNames(const AStreamName: string): IList<string>;
+    function ListConsumers(const AStreamName: string): IList<TNatsConsumerInfo>;
   end;
 
 implementation
@@ -45,7 +42,8 @@ uses
   Dext.Net.Nats.JetStream.Json,
   Dext.Net.Nats.JetStream.Codecs,
   Dext.Net.Nats.JetStream.Parsers,
-  Dext.Net.Nats.JetStream.Paging;
+  Dext.Net.Nats.JetStream.Paging,
+  Dext.Net.Nats.JetStream.ObjectPaging;
 
 constructor TDextNatsJetStreamConsumers.Create(
   const ATransport: INatsJetStreamApiTransport);
@@ -132,6 +130,29 @@ begin
     Page := NatsJsParseNamePage(FTransport.Request(
       Format('CONSUMER.NAMES.%s', [AStreamName]),
       NatsJsBuildPagedListRequest(Offset, '')), 'consumers');
+    for I := 0 to High(Page.Items) do
+      Result.Add(Page.Items[I]);
+    if Length(Page.Items) = 0 then
+      Break;
+    Inc(Offset, Length(Page.Items));
+  until Offset >= Page.Total;
+end;
+
+function TDextNatsJetStreamConsumers.ListConsumers(
+  const AStreamName: string): IList<TNatsConsumerInfo>;
+var
+  Offset, I: Integer;
+  Page: TNatsJsConsumerInfoPage;
+begin
+  if AStreamName = '' then
+    raise EDextNatsException.Create('ListConsumers requires a stream name');
+
+  Result := TCollections.CreateList<TNatsConsumerInfo>;
+  Offset := 0;
+  repeat
+    Page := NatsJsParseConsumerInfoPage(FTransport.Request(
+      Format('CONSUMER.LIST.%s', [AStreamName]),
+      NatsJsBuildPagedListRequest(Offset, '')));
     for I := 0 to High(Page.Items) do
       Result.Add(Page.Items[I]);
     if Length(Page.Items) = 0 then
