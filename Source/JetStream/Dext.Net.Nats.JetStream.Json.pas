@@ -31,6 +31,8 @@ type
     function ToUtf8String: string;
   end;
 
+  PDextNatsJsByteWriter = ^TDextNatsJsByteWriter;
+
 /// <summary>Bridge callback consumed by TUtf8JsonWriter.</summary>
 procedure NatsJsUtf8Write(AContext, AData: Pointer; ALength: Integer);
 
