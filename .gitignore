@@ -54,3 +54,6 @@ modules/
 Output/
 *.log
 
+# Downloaded local tooling (restore with scripts/download-nats-server.ps1)
+.tools/*
+!.tools/README.md
