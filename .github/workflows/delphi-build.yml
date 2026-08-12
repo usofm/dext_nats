@@ -1,0 +1,78 @@
+name: Delphi Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      config:
+        description: Build configuration
+        required: true
+        default: Debug
+        type: choice
+        options:
+          - Debug
+          - Release
+      platform:
+        description: Delphi platform
+        required: true
+        default: Win32
+        type: choice
+        options:
+          - Win32
+          - Win64
+      live_nats:
+        description: Start local NATS + JetStream and require live integration tests
+        required: true
+        default: false
+        type: boolean
+
+jobs:
+  build-test:
+    runs-on: [self-hosted, Windows]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build with installed RAD Studio
+        shell: powershell
+        run: |
+          $exe = & .\scripts\build-tests.ps1 -Config '${{ inputs.config }}' -Platform '${{ inputs.platform }}'
+          if (-not $exe) { throw 'Build script did not return the test executable path.' }
+          "DEXT_NATS_TEST_EXE=$exe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Install NATS Server
+        if: ${{ inputs.live_nats }}
+        shell: powershell
+        run: |
+          $server = & .\scripts\download-nats-server.ps1
+          if (-not $server) { throw 'NATS server download script returned no executable path.' }
+          "DEXT_NATS_SERVER_EXE=$server" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Start NATS JetStream
+        if: ${{ inputs.live_nats }}
+        shell: powershell
+        run: |
+          $dataDir = Join-Path $env:RUNNER_TEMP 'dext-nats-js'
+          New-Item -ItemType Directory -Path $dataDir -Force | Out-Null
+          $proc = Start-Process -FilePath $env:DEXT_NATS_SERVER_EXE -ArgumentList @('-js', '-sd', $dataDir, '-p', '4222') -PassThru
+          "DEXT_NATS_SERVER_PID=$($proc.Id)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Start-Sleep -Seconds 2
+          if ($proc.HasExited) { throw "nats-server exited with code $($proc.ExitCode)" }
+
+      - name: Run tests
+        shell: powershell
+        run: |
+          if ('${{ inputs.live_nats }}' -eq 'true') {
+            $env:DEXT_NATS_REQUIRE_LIVE = '1'
+          } else {
+            $env:DEXT_NATS_SKIP_LIVE = '1'
+          }
+          & $env:DEXT_NATS_TEST_EXE
+          if ($LASTEXITCODE -ne 0) { throw "Tests failed with exit code $LASTEXITCODE" }
+
+      - name: Stop NATS Server
+        if: ${{ always() && inputs.live_nats }}
+        shell: powershell
+        run: |
+          if ($env:DEXT_NATS_SERVER_PID) {
+            Stop-Process -Id ([int]$env:DEXT_NATS_SERVER_PID) -Force -ErrorAction SilentlyContinue
+          }
