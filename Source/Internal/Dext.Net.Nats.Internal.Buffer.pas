@@ -25,6 +25,7 @@ type
     FBuffer: TBytes;
     FReadPos: Integer;
     FWritePos: Integer;
+    FCompactionCount: Int64;
     procedure EnsureWritable(ACount: Integer);
     procedure Compact;
   public
@@ -42,6 +43,9 @@ type
     function IndexOfCrLf(AStartOffset: Integer = 0): Integer;
     procedure CopyTo(AOffset: Integer; var ADest: TBytes; ACount: Integer);
     function Utf8String(AOffset, ACount: Integer): string;
+
+    /// <summary>Number of physical unread-tail compactions since construction.</summary>
+    property CompactionCount: Int64 read FCompactionCount;
   end;
 
 implementation
@@ -83,7 +87,10 @@ var
 begin
   Count := Available;
   if (Count > 0) and (FReadPos > 0) then
+  begin
     Move(FBuffer[FReadPos], FBuffer[0], Count);
+    Inc(FCompactionCount);
+  end;
   FReadPos := 0;
   FWritePos := Count;
 end;
