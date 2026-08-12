@@ -101,6 +101,7 @@
         <DCCReference Include="..\Source\Dext.Net.Nats.Dispatching.pas"/>
         <DCCReference Include="..\Source\Dext.Net.Nats.JetStream.pas"/>
         <DCCReference Include="..\Source\JetStream\Dext.Net.Nats.JetStream.Json.pas"/>
+        <DCCReference Include="..\Source\JetStream\Dext.Net.Nats.JetStream.Codecs.pas"/>
         <DCCReference Include="..\Source\Dext.Net.Nats.KeyValue.pas"/>
         <DCCReference Include="..\Source\Dext.Net.Nats.ObjectStore.pas"/>
         <DCCReference Include="..\Source\Dext.Net.Nats.Services.pas"/>
