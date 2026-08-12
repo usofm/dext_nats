@@ -32,6 +32,7 @@ uses
   Dext.Net.Nats.Protocol in '..\Source\Dext.Net.Nats.Protocol.pas',
   Dext.Net.Nats.NKeys in '..\Source\Dext.Net.Nats.NKeys.pas',
   Dext.Net.Nats in '..\Source\Dext.Net.Nats.pas',
+  Dext.Net.Nats.Dispatching in '..\Source\Dext.Net.Nats.Dispatching.pas',
   Dext.Net.Nats.JetStream in '..\Source\Dext.Net.Nats.JetStream.pas',
   Dext.Net.Nats.KeyValue in '..\Source\Dext.Net.Nats.KeyValue.pas',
   Dext.Net.Nats.ObjectStore in '..\Source\Dext.Net.Nats.ObjectStore.pas',
@@ -42,7 +43,8 @@ uses
   Dext.Net.Nats.Internal.Dispatcher in '..\Source\Internal\Dext.Net.Nats.Internal.Dispatcher.pas',
   Dext.Net.Nats.Tests in 'Dext.Net.Nats.Tests.pas',
   Dext.Net.Nats.Drain.Tests in 'Dext.Net.Nats.Drain.Tests.pas',
-  Dext.Net.Nats.Internal.Tests in 'Dext.Net.Nats.Internal.Tests.pas';
+  Dext.Net.Nats.Internal.Tests in 'Dext.Net.Nats.Internal.Tests.pas',
+  Dext.Net.Nats.Dispatching.Tests in 'Dext.Net.Nats.Dispatching.Tests.pas';
 
 var
   Config: TTestConfigurator;
@@ -86,7 +88,8 @@ begin
       TDextNatsBenchmarkTests,
       TDextNatsDiTests,
       TDextNatsObservabilityTests,
-      TDextNatsInternalTests
+      TDextNatsInternalTests,
+      TDextNatsDispatchingTests
     ]));
   except
     on E: Exception do
