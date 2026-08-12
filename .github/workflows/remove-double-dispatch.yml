@@ -17,7 +17,7 @@ jobs:
           ref: perf/parser-v2-cutover
           fetch-depth: 0
 
-      - name: Remove obsolete opt-in dispatch adapter
+      - name: Remove obsolete opt-in dispatch adapter from Delphi graph
         shell: python
         run: |
           from pathlib import Path
@@ -45,24 +45,6 @@ jobs:
               s = s.replace(frag, '', 1)
           dproj.write_text(s, encoding='utf-8-sig')
 
-          ci = Path('.github/workflows/ci.yml')
-          s = ci.read_text(encoding='utf-8-sig')
-          for frag in [
-              '            Source/Dext.Net.Nats.Dispatching.pas \\\n',
-              "          grep -q 'TDextNatsDispatchedSubscription' Source/Dext.Net.Nats.Dispatching.pas\n",
-              '            Tests/Core/Dext.Net.Nats.Dispatching.Tests.pas \\\n',
-          ]:
-              if frag not in s:
-                  raise SystemExit(f'Missing CI dispatching fragment: {frag!r}')
-              s = s.replace(frag, '', 1)
-
-          marker = "          grep -q 'FParser := TDextNatsRuntimeFrameParser.Create;' Source/Dext.Net.Nats.pas\n"
-          extra = "          grep -q 'FHandlerDispatcher: TDextNatsBoundedDispatcher<TNatsHandlerDispatchItem>' Source/Dext.Net.Nats.pas\n          grep -q 'HandlerWorkerCount := 1' Source/Dext.Net.Nats.pas\n          grep -q 'HandlerQueueCapacity := 8192' Source/Dext.Net.Nats.pas\n          grep -q 'FHandlerDispatcher.Dispatch(item)' Source/Dext.Net.Nats.pas\n          grep -q 'InlineDelivery: Boolean' Source/Dext.Net.Nats.pas\n          grep -q \"end, '', True);\" Source/Dext.Net.Nats.pas\n          grep -q 'FChannel.Close' Source/Internal/Dext.Net.Nats.Internal.Dispatcher.pas\n          grep -q 'Dispatcher_Stop_ShouldDrainAcceptedItems' Tests/Internal/Dext.Net.Nats.Internal.Tests.pas\n"
-          if marker not in s:
-              raise SystemExit('CI insertion marker missing')
-          s = s.replace(marker, marker + extra, 1)
-          ci.write_text(s, encoding='utf-8-sig')
-
       - name: Remove adapter files
         run: |
           git rm Source/Dext.Net.Nats.Dispatching.pas
@@ -81,6 +63,6 @@ jobs:
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add .github/workflows/ci.yml Tests/Dext.Net.Nats.Tests.dpr Tests/Dext.Net.Nats.Tests.dproj
+          git add Tests/Dext.Net.Nats.Tests.dpr Tests/Dext.Net.Nats.Tests.dproj
           git commit -m 'Remove obsolete double-dispatch subscription adapter'
           git push origin HEAD:perf/parser-v2-cutover
