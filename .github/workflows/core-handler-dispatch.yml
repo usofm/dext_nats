@@ -17,7 +17,7 @@ jobs:
           ref: perf/parser-v2-cutover
           fetch-depth: 0
 
-      - name: Move subscription handlers off RecvLoop
+      - name: Keep only synchronous request completion inline
         shell: python
         run: |
           from pathlib import Path
@@ -26,97 +26,76 @@ jobs:
           p = Path('Source/Dext.Net.Nats.pas')
           s = p.read_text(encoding='utf-8-sig')
 
-          old = '  Dext.Net.Nats.NKeys,\n  Dext.Net.Nats.ParserRuntime;'
-          new = '  Dext.Net.Nats.NKeys,\n  Dext.Net.Nats.ParserRuntime,\n  Dext.Net.Nats.Internal.Dispatcher;'
+          old = '''    Handler: TNatsMsgHandler;\n    /// <summary>Absolute message count after which the subscription auto-cancels; -1 means unlimited.</summary>\n    MaxMsgs: Integer;\n    Received: Integer;\n    constructor Create(ASid: Integer; const ASubject, AQueue: string; AHandler: TNatsMsgHandler);'''
+          new = '''    Handler: TNatsMsgHandler;\n    /// <summary>True only for tiny internal synchronous-request completion handlers.</summary>\n    InlineDelivery: Boolean;\n    /// <summary>Absolute message count after which the subscription auto-cancels; -1 means unlimited.</summary>\n    MaxMsgs: Integer;\n    Received: Integer;\n    constructor Create(ASid: Integer; const ASubject, AQueue: string; AHandler: TNatsMsgHandler;\n      AInlineDelivery: Boolean = False);'''
           if old not in s:
-              raise SystemExit('Interface uses anchor missing')
+              raise SystemExit('Subscription declaration anchor missing')
           s = s.replace(old, new, 1)
 
-          old = '  TNatsRequestTimeoutHandler = reference to procedure;\n\n  /// <summary>Process-local counters'
-          new = '''  TNatsRequestTimeoutHandler = reference to procedure;\n\n  /// <summary>Internal work item queued from RecvLoop to subscription workers.</summary>\n  TNatsHandlerDispatchItem = record\n    Handler: TNatsMsgHandler;\n    Msg: TNatsMsg;\n  end;\n\n  /// <summary>Process-local counters'''
+          old = '''    function GetMetrics: TNatsClientMetrics;\n    function NextSid: Integer;'''
+          new = '''    function GetMetrics: TNatsClientMetrics;\n    function NextSid: Integer;\n    function SubscribeCore(const ASubject: string; const AHandler: TNatsMsgHandler;\n      const AQueue: string; AInlineDelivery: Boolean): Integer;'''
           if old not in s:
-              raise SystemExit('Handler type anchor missing')
+              raise SystemExit('SubscribeCore declaration anchor missing')
           s = s.replace(old, new, 1)
 
-          old = '    /// <summary>Upper bound, in bytes, for outgoing data buffered while a reconnect is in progress.</summary>\n    MaxPendingBufferBytes: Int64;\n'
-          new = '''    /// <summary>Upper bound, in bytes, for outgoing data buffered while a reconnect is in progress.</summary>\n    MaxPendingBufferBytes: Int64;\n    /// <summary>Subscription callback worker count. Default 1 preserves global delivery order.</summary>\n    HandlerWorkerCount: Integer;\n    /// <summary>Bounded callback queue capacity. When full, RecvLoop applies backpressure instead of dropping messages.</summary>\n    HandlerQueueCapacity: Integer;\n'''
+          old = '''constructor TDextNatsSubscription.Create(ASid: Integer; const ASubject, AQueue: string; AHandler: TNatsMsgHandler);\nbegin\n  inherited Create;\n  Sid := ASid;\n  Subject := ASubject;\n  Queue := AQueue;\n  Handler := AHandler;\n  MaxMsgs := -1;\n  Received := 0;\nend;'''
+          new = '''constructor TDextNatsSubscription.Create(ASid: Integer; const ASubject, AQueue: string;\n  AHandler: TNatsMsgHandler; AInlineDelivery: Boolean);\nbegin\n  inherited Create;\n  Sid := ASid;\n  Subject := ASubject;\n  Queue := AQueue;\n  Handler := AHandler;\n  InlineDelivery := AInlineDelivery;\n  MaxMsgs := -1;\n  Received := 0;\nend;'''
           if old not in s:
-              raise SystemExit('Options field anchor missing')
+              raise SystemExit('Subscription constructor anchor missing')
           s = s.replace(old, new, 1)
 
-          s = s.replace(
-              '  ///   NATS client. Thread-safe: Publish/Subscribe/Request/Flush may be called\n  ///   from any thread while message handlers run on an internal receive thread.\n',
-              '  ///   NATS client. Thread-safe: Publish/Subscribe/Request/Flush may be called\n  ///   from any thread. RecvLoop parses frames and enqueues subscription callbacks\n  ///   onto a bounded Dext-channel worker dispatcher.\n',
-              1)
-
-          old = '    FParser: TDextNatsRuntimeFrameParser;\n    FOptions: TDextNatsOptions;'
-          new = '    FParser: TDextNatsRuntimeFrameParser;\n    FHandlerDispatcher: TDextNatsBoundedDispatcher<TNatsHandlerDispatchItem>;\n    FOptions: TDextNatsOptions;'
-          if old not in s:
-              raise SystemExit('Client field anchor missing')
-          s = s.replace(old, new, 1)
-
-          s = s.replace(
-              '    /// <summary>Handlers currently executing on the receive thread; Drain waits for this to reach 0.</summary>\n    FInFlightHandlers: Integer;',
-              '    /// <summary>Handlers queued or executing on callback workers; Drain waits for this to reach 0.</summary>\n    FInFlightHandlers: Integer;',
-              1)
-
-          old = '    procedure HandleFrame(const AFrame: TNatsFrame);\n    procedure HandleMsgFrame(const AFrame: TNatsFrame);'
-          new = '    procedure HandleFrame(const AFrame: TNatsFrame);\n    procedure HandleMsgFrame(const AFrame: TNatsFrame);\n    procedure ExecuteHandlerDispatch(const AItem: TNatsHandlerDispatchItem);\n    procedure HandleDispatcherError(const AError: Exception);'
-          if old not in s:
-              raise SystemExit('Client method anchor missing')
-          s = s.replace(old, new, 1)
-
-          old = '  Result.MaxPendingBufferBytes := 8 * 1024 * 1024;\n  Result.EnableMetrics := False;'
-          new = '  Result.MaxPendingBufferBytes := 8 * 1024 * 1024;\n  Result.HandlerWorkerCount := 1;\n  Result.HandlerQueueCapacity := 8192;\n  Result.EnableMetrics := False;'
-          if old not in s:
-              raise SystemExit('Default options anchor missing')
-          s = s.replace(old, new, 1)
-
-          old = '''  FSubscriptions := TCollections.CreateDictionary<Integer, TDextNatsSubscription>(True);\n  FPongWaiters := TCollections.CreateQueue<TEvent>;\n  FPendingOutbox := TCollections.CreateQueue<TBytes>;\nend;'''
-          new = '''  FSubscriptions := TCollections.CreateDictionary<Integer, TDextNatsSubscription>(True);\n  FPongWaiters := TCollections.CreateQueue<TEvent>;\n  FPendingOutbox := TCollections.CreateQueue<TBytes>;\n\n  if FOptions.HandlerWorkerCount <= 0 then\n    raise EArgumentOutOfRangeException.Create('HandlerWorkerCount must be > 0');\n  if FOptions.HandlerQueueCapacity <= 0 then\n    raise EArgumentOutOfRangeException.Create('HandlerQueueCapacity must be > 0');\n  FHandlerDispatcher := TDextNatsBoundedDispatcher<TNatsHandlerDispatchItem>.Create(\n    FOptions.HandlerWorkerCount, FOptions.HandlerQueueCapacity,\n    ExecuteHandlerDispatch, dopBlock);\n  FHandlerDispatcher.OnError := HandleDispatcherError;\nend;'''
-          if old not in s:
-              raise SystemExit('Constructor queue anchor missing')
-          s = s.replace(old, new, 1)
-
-          old = '''  Disconnect;\n  ResetTls;\n  FTlsIoLock.Free;'''
-          new = '''  Disconnect;\n  FreeAndNil(FHandlerDispatcher);\n  ResetTls;\n  FTlsIoLock.Free;'''
-          if old not in s:
-              raise SystemExit('Destructor anchor missing')
-          s = s.replace(old, new, 1)
-
-          # Do not reset the count on reconnect/manual reconnect: queued callbacks from a
-          # previous socket generation still count as in-flight until completed.
-          s = s.replace('  TInterlocked.Exchange(FInFlightHandlers, 0);\n\n  ResetTls;', '  ResetTls;', 1)
-
-          pattern = r"procedure TDextNatsClient\.HandleMsgFrame\(const AFrame: TNatsFrame\);\n.*?\nend;\n\nprocedure TDextNatsClient\.DispatchOutgoing"
-          replacement = '''procedure TDextNatsClient.HandleMsgFrame(const AFrame: TNatsFrame);\nvar\n  sub: TDextNatsSubscription;\n  msg: TNatsMsg;\n  item: TNatsHandlerDispatchItem;\n  found, removeAfter: Boolean;\n  handler: TNatsMsgHandler;\nbegin\n  found := False;\n  removeAfter := False;\n  handler := nil;\n\n  FLock.Enter;\n  try\n    found := FSubscriptions.TryGetValue(AFrame.Sid, sub);\n    if found then\n    begin\n      Inc(sub.Received);\n      handler := sub.Handler;\n      if (sub.MaxMsgs >= 0) and (sub.Received >= sub.MaxMsgs) then\n        removeAfter := True;\n    end;\n  finally\n    FLock.Leave;\n  end;\n\n  if not found then\n    Exit;\n\n  msg.Subject := AFrame.Subject;\n  msg.ReplyTo := AFrame.ReplyTo;\n  msg.Payload := AFrame.Payload;\n  msg.Headers := AFrame.Headers;\n  msg.Sid := AFrame.Sid;\n  msg.StatusCode := AFrame.StatusCode;\n\n  NoteMetric(NATS_METRIC_MSGS_RECEIVED, FMetricMessagesReceived);\n\n  if Assigned(handler) then\n  begin\n    item.Handler := handler;\n    item.Msg := msg;\n    TInterlocked.Increment(FInFlightHandlers);\n    try\n      FHandlerDispatcher.Dispatch(item);\n    except\n      TInterlocked.Decrement(FInFlightHandlers);\n      raise;\n    end;\n  end;\n\n  // Server-side MaxMsgs semantics are based on messages received, not callback\n  // completion, so local interest can be removed immediately after enqueue.\n  if removeAfter then\n  begin\n    FLock.Enter;\n    try\n      FSubscriptions.Remove(AFrame.Sid);\n    finally\n      FLock.Leave;\n    end;\n  end;\nend;\n\nprocedure TDextNatsClient.ExecuteHandlerDispatch(const AItem: TNatsHandlerDispatchItem);\nbegin\n  try\n    try\n      AItem.Handler(AItem.Msg);\n    except\n      on E: Exception do\n        FireError('Unhandled exception in NATS message handler for subject "' +\n          AItem.Msg.Subject + '": ' + E.Message);\n    end;\n  finally\n    TInterlocked.Decrement(FInFlightHandlers);\n  end;\nend;\n\nprocedure TDextNatsClient.HandleDispatcherError(const AError: Exception);\nbegin\n  FireError('NATS handler dispatcher error: ' + AError.Message);\nend;\n\nprocedure TDextNatsClient.DispatchOutgoing'''
+          # Replace public Subscribe body with a tiny delegation and introduce SubscribeCore.
+          pattern = r"function TDextNatsClient\.Subscribe\(const ASubject: string; const AHandler: TNatsMsgHandler;\n  const AQueue: string\): Integer;\nvar\n  sub: TDextNatsSubscription;\n  sendNow: Boolean;\nbegin\n.*?\n  Result := sub\.Sid;\nend;"
+          replacement = '''function TDextNatsClient.Subscribe(const ASubject: string; const AHandler: TNatsMsgHandler;\n  const AQueue: string): Integer;\nbegin\n  Result := SubscribeCore(ASubject, AHandler, AQueue, False);\nend;\n\nfunction TDextNatsClient.SubscribeCore(const ASubject: string; const AHandler: TNatsMsgHandler;\n  const AQueue: string; AInlineDelivery: Boolean): Integer;\nvar\n  sub: TDextNatsSubscription;\n  sendNow: Boolean;\nbegin\n  if ASubject = '' then\n    raise EDextNatsException.Create('Subscribe requires a non-empty subject');\n  if not Assigned(AHandler) then\n    raise EDextNatsException.Create('Subscribe requires a message handler');\n\n  sub := TDextNatsSubscription.Create(NextSid, ASubject, AQueue, AHandler, AInlineDelivery);\n\n  FLock.Enter;\n  try\n    if FDraining or FClosing then\n    begin\n      sub.Free;\n      raise EDextNatsException.Create('Subscribe rejected: NATS client is draining or closing');\n    end;\n    FSubscriptions.Add(sub.Sid, sub);\n    sendNow := FConnected;\n  finally\n    FLock.Leave;\n  end;\n\n  if sendNow then\n    SendRaw(NatsControlSub(ASubject, AQueue, sub.Sid));\n\n  Result := sub.Sid;\nend;'''
           s, count = re.subn(pattern, replacement, s, count=1, flags=re.S)
           if count != 1:
-              raise SystemExit(f'Expected one HandleMsgFrame block, replaced {count}')
+              raise SystemExit(f'Expected one Subscribe body, replaced {count}')
 
+          # Capture inline flag while the subscription object is protected by the map lock.
           s = s.replace(
-              '/// <summary>Non-blocking request/reply: AOnReply fires on the receive thread when a reply arrives;',
-              '/// <summary>Non-blocking request/reply: AOnReply fires on a callback worker when a reply arrives;',
+              '  found, removeAfter: Boolean;\n  handler: TNatsMsgHandler;',
+              '  found, removeAfter, inlineDelivery: Boolean;\n  handler: TNatsMsgHandler;',
               1)
+          s = s.replace(
+              '  removeAfter := False;\n  handler := nil;',
+              '  removeAfter := False;\n  inlineDelivery := False;\n  handler := nil;',
+              1)
+          s = s.replace(
+              '      Inc(sub.Received);\n      handler := sub.Handler;',
+              '      Inc(sub.Received);\n      handler := sub.Handler;\n      inlineDelivery := sub.InlineDelivery;',
+              1)
+
+          old = '''    TInterlocked.Increment(FInFlightHandlers);\n    try\n      FHandlerDispatcher.Dispatch(item);\n    except\n      TInterlocked.Decrement(FInFlightHandlers);\n      raise;\n    end;'''
+          new = '''    TInterlocked.Increment(FInFlightHandlers);\n    try\n      if inlineDelivery then\n        ExecuteHandlerDispatch(item)\n      else\n        FHandlerDispatcher.Dispatch(item);\n    except\n      // ExecuteHandlerDispatch owns the decrement once it starts. Dispatch only\n      // raises before ownership is transferred to a worker.\n      if not inlineDelivery then\n        TInterlocked.Decrement(FInFlightHandlers);\n      raise;\n    end;'''
+          if old not in s:
+              raise SystemExit('HandleMsgFrame dispatch anchor missing')
+          s = s.replace(old, new, 1)
+
+          # Synchronous Request waits on an event. Its tiny completion callback must not
+          # sit behind the same worker that may be blocked inside Request().
+          old = '''    sid := Subscribe(inbox,\n      procedure(const AMsg: TNatsMsg)\n      begin\n        // Only touch `reply`/`evt` after winning the gate, so that once the timeout path below\n        // claims it first, the handler is guaranteed never to touch either afterwards - this is\n        // what makes it safe for the timeout path to free `evt` right after claiming the gate.\n        if gate.TryClaim then\n        begin\n          reply := AMsg;\n          evt.SetEvent;\n        end;\n      end);'''
+          new = '''    sid := SubscribeCore(inbox,\n      procedure(const AMsg: TNatsMsg)\n      begin\n        // Internal completion only: signal the synchronous waiter immediately on\n        // RecvLoop so Request() remains safe even when called from the sole callback worker.\n        if gate.TryClaim then\n        begin\n          reply := AMsg;\n          evt.SetEvent;\n        end;\n      end, '', True);'''
+          if old not in s:
+              raise SystemExit('Synchronous Request subscription anchor missing')
+          s = s.replace(old, new, 1)
 
           p.write_text(s, encoding='utf-8-sig')
 
-      - name: Enforce receive-thread separation
+      - name: Enforce nested Request safety
         run: |
-          grep -q 'FHandlerDispatcher: TDextNatsBoundedDispatcher<TNatsHandlerDispatchItem>' Source/Dext.Net.Nats.pas
-          grep -q 'HandlerWorkerCount := 1' Source/Dext.Net.Nats.pas
-          grep -q 'HandlerQueueCapacity := 8192' Source/Dext.Net.Nats.pas
+          grep -q 'InlineDelivery: Boolean' Source/Dext.Net.Nats.pas
+          grep -q 'Result := SubscribeCore(ASubject, AHandler, AQueue, False)' Source/Dext.Net.Nats.pas
+          grep -q "end, '', True);" Source/Dext.Net.Nats.pas
+          grep -q 'if inlineDelivery then' Source/Dext.Net.Nats.pas
+          grep -q 'ExecuteHandlerDispatch(item)' Source/Dext.Net.Nats.pas
           grep -q 'FHandlerDispatcher.Dispatch(item)' Source/Dext.Net.Nats.pas
-          grep -q 'procedure TDextNatsClient.ExecuteHandlerDispatch' Source/Dext.Net.Nats.pas
-          grep -q 'FreeAndNil(FHandlerDispatcher)' Source/Dext.Net.Nats.pas
           python - <<'PY'
           from pathlib import Path
           s = Path('Source/Dext.Net.Nats.pas').read_text(encoding='utf-8-sig')
-          a = s.index('procedure TDextNatsClient.HandleMsgFrame')
-          b = s.index('procedure TDextNatsClient.ExecuteHandlerDispatch', a)
-          block = s[a:b]
-          assert 'handler(msg);' not in block
-          assert 'FHandlerDispatcher.Dispatch(item)' in block
+          req = s[s.index('function TDextNatsClient.RequestWithHeaders'):s.index('procedure TDextNatsClient.RequestAsync', s.index('function TDextNatsClient.RequestWithHeaders'))]
+          assert 'SubscribeCore(inbox' in req and "end, '', True);" in req
+          pub = s[s.index('function TDextNatsClient.Subscribe('):s.index('function TDextNatsClient.SubscribeCore', s.index('function TDextNatsClient.Subscribe('))]
+          assert 'False' in pub
           PY
 
       - name: Commit
@@ -124,5 +103,5 @@ jobs:
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add Source/Dext.Net.Nats.pas
-          git commit -m 'Move subscription callbacks off RecvLoop'
+          git commit -m 'Keep synchronous request completion off callback queue'
           git push origin HEAD:perf/parser-v2-cutover
