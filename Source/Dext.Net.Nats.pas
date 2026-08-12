@@ -250,9 +250,11 @@ type
     function GetSubscriptionCount: Integer;
     function GetMetrics: TNatsClientMetrics;
     function NextSid: Integer;
+  protected
+    /// <summary>Internal subscription seam for protocol extensions that must complete synchronously.</summary>
     function SubscribeCore(const ASubject: string; const AHandler: TNatsMsgHandler;
       const AQueue: string; AInlineDelivery: Boolean): Integer;
-
+  private
     procedure RecvLoop;
     procedure PingLoop;
     procedure InterruptibleSleep(AMilliseconds: Integer);
