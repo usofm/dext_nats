@@ -3,7 +3,7 @@ unit Dext.Net.Nats.KeyValue.Subjects;
 interface
 
 uses
-  Dext.Net.Nats,
+  Dext.Net.Nats.Protocol,
   Dext.Net.Nats.KeyValue;
 
 function NatsKvStreamName(const ABucket: string): string;
