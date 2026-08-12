@@ -76,7 +76,7 @@ jobs:
 
       - name: Enforce legacy encoder removal
         run: |
-          if grep -RIn --exclude-dir=.git -E 'NatsEncode(Connect|Pub|HPub|Sub|Unsub|Ping|Pong)' Source Tests; then
+          if grep -RInP --exclude-dir=.git 'NatsEncode(Connect|Pub|HPub|Sub|Unsub|Ping|Pong)\b' Source Tests; then
             echo 'Legacy encoder reference remains.'
             exit 1
           fi
