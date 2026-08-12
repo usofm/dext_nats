@@ -78,7 +78,7 @@ Status: **implemented on the V2 refactor branch**.
 
 - `TDextNatsReadBuffer`: read/write cursor buffer; no per-frame tail shift.
 - `TDextNatsBoundedDispatcher<T>`: bounded Dext Channel worker pool with explicit backpressure.
-- Dedicated tests in `Dext.Net.Nats.Internal.Tests.pas`.
+- Dedicated tests under `Tests/Internal/`.
 - `CompactionCount` instrumentation proves when a physical unread-tail move actually occurs.
 - Vendored NATS server archive removed; reproducible download script added.
 
@@ -88,7 +88,7 @@ Status: **parity implementation ready; runtime cut-over pending Delphi compile/t
 
 `TDextNatsFrameParserV2` in `Dext.Net.Nats.Internal.Parser.pas` uses `TDextNatsReadBuffer` and returns the same owned `TNatsFrame` contract as the current parser.
 
-Parity coverage is isolated in `Tests/Dext.Net.Nats.ParserV2.Tests.pas` and compares V1/V2 behavior for:
+Parity coverage is isolated in `Tests/Protocol/Dext.Net.Nats.ParserV2.Tests.pas` and compares V1/V2 behavior for:
 
 - PING/PONG/+OK/-ERR/INFO control frames;
 - MSG with and without fragmentation;
@@ -97,7 +97,7 @@ Parity coverage is isolated in `Tests/Dext.Net.Nats.ParserV2.Tests.pas` and comp
 - Clear after an incomplete frame;
 - max-frame rejection.
 
-`Tests/Dext.Net.Nats.ParserV2.Benchmarks.pas` provides an explicit V1-vs-V2 throughput benchmark and a non-explicit correctness/performance-shape test asserting that consuming many pre-buffered frames performs zero physical compactions.
+`Tests/Benchmarks/Dext.Net.Nats.ParserV2.Benchmarks.pas` provides an explicit V1-vs-V2 throughput benchmark and a non-explicit correctness/performance-shape test asserting that consuming many pre-buffered frames performs zero physical compactions.
 
 Acceptance criteria before runtime cut-over:
 
@@ -124,6 +124,8 @@ The bounded mode exposes capacity/worker settings and deterministic full-queue b
 
 ## Phase 4 — split large implementation units
 
+Status: **next after the parser runtime gate**.
+
 Decompose JetStream, KeyValue, ObjectStore, Services, and the protocol implementation behind stable public facades.
 
 The first candidates are:
@@ -138,26 +140,26 @@ No public unit rename is allowed during this phase.
 
 ## Phase 5 — split tests by feature
 
-The current mega test unit is intentionally treated as technical debt. New V2 tests already use dedicated units; existing fixtures will be migrated feature-by-feature.
+Status: **in progress**.
 
-Target layout:
+Focused tests are now organized as:
 
 ```text
 Tests/
-  Protocol/
   Core/
-  JetStream/
-  KeyValue/
-  ObjectStore/
-  Services/
-  Security/
-  DI/
-  Observability/
-  Stress/
+    Dext.Net.Nats.Drain.Tests.pas
+    Dext.Net.Nats.Dispatching.Tests.pas
+  Internal/
+    Dext.Net.Nats.Internal.Tests.pas
+  Protocol/
+    Dext.Net.Nats.ParserV2.Tests.pas
   Benchmarks/
+    Dext.Net.Nats.ParserV2.Benchmarks.pas
 ```
 
-The test runner remains a single Dext.Testing executable while fixture units become small and feature-oriented.
+`Tests/README.md` defines the complete target layout and migration rule. The historical `Dext.Net.Nats.Tests.pas` mega-unit remains temporary technical debt; new tests must not be added to it. Existing fixtures will move out feature-by-feature when touched.
+
+The root Dext.Testing runner remains the single composition point and explicitly references the feature-folder paths.
 
 ## Phase 6 — advanced performance API
 
