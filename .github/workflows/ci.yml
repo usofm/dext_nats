@@ -29,8 +29,10 @@ jobs:
           test -f Source/Dext.Net.Nats.HealthChecks.pas
           test -f Source/Internal/Dext.Net.Nats.Internal.Buffer.pas
           test -f Source/Internal/Dext.Net.Nats.Internal.Dispatcher.pas
+          test -f Source/Internal/Dext.Net.Nats.Internal.Parser.pas
           test -f Tests/Dext.Net.Nats.Internal.Tests.pas
           test -f Tests/Dext.Net.Nats.Dispatching.Tests.pas
+          test -f Tests/Dext.Net.Nats.ParserV2.Tests.pas
           test -f Tests/Dext.Net.Nats.Tests.dproj
           test -f Dext.Nats.groupproj
           test -f CHANGELOG.md
@@ -48,9 +50,11 @@ jobs:
           grep -q 'GetRevision' Source/Dext.Net.Nats.KeyValue.pas
           grep -q 'TChannel<T>.CreateBounded' Source/Internal/Dext.Net.Nats.Internal.Dispatcher.pas
           grep -q 'FReadPos' Source/Internal/Dext.Net.Nats.Internal.Buffer.pas
+          grep -q 'TDextNatsFrameParserV2' Source/Internal/Dext.Net.Nats.Internal.Parser.pas
           grep -q 'TDextNatsDispatchedSubscription' Source/Dext.Net.Nats.Dispatching.pas
           grep -q 'TDextNatsInternalTests' Tests/Dext.Net.Nats.Tests.dpr
           grep -q 'TDextNatsDispatchingTests' Tests/Dext.Net.Nats.Tests.dpr
+          grep -q 'TDextNatsParserV2Tests' Tests/Dext.Net.Nats.Tests.dpr
 
       - name: Repository hygiene
         run: |
