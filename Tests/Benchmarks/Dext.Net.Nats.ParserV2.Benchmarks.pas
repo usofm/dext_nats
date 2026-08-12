@@ -1,8 +1,8 @@
-{***************************************************************************}
+﻿{***************************************************************************}
 {                                                                           }
 {           Dext.Nats                                                       }
 {                                                                           }
-{           Parser V1/V2 benchmark harness                                  }
+{           Parser Baseline/V2 benchmark harness                                  }
 {                                                                           }
 {***************************************************************************}
 unit Dext.Net.Nats.ParserV2.Benchmarks;
@@ -68,7 +68,7 @@ procedure TDextNatsParserV2BenchmarkTests.V1VsV2_Throughput_ShouldReportFramesPe
 const
   FRAME_COUNT = 20000;
 var
-  V1: TDextNatsFrameParser;
+  Baseline: TDextNatsFrameParserV2;
   V2: TDextNatsFrameParserV2;
   Wire: TBytes;
   Frame: TNatsFrame;
@@ -79,18 +79,18 @@ var
 begin
   Wire := BuildPingBatch(FRAME_COUNT);
 
-  V1 := TDextNatsFrameParser.Create;
+  Baseline := TDextNatsFrameParserV2.Create;
   try
-    V1.Append(Wire, Length(Wire));
+    Baseline.Append(Wire, Length(Wire));
     Count := 0;
     Sw := TStopwatch.StartNew;
-    while V1.TryReadFrame(Frame) do
+    while Baseline.TryReadFrame(Frame) do
       Inc(Count);
     Sw.Stop;
     V1Ms := Sw.ElapsedMilliseconds;
     Should(Count).Be(FRAME_COUNT);
   finally
-    V1.Free;
+    Baseline.Free;
   end;
 
   V2 := TDextNatsFrameParserV2.Create;
@@ -113,9 +113,9 @@ begin
   V1Rate := FRAME_COUNT * 1000.0 / V1Ms;
   V2Rate := FRAME_COUNT * 1000.0 / V2Ms;
 
-  WriteLn(Format('Parser V1: %.0f frames/sec (%d ms)', [V1Rate, V1Ms]));
+  WriteLn(Format('Parser Baseline: %.0f frames/sec (%d ms)', [V1Rate, V1Ms]));
   WriteLn(Format('Parser V2: %.0f frames/sec (%d ms)', [V2Rate, V2Ms]));
-  WriteLn(Format('Parser V2/V1 ratio: %.2fx', [V2Rate / V1Rate]));
+  WriteLn(Format('Parser V2/Baseline ratio: %.2fx', [V2Rate / V1Rate]));
 end;
 
 end.

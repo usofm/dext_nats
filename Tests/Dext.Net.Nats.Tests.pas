@@ -42,6 +42,7 @@ uses
   Dext.Telemetry.Metrics,
   Dext.Net.Security,
   Dext.Net.Nats.Protocol,
+  Dext.Net.Nats.Internal.Parser,
   Dext.Net.Nats.NKeys,
   Dext.Net.Nats,
   Dext.Net.Nats.JetStream,
@@ -766,7 +767,7 @@ begin
     Result := TEncoding.UTF8.GetString(B);
 end;
 
-procedure FeedParser(Parser: TDextNatsFrameParser; const S: string);
+procedure FeedParser(Parser: TDextNatsFrameParserV2; const S: string);
 var
   data: TBytes;
 begin
@@ -774,7 +775,7 @@ begin
   Parser.Append(data, Length(data));
 end;
 
-procedure FeedParserBytes(Parser: TDextNatsFrameParser; const Data: TBytes; AOffset, ACount: Integer);
+procedure FeedParserBytes(Parser: TDextNatsFrameParserV2; const Data: TBytes; AOffset, ACount: Integer);
 var
   slice: TBytes;
 begin
@@ -840,11 +841,11 @@ end;
 
 procedure TDextNatsProtocolTests.Parser_ShouldDecodeInfoFrame;
 var
-  parser: TDextNatsFrameParser;
+  parser: TDextNatsFrameParserV2;
   frame: TNatsFrame;
   info: TNatsServerInfo;
 begin
-  parser := TDextNatsFrameParser.Create;
+  parser := TDextNatsFrameParserV2.Create;
   try
     FeedParser(parser,
       'INFO {"server_id":"NABC","version":"2.10.0","proto":1,"max_payload":1048576,' +
@@ -866,11 +867,11 @@ end;
 
 procedure TDextNatsProtocolTests.Parser_ShouldDecodeInfoTlsRequired;
 var
-  parser: TDextNatsFrameParser;
+  parser: TDextNatsFrameParserV2;
   frame: TNatsFrame;
   info: TNatsServerInfo;
 begin
-  parser := TDextNatsFrameParser.Create;
+  parser := TDextNatsFrameParserV2.Create;
   try
     FeedParser(parser,
       'INFO {"server_id":"NTLS","version":"2.10.0","proto":1,"tls_required":true,' +
@@ -885,10 +886,10 @@ end;
 
 procedure TDextNatsProtocolTests.Parser_ShouldDecodeMsgFrame;
 var
-  parser: TDextNatsFrameParser;
+  parser: TDextNatsFrameParserV2;
   frame: TNatsFrame;
 begin
-  parser := TDextNatsFrameParser.Create;
+  parser := TDextNatsFrameParserV2.Create;
   try
     FeedParser(parser, 'MSG foo.bar 7 5' + #13#10 + 'hello' + #13#10);
     Should(parser.TryReadFrame(frame)).BeTrue;
@@ -904,12 +905,12 @@ end;
 
 procedure TDextNatsProtocolTests.Parser_ShouldDecodeHMsgWithStatusAndHeaders;
 var
-  parser: TDextNatsFrameParser;
+  parser: TDextNatsFrameParserV2;
   frame: TNatsFrame;
   headerBlock: string;
   total: Integer;
 begin
-  parser := TDextNatsFrameParser.Create;
+  parser := TDextNatsFrameParserV2.Create;
   try
     headerBlock := 'NATS/1.0 503' + #13#10 + 'Nats-Msg-Id: abc' + #13#10 + #13#10;
     total := Length(BytesOfUtf8(headerBlock));
@@ -929,10 +930,10 @@ end;
 
 procedure TDextNatsProtocolTests.Parser_ShouldDecodePing;
 var
-  parser: TDextNatsFrameParser;
+  parser: TDextNatsFrameParserV2;
   frame: TNatsFrame;
 begin
-  parser := TDextNatsFrameParser.Create;
+  parser := TDextNatsFrameParserV2.Create;
   try
     FeedParser(parser, 'PING' + #13#10);
     Should(parser.TryReadFrame(frame)).BeTrue;
@@ -944,10 +945,10 @@ end;
 
 procedure TDextNatsProtocolTests.Parser_ShouldDecodePong;
 var
-  parser: TDextNatsFrameParser;
+  parser: TDextNatsFrameParserV2;
   frame: TNatsFrame;
 begin
-  parser := TDextNatsFrameParser.Create;
+  parser := TDextNatsFrameParserV2.Create;
   try
     FeedParser(parser, 'PONG' + #13#10);
     Should(parser.TryReadFrame(frame)).BeTrue;
@@ -959,10 +960,10 @@ end;
 
 procedure TDextNatsProtocolTests.Parser_ShouldDecodeOk;
 var
-  parser: TDextNatsFrameParser;
+  parser: TDextNatsFrameParserV2;
   frame: TNatsFrame;
 begin
-  parser := TDextNatsFrameParser.Create;
+  parser := TDextNatsFrameParserV2.Create;
   try
     FeedParser(parser, '+OK' + #13#10);
     Should(parser.TryReadFrame(frame)).BeTrue;
@@ -974,10 +975,10 @@ end;
 
 procedure TDextNatsProtocolTests.Parser_ShouldDecodeErr;
 var
-  parser: TDextNatsFrameParser;
+  parser: TDextNatsFrameParserV2;
   frame: TNatsFrame;
 begin
-  parser := TDextNatsFrameParser.Create;
+  parser := TDextNatsFrameParserV2.Create;
   try
     FeedParser(parser, '-ERR ''Permissions Violation''' + #13#10);
     Should(parser.TryReadFrame(frame)).BeTrue;
@@ -990,10 +991,10 @@ end;
 
 procedure TDextNatsProtocolTests.Parser_ShouldDecodeMsgWithReplyTo;
 var
-  parser: TDextNatsFrameParser;
+  parser: TDextNatsFrameParserV2;
   frame: TNatsFrame;
 begin
-  parser := TDextNatsFrameParser.Create;
+  parser := TDextNatsFrameParserV2.Create;
   try
     FeedParser(parser, 'MSG foo.bar 9 _INBOX.xyz 4' + #13#10 + 'ping' + #13#10);
     Should(parser.TryReadFrame(frame)).BeTrue;
@@ -1008,13 +1009,13 @@ end;
 
 procedure TDextNatsProtocolTests.Parser_ShouldDecodeHMsgWithPayload;
 var
-  parser: TDextNatsFrameParser;
+  parser: TDextNatsFrameParserV2;
   frame: TNatsFrame;
   headerBlock: string;
   hdrLen, total: Integer;
   payload: string;
 begin
-  parser := TDextNatsFrameParser.Create;
+  parser := TDextNatsFrameParserV2.Create;
   try
     headerBlock := 'NATS/1.0' + #13#10 + 'X-Test: 1' + #13#10 + #13#10;
     payload := 'body';
@@ -1034,11 +1035,11 @@ end;
 
 procedure TDextNatsProtocolTests.Parser_ShouldDecodeIncrementalFragments;
 var
-  parser: TDextNatsFrameParser;
+  parser: TDextNatsFrameParserV2;
   frame: TNatsFrame;
   raw: TBytes;
 begin
-  parser := TDextNatsFrameParser.Create;
+  parser := TDextNatsFrameParserV2.Create;
   try
     raw := BytesOfUtf8('PING' + #13#10);
     FeedParserBytes(parser, raw, 0, 2);
@@ -1053,10 +1054,10 @@ end;
 
 procedure TDextNatsProtocolTests.Parser_ShouldDecodeMultipleFramesInBuffer;
 var
-  parser: TDextNatsFrameParser;
+  parser: TDextNatsFrameParserV2;
   frame: TNatsFrame;
 begin
-  parser := TDextNatsFrameParser.Create;
+  parser := TDextNatsFrameParserV2.Create;
   try
     FeedParser(parser, 'PING' + #13#10 + 'PONG' + #13#10 + '+OK' + #13#10);
     Should(parser.TryReadFrame(frame)).BeTrue;
@@ -1073,10 +1074,10 @@ end;
 
 procedure TDextNatsProtocolTests.Parser_Clear_ShouldDropIncompleteFrame;
 var
-  parser: TDextNatsFrameParser;
+  parser: TDextNatsFrameParserV2;
   frame: TNatsFrame;
 begin
-  parser := TDextNatsFrameParser.Create;
+  parser := TDextNatsFrameParserV2.Create;
   try
     FeedParser(parser, 'MSG foo 1 5' + #13#10 + 'he');
     Should(parser.TryReadFrame(frame)).BeFalse;
@@ -1091,9 +1092,9 @@ end;
 
 procedure TDextNatsProtocolTests.Parser_MaxFrameBytes_ShouldRaise;
 var
-  parser: TDextNatsFrameParser;
+  parser: TDextNatsFrameParserV2;
 begin
-  parser := TDextNatsFrameParser.Create;
+  parser := TDextNatsFrameParserV2.Create;
   try
     parser.MaxFrameBytes := 8;
     Should(
@@ -1111,9 +1112,9 @@ end;
 
 procedure TDextNatsProtocolTests.Parser_GarbageLine_ShouldRaise;
 var
-  parser: TDextNatsFrameParser;
+  parser: TDextNatsFrameParserV2;
 begin
-  parser := TDextNatsFrameParser.Create;
+  parser := TDextNatsFrameParserV2.Create;
   try
     Should(
       procedure
@@ -5731,7 +5732,7 @@ const
 var
   i: Integer;
   payload, frame, msgWire: TBytes;
-  parser: TDextNatsFrameParser;
+  parser: TDextNatsFrameParserV2;
   parsed: TNatsFrame;
   sw: TStopwatch;
   ms: Int64;
@@ -5763,7 +5764,7 @@ begin
   msgWire := BytesOfUtf8(
     Format('MSG bench.subject 1 %d', [Length(payload)]) + #13#10 +
     Utf8OfBytes(payload) + #13#10);
-  parser := TDextNatsFrameParser.Create;
+  parser := TDextNatsFrameParserV2.Create;
   try
     parsedOk := 0;
     sw := TStopwatch.StartNew;

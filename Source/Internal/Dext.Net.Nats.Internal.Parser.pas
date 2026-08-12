@@ -1,4 +1,4 @@
-{***************************************************************************}
+﻿{***************************************************************************}
 {                                                                           }
 {           Dext.Nats                                                       }
 {                                                                           }
@@ -17,7 +17,7 @@ uses
 
 type
   /// <summary>
-  ///   Cursor-based successor to TDextNatsFrameParser. It preserves the
+  ///   Production cursor-based NATS frame parser. It preserves the
   ///   existing owned TNatsFrame contract while consuming bytes by advancing
   ///   TDextNatsReadBuffer rather than shifting the unread tail after every
   ///   frame. This type stays internal until parity tests and Delphi builds
