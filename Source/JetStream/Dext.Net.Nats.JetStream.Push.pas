@@ -23,6 +23,18 @@ type
     constructor Create(AClient: TDextNatsClient;
       AConsumers: TDextNatsJetStreamConsumers);
 
+    /// <summary>
+    /// Raw push subscription. Delivers status 100/4xx control frames as TNatsMsg.
+    /// Ordered consumers use this path to handle heartbeat and flow-control.
+    /// </summary>
+    function SubscribeRaw(const ADeliverSubject: string;
+      AHandler: TNatsMsgHandler;
+      const AQueueGroup: string = ''): TDextNatsJetStreamPushSubscription;
+
+    /// <summary>
+    /// Application push subscription. JetStream status/control frames are filtered
+    /// and data messages are converted to TNatsJsMsg.
+    /// </summary>
     function Subscribe(const ADeliverSubject: string;
       AHandler: TNatsJsMsgHandler;
       const AQueueGroup: string = ''): TDextNatsJetStreamPushSubscription; overload;
@@ -48,12 +60,11 @@ begin
   FConsumers := AConsumers;
 end;
 
-function TDextNatsJetStreamPush.Subscribe(const ADeliverSubject: string;
-  AHandler: TNatsJsMsgHandler;
+function TDextNatsJetStreamPush.SubscribeRaw(const ADeliverSubject: string;
+  AHandler: TNatsMsgHandler;
   const AQueueGroup: string): TDextNatsJetStreamPushSubscription;
 var
   Sid: Integer;
-  Handler: TNatsJsMsgHandler;
 begin
   if ADeliverSubject = '' then
     raise EDextNatsException.Create('SubscribePush requires a deliver subject');
@@ -62,8 +73,21 @@ begin
   if not FClient.Connected then
     raise EDextNatsException.Create('Cannot SubscribePush: NATS client is not connected');
 
+  Sid := FClient.Subscribe(ADeliverSubject, AHandler, AQueueGroup);
+  Result := TDextNatsJetStreamPushSubscription.Create(
+    FClient, Sid, ADeliverSubject);
+end;
+
+function TDextNatsJetStreamPush.Subscribe(const ADeliverSubject: string;
+  AHandler: TNatsJsMsgHandler;
+  const AQueueGroup: string): TDextNatsJetStreamPushSubscription;
+var
+  Handler: TNatsJsMsgHandler;
+begin
+  if not Assigned(AHandler) then
+    raise EDextNatsException.Create('SubscribePush requires a message handler');
   Handler := AHandler;
-  Sid := FClient.Subscribe(ADeliverSubject,
+  Result := SubscribeRaw(ADeliverSubject,
     procedure(const AMsg: TNatsMsg)
     var
       JsMsg: TNatsJsMsg;
@@ -74,9 +98,6 @@ begin
       Handler(JsMsg);
     end,
     AQueueGroup);
-
-  Result := TDextNatsJetStreamPushSubscription.Create(
-    FClient, Sid, ADeliverSubject);
 end;
 
 function TDextNatsJetStreamPush.Subscribe(const AStreamName,
