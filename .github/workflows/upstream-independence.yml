@@ -18,9 +18,11 @@ jobs:
 
           # UPSTREAM.md and CONTRIBUTING.md intentionally name the historical
           # repository to document that it is NOT an upstream dependency.
+          # This workflow also contains the literal search token, so exclude itself.
           matches=$(grep -RniF 'kitesoft/dext_nats' . \
             --exclude='UPSTREAM.md' \
             --exclude='CONTRIBUTING.md' \
+            --exclude='upstream-independence.yml' \
             --exclude-dir='.git' || true)
 
           if [ -n "$matches" ]; then
