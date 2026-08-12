@@ -88,16 +88,9 @@ Status: **parity implementation ready; runtime cut-over pending Delphi compile/t
 
 `TDextNatsFrameParserV2` in `Dext.Net.Nats.Internal.Parser.pas` uses `TDextNatsReadBuffer` and returns the same owned `TNatsFrame` contract as the current parser.
 
-Parity coverage is isolated in `Tests/Protocol/Dext.Net.Nats.ParserV2.Tests.pas` and compares V1/V2 behavior for:
+Parity coverage is isolated in `Tests/Protocol/Dext.Net.Nats.ParserV2.Tests.pas` and compares V1/V2 behavior for PING/PONG/+OK/-ERR/INFO, MSG, fragmented MSG, multi-frame input, HMSG, Clear, and max-frame rejection.
 
-- PING/PONG/+OK/-ERR/INFO control frames;
-- MSG with and without fragmentation;
-- multiple frames in one receive buffer;
-- HMSG headers/payload;
-- Clear after an incomplete frame;
-- max-frame rejection.
-
-`Tests/Benchmarks/Dext.Net.Nats.ParserV2.Benchmarks.pas` provides an explicit V1-vs-V2 throughput benchmark and a non-explicit correctness/performance-shape test asserting that consuming many pre-buffered frames performs zero physical compactions.
+`Tests/Benchmarks/Dext.Net.Nats.ParserV2.Benchmarks.pas` provides an explicit V1-vs-V2 throughput benchmark and a non-explicit assertion that multi-frame consumption performs zero physical compactions.
 
 Acceptance criteria before runtime cut-over:
 
@@ -124,17 +117,31 @@ The bounded mode exposes capacity/worker settings and deterministic full-queue b
 
 ## Phase 4 — split large implementation units
 
-Status: **next after the parser runtime gate**.
+Status: **started with JetStream JSON extraction**.
 
-Decompose JetStream, KeyValue, ObjectStore, Services, and the protocol implementation behind stable public facades.
+The first extracted JetStream implementation unit is:
 
-The first candidates are:
+```text
+Source/JetStream/Dext.Net.Nats.JetStream.Json.pas
+```
 
-1. JetStream models + JSON.
-2. JetStream consumer logic.
-3. ObjectStore reader/watcher.
-4. KeyValue watcher.
-5. Protocol parser/writer.
+It owns the allocation-conscious UTF-8 sink and common request-body builders that were historically private implementation details inside the 120KB+ `Dext.Net.Nats.JetStream.pas` unit. Focused wire-contract tests live in:
+
+```text
+Tests/JetStream/Dext.Net.Nats.JetStream.Json.Tests.pas
+```
+
+During this transition the historical facade implementation remains authoritative until Delphi 13 compile/tests confirm the extracted codec. After that gate, existing JetStream methods will delegate to the extracted codec and the duplicate private helpers will be removed.
+
+Next extraction order:
+
+1. stream/consumer serialization codecs (`ToJson` support);
+2. stream/consumer response parsers;
+3. stream administration operations;
+4. consumer/fetch operations;
+5. ordered consumer implementation.
+
+Then continue with ObjectStore reader/watcher, KeyValue watcher, Services, and protocol writer/parser separation.
 
 No public unit rename is allowed during this phase.
 
@@ -153,6 +160,8 @@ Tests/
     Dext.Net.Nats.Internal.Tests.pas
   Protocol/
     Dext.Net.Nats.ParserV2.Tests.pas
+  JetStream/
+    Dext.Net.Nats.JetStream.Json.Tests.pas
   Benchmarks/
     Dext.Net.Nats.ParserV2.Benchmarks.pas
 ```
@@ -188,6 +197,7 @@ Before the branch is merged to `main`:
 2. `scripts/build-tests.ps1` must compile the Dext.Testing project on Delphi 13;
 3. parser parity tests must pass;
 4. dispatched-subscription tests must pass;
-5. existing integration tests should run against a local `nats-server -js`;
-6. the parser benchmark must be captured for V1 and V2;
-7. public API compatibility must be reviewed from the PR diff.
+5. JetStream extracted JSON wire-contract tests must pass;
+6. existing integration tests should run against a local `nats-server -js`;
+7. the parser benchmark must be captured for V1 and V2;
+8. public API compatibility must be reviewed from the PR diff.
