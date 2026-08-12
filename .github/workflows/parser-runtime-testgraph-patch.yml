@@ -1,0 +1,76 @@
+name: Parser Runtime Test Graph Patch
+
+on:
+  push:
+    branches:
+      - perf/parser-v2-cutover
+
+permissions:
+  contents: write
+
+jobs:
+  patch-project:
+    if: ${{ github.actor != 'github-actions[bot]' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: perf/parser-v2-cutover
+          fetch-depth: 0
+
+      - name: Register runtime facade and focused test
+        shell: python
+        run: |
+          from pathlib import Path
+
+          dpr = Path('Tests/Dext.Net.Nats.Tests.dpr')
+          s = dpr.read_text(encoding='utf-8-sig')
+          replacements = [
+              (
+                  "  Dext.Net.Nats in '..\\Source\\Dext.Net.Nats.pas',",
+                  "  Dext.Net.Nats.ParserRuntime in '..\\Source\\Dext.Net.Nats.ParserRuntime.pas',\n  Dext.Net.Nats in '..\\Source\\Dext.Net.Nats.pas',"
+              ),
+              (
+                  "  Dext.Net.Nats.ParserSelector.Tests in 'Protocol\\Dext.Net.Nats.ParserSelector.Tests.pas',",
+                  "  Dext.Net.Nats.ParserSelector.Tests in 'Protocol\\Dext.Net.Nats.ParserSelector.Tests.pas',\n  Dext.Net.Nats.ParserRuntime.Tests in 'Protocol\\Dext.Net.Nats.ParserRuntime.Tests.pas',"
+              ),
+              (
+                  "      TDextNatsParserSelectorTests,",
+                  "      TDextNatsParserSelectorTests,\n      TDextNatsParserRuntimeTests,"
+              ),
+          ]
+          for old, new in replacements:
+              count = s.count(old)
+              if count != 1:
+                  raise SystemExit(f'DPR expected exactly one {old!r}, got {count}')
+              s = s.replace(old, new, 1)
+          dpr.write_text(s, encoding='utf-8-sig')
+
+          dproj = Path('Tests/Dext.Net.Nats.Tests.dproj')
+          s = dproj.read_text(encoding='utf-8-sig')
+          replacements = [
+              (
+                  '<DCCReference Include="..\\Source\\Dext.Net.Nats.NKeys.pas"/><DCCReference Include="..\\Source\\Dext.Net.Nats.pas"/>',
+                  '<DCCReference Include="..\\Source\\Dext.Net.Nats.NKeys.pas"/><DCCReference Include="..\\Source\\Dext.Net.Nats.ParserRuntime.pas"/><DCCReference Include="..\\Source\\Dext.Net.Nats.pas"/>'
+              ),
+              (
+                  '<DCCReference Include="Protocol\\Dext.Net.Nats.ParserV2.Tests.pas"/><DCCReference Include="Protocol\\Dext.Net.Nats.ParserSelector.Tests.pas"/><DCCReference Include="Protocol\\Dext.Net.Nats.Protocol.V2.Tests.pas"/>',
+                  '<DCCReference Include="Protocol\\Dext.Net.Nats.ParserV2.Tests.pas"/><DCCReference Include="Protocol\\Dext.Net.Nats.ParserSelector.Tests.pas"/><DCCReference Include="Protocol\\Dext.Net.Nats.ParserRuntime.Tests.pas"/><DCCReference Include="Protocol\\Dext.Net.Nats.Protocol.V2.Tests.pas"/>'
+              ),
+          ]
+          for old, new in replacements:
+              count = s.count(old)
+              if count != 1:
+                  raise SystemExit(f'DPROJ expected exactly one fragment, got {count}: {old!r}')
+              s = s.replace(old, new, 1)
+          dproj.write_text(s, encoding='utf-8-sig')
+
+      - name: Commit test graph wiring
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add Tests/Dext.Net.Nats.Tests.dpr Tests/Dext.Net.Nats.Tests.dproj
+          git commit -m 'Register runtime parser facade in Delphi test graph'
+          git push origin HEAD:perf/parser-v2-cutover
