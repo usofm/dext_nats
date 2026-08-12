@@ -9,68 +9,32 @@
   <PropertyGroup Condition="('$(Platform)'=='Win32' and '$(Cfg_2)'=='true') or '$(Cfg_2_Win32)'!=''"><Cfg_2_Win32>true</Cfg_2_Win32><CfgParent>Cfg_2</CfgParent><Cfg_2>true</Cfg_2><Base>true</Base></PropertyGroup>
   <PropertyGroup Condition="'$(Base)'!=''">
     <SanitizedProjectName>Dext_Net_Nats_Tests</SanitizedProjectName>
-    <DCC_DcuOutput>..\Output\$(Platform)\$(Config)</DCC_DcuOutput>
-    <DCC_ExeOutput>..\Output\$(Platform)\$(Config)</DCC_ExeOutput>
+    <DCC_DcuOutput>..\Output\$(Platform)\$(Config)</DCC_DcuOutput><DCC_ExeOutput>..\Output\$(Platform)\$(Config)</DCC_ExeOutput>
     <DCC_Namespace>System;Xml;Data;Datasnap;Web;Soap;$(DCC_Namespace)</DCC_Namespace>
     <DCC_UnitSearchPath>..\Source;..\Source\Internal;..\Source\Protocol;..\Source\JetStream;..\Source\KeyValue;..\Source\ObjectStore;..\Source\Services;Core;Internal;Protocol;JetStream;KeyValue;ObjectStore;Services;Benchmarks;..\..\dext\Sources\Common;..\..\dext\Sources\Core;..\..\dext\Sources\Core\Base;..\..\dext\Sources\Core\Json;..\..\dext\Sources\Core\Interception;..\..\dext\Sources\Net;..\..\dext\Sources\Testing;..\..\dext\Sources\Logging;..\..\dext\Sources\JSON;..\..\dext\Sources\Debug;..\Output\$(Platform)\$(Config);$(DCC_UnitSearchPath)</DCC_UnitSearchPath>
-    <VerInfo_Locale>1033</VerInfo_Locale>
   </PropertyGroup>
-  <PropertyGroup Condition="'$(Base_Win32)'!=''"><BT_BuildType>Debug</BT_BuildType><DCC_ConsoleTarget>true</DCC_ConsoleTarget><DCC_Namespace>Winapi;System.Win;Data.Win;Datasnap.Win;Web.Win;Soap.Win;Xml.Win;Bde;$(DCC_Namespace)</DCC_Namespace></PropertyGroup>
-  <PropertyGroup Condition="'$(Cfg_1)'!=''"><DCC_DebugInformation>0</DCC_DebugInformation><DCC_Define>RELEASE;$(DCC_Define)</DCC_Define><DCC_LocalDebugSymbols>false</DCC_LocalDebugSymbols><DCC_SymbolReferenceInfo>0</DCC_SymbolReferenceInfo></PropertyGroup>
-  <PropertyGroup Condition="'$(Cfg_2)'!=''"><DCC_DebugDCUs>true</DCC_DebugDCUs><DCC_DebugInfoInExe>true</DCC_DebugInfoInExe><DCC_Define>DEBUG;$(DCC_Define)</DCC_Define><DCC_GenerateStackFrames>true</DCC_GenerateStackFrames><DCC_IntegerOverflowCheck>true</DCC_IntegerOverflowCheck><DCC_Optimize>false</DCC_Optimize><DCC_RangeChecking>true</DCC_RangeChecking></PropertyGroup>
+  <PropertyGroup Condition="'$(Base_Win32)'!=''"><BT_BuildType>Debug</BT_BuildType><DCC_ConsoleTarget>true</DCC_ConsoleTarget></PropertyGroup>
+  <PropertyGroup Condition="'$(Cfg_1)'!=''"><DCC_DebugInformation>0</DCC_DebugInformation><DCC_Define>RELEASE;$(DCC_Define)</DCC_Define><DCC_Optimize>true</DCC_Optimize></PropertyGroup>
+  <PropertyGroup Condition="'$(Cfg_2)'!=''"><DCC_DebugDCUs>true</DCC_DebugDCUs><DCC_DebugInfoInExe>true</DCC_DebugInfoInExe><DCC_Define>DEBUG;$(DCC_Define)</DCC_Define><DCC_IntegerOverflowCheck>true</DCC_IntegerOverflowCheck><DCC_RangeChecking>true</DCC_RangeChecking></PropertyGroup>
   <ItemGroup>
     <DelphiCompile Include="$(MainSource)"><MainSource>MainSource</MainSource></DelphiCompile>
     <DCCReference Include="..\Source\Dext.Net.Nats.Protocol.pas"/>
-    <DCCReference Include="..\Source\Protocol\Dext.Net.Nats.Protocol.Headers.pas"/>
-    <DCCReference Include="..\Source\Protocol\Dext.Net.Nats.Protocol.Control.pas"/>
-    <DCCReference Include="..\Source\Dext.Net.Nats.NKeys.pas"/>
-    <DCCReference Include="..\Source\Dext.Net.Nats.pas"/>
-    <DCCReference Include="..\Source\Dext.Net.Nats.Dispatching.pas"/>
-    <DCCReference Include="..\Source\Dext.Net.Nats.JetStream.pas"/>
-    <DCCReference Include="..\Source\JetStream\Dext.Net.Nats.JetStream.Json.pas"/>
-    <DCCReference Include="..\Source\JetStream\Dext.Net.Nats.JetStream.Codecs.pas"/>
-    <DCCReference Include="..\Source\JetStream\Dext.Net.Nats.JetStream.Parsers.pas"/>
-    <DCCReference Include="..\Source\JetStream\Dext.Net.Nats.JetStream.Paging.pas"/>
-    <DCCReference Include="..\Source\JetStream\Dext.Net.Nats.JetStream.ObjectPaging.pas"/>
-    <DCCReference Include="..\Source\JetStream\Dext.Net.Nats.JetStream.Transport.pas"/>
-    <DCCReference Include="..\Source\JetStream\Dext.Net.Nats.JetStream.Streams.pas"/>
-    <DCCReference Include="..\Source\JetStream\Dext.Net.Nats.JetStream.Consumers.pas"/>
-    <DCCReference Include="..\Source\JetStream\Dext.Net.Nats.JetStream.Fetch.pas"/>
-    <DCCReference Include="..\Source\JetStream\Dext.Net.Nats.JetStream.Push.pas"/>
-    <DCCReference Include="..\Source\JetStream\Dext.Net.Nats.JetStream.Ordered.pas"/>
-    <DCCReference Include="..\Source\JetStream\Dext.Net.Nats.JetStream.Runtime.pas"/>
-    <DCCReference Include="..\Source\Dext.Net.Nats.KeyValue.pas"/>
-    <DCCReference Include="..\Source\KeyValue\Dext.Net.Nats.KeyValue.Subjects.pas"/>
-    <DCCReference Include="..\Source\Dext.Net.Nats.ObjectStore.pas"/>
-    <DCCReference Include="..\Source\ObjectStore\Dext.Net.Nats.ObjectStore.Subjects.pas"/>
-    <DCCReference Include="..\Source\ObjectStore\Dext.Net.Nats.ObjectStore.Crypto.pas"/>
-    <DCCReference Include="..\Source\Dext.Net.Nats.Services.pas"/>
-    <DCCReference Include="..\Source\Services\Dext.Net.Nats.Services.Subjects.pas"/>
-    <DCCReference Include="..\Source\Dext.Net.Nats.DependencyInjection.pas"/>
-    <DCCReference Include="..\Source\Dext.Net.Nats.HealthChecks.pas"/>
-    <DCCReference Include="..\Source\Internal\Dext.Net.Nats.Internal.Buffer.pas"/>
-    <DCCReference Include="..\Source\Internal\Dext.Net.Nats.Internal.Dispatcher.pas"/>
-    <DCCReference Include="..\Source\Internal\Dext.Net.Nats.Internal.Parser.pas"/>
-    <DCCReference Include="..\Source\Internal\Dext.Net.Nats.Internal.ParserSelector.pas"/>
-    <DCCReference Include="Dext.Net.Nats.Tests.pas"/>
-    <DCCReference Include="Core\Dext.Net.Nats.Drain.Tests.pas"/>
-    <DCCReference Include="Core\Dext.Net.Nats.Dispatching.Tests.pas"/>
-    <DCCReference Include="Internal\Dext.Net.Nats.Internal.Tests.pas"/>
-    <DCCReference Include="Protocol\Dext.Net.Nats.ParserV2.Tests.pas"/>
-    <DCCReference Include="Protocol\Dext.Net.Nats.ParserSelector.Tests.pas"/>
-    <DCCReference Include="Protocol\Dext.Net.Nats.Protocol.V2.Tests.pas"/>
-    <DCCReference Include="JetStream\Dext.Net.Nats.JetStream.Json.Tests.pas"/>
-    <DCCReference Include="JetStream\Dext.Net.Nats.JetStream.Streams.Tests.pas"/>
-    <DCCReference Include="JetStream\Dext.Net.Nats.JetStream.Consumers.Tests.pas"/>
-    <DCCReference Include="JetStream\Dext.Net.Nats.JetStream.ObjectPaging.Tests.pas"/>
-    <DCCReference Include="JetStream\Dext.Net.Nats.JetStream.Fetch.Tests.pas"/>
-    <DCCReference Include="ObjectStore\Dext.Net.Nats.ObjectStore.Subjects.Tests.pas"/>
-    <DCCReference Include="KeyValue\Dext.Net.Nats.KeyValue.Subjects.Tests.pas"/>
-    <DCCReference Include="Services\Dext.Net.Nats.Services.Subjects.Tests.pas"/>
+    <DCCReference Include="..\Source\Protocol\Dext.Net.Nats.Protocol.Headers.pas"/><DCCReference Include="..\Source\Protocol\Dext.Net.Nats.Protocol.Control.pas"/><DCCReference Include="..\Source\Protocol\Dext.Net.Nats.Protocol.Writer.pas"/>
+    <DCCReference Include="..\Source\Dext.Net.Nats.NKeys.pas"/><DCCReference Include="..\Source\Dext.Net.Nats.pas"/><DCCReference Include="..\Source\Dext.Net.Nats.Dispatching.pas"/>
+    <DCCReference Include="..\Source\Dext.Net.Nats.JetStream.pas"/><DCCReference Include="..\Source\JetStream\Dext.Net.Nats.JetStream.Json.pas"/><DCCReference Include="..\Source\JetStream\Dext.Net.Nats.JetStream.Codecs.pas"/><DCCReference Include="..\Source\JetStream\Dext.Net.Nats.JetStream.Parsers.pas"/><DCCReference Include="..\Source\JetStream\Dext.Net.Nats.JetStream.Paging.pas"/><DCCReference Include="..\Source\JetStream\Dext.Net.Nats.JetStream.ObjectPaging.pas"/><DCCReference Include="..\Source\JetStream\Dext.Net.Nats.JetStream.Transport.pas"/><DCCReference Include="..\Source\JetStream\Dext.Net.Nats.JetStream.Streams.pas"/><DCCReference Include="..\Source\JetStream\Dext.Net.Nats.JetStream.Consumers.pas"/><DCCReference Include="..\Source\JetStream\Dext.Net.Nats.JetStream.Fetch.pas"/><DCCReference Include="..\Source\JetStream\Dext.Net.Nats.JetStream.Push.pas"/><DCCReference Include="..\Source\JetStream\Dext.Net.Nats.JetStream.Ordered.pas"/><DCCReference Include="..\Source\JetStream\Dext.Net.Nats.JetStream.Runtime.pas"/>
+    <DCCReference Include="..\Source\Dext.Net.Nats.KeyValue.pas"/><DCCReference Include="..\Source\KeyValue\Dext.Net.Nats.KeyValue.Subjects.pas"/><DCCReference Include="..\Source\KeyValue\Dext.Net.Nats.KeyValue.WatcherGate.pas"/>
+    <DCCReference Include="..\Source\Dext.Net.Nats.ObjectStore.pas"/><DCCReference Include="..\Source\ObjectStore\Dext.Net.Nats.ObjectStore.Subjects.pas"/><DCCReference Include="..\Source\ObjectStore\Dext.Net.Nats.ObjectStore.Crypto.pas"/><DCCReference Include="..\Source\ObjectStore\Dext.Net.Nats.ObjectStore.WatcherGate.pas"/><DCCReference Include="..\Source\ObjectStore\Dext.Net.Nats.ObjectStore.Reader.pas"/>
+    <DCCReference Include="..\Source\Dext.Net.Nats.Services.pas"/><DCCReference Include="..\Source\Services\Dext.Net.Nats.Services.Subjects.pas"/><DCCReference Include="..\Source\Services\Dext.Net.Nats.Services.Validation.pas"/><DCCReference Include="..\Source\Services\Dext.Net.Nats.Services.Routing.pas"/>
+    <DCCReference Include="..\Source\Dext.Net.Nats.DependencyInjection.pas"/><DCCReference Include="..\Source\Dext.Net.Nats.HealthChecks.pas"/>
+    <DCCReference Include="..\Source\Internal\Dext.Net.Nats.Internal.Buffer.pas"/><DCCReference Include="..\Source\Internal\Dext.Net.Nats.Internal.Dispatcher.pas"/><DCCReference Include="..\Source\Internal\Dext.Net.Nats.Internal.Parser.pas"/><DCCReference Include="..\Source\Internal\Dext.Net.Nats.Internal.ParserSelector.pas"/>
+    <DCCReference Include="Dext.Net.Nats.Tests.pas"/><DCCReference Include="Core\Dext.Net.Nats.Drain.Tests.pas"/><DCCReference Include="Core\Dext.Net.Nats.Dispatching.Tests.pas"/><DCCReference Include="Internal\Dext.Net.Nats.Internal.Tests.pas"/>
+    <DCCReference Include="Protocol\Dext.Net.Nats.ParserV2.Tests.pas"/><DCCReference Include="Protocol\Dext.Net.Nats.ParserSelector.Tests.pas"/><DCCReference Include="Protocol\Dext.Net.Nats.Protocol.V2.Tests.pas"/>
+    <DCCReference Include="JetStream\Dext.Net.Nats.JetStream.Json.Tests.pas"/><DCCReference Include="JetStream\Dext.Net.Nats.JetStream.Streams.Tests.pas"/><DCCReference Include="JetStream\Dext.Net.Nats.JetStream.Consumers.Tests.pas"/><DCCReference Include="JetStream\Dext.Net.Nats.JetStream.ObjectPaging.Tests.pas"/><DCCReference Include="JetStream\Dext.Net.Nats.JetStream.Fetch.Tests.pas"/>
+    <DCCReference Include="ObjectStore\Dext.Net.Nats.ObjectStore.Subjects.Tests.pas"/><DCCReference Include="ObjectStore\Dext.Net.Nats.ObjectStore.WatcherGate.Tests.pas"/>
+    <DCCReference Include="KeyValue\Dext.Net.Nats.KeyValue.Subjects.Tests.pas"/><DCCReference Include="KeyValue\Dext.Net.Nats.KeyValue.WatcherGate.Tests.pas"/>
+    <DCCReference Include="Services\Dext.Net.Nats.Services.Subjects.Tests.pas"/><DCCReference Include="Services\Dext.Net.Nats.Services.Validation.Tests.pas"/><DCCReference Include="Services\Dext.Net.Nats.Services.Routing.Tests.pas"/>
     <DCCReference Include="Benchmarks\Dext.Net.Nats.ParserV2.Benchmarks.pas"/>
-    <BuildConfiguration Include="Base"><Key>Base</Key></BuildConfiguration>
-    <BuildConfiguration Include="Release"><Key>Cfg_1</Key><CfgParent>Base</CfgParent></BuildConfiguration>
-    <BuildConfiguration Include="Debug"><Key>Cfg_2</Key><CfgParent>Base</CfgParent></BuildConfiguration>
+    <BuildConfiguration Include="Base"><Key>Base</Key></BuildConfiguration><BuildConfiguration Include="Release"><Key>Cfg_1</Key><CfgParent>Base</CfgParent></BuildConfiguration><BuildConfiguration Include="Debug"><Key>Cfg_2</Key><CfgParent>Base</CfgParent></BuildConfiguration>
   </ItemGroup>
   <ProjectExtensions><Borland.Personality>Delphi.Personality.12</Borland.Personality><Borland.ProjectType>Application</Borland.ProjectType><BorlandProject><Delphi.Personality><Source><Source Name="MainSource">Dext.Net.Nats.Tests.dpr</Source></Source><Excluded_Packages/></Delphi.Personality><Platforms><Platform value="Win32">True</Platform><Platform value="Win64">False</Platform></Platforms></BorlandProject><ProjectFileVersion>12</ProjectFileVersion></ProjectExtensions>
   <Import Project="$(BDS)\Bin\CodeGear.Delphi.Targets" Condition="Exists('$(BDS)\Bin\CodeGear.Delphi.Targets')"/>
