@@ -1,0 +1,109 @@
+name: Wire Protocol Writer
+
+on:
+  push:
+    branches:
+      - perf/parser-v2-cutover
+
+permissions:
+  contents: write
+
+jobs:
+  wire:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: perf/parser-v2-cutover
+          fetch-depth: 0
+
+      - name: Wire V2 writer and release outbox state lock before network I/O
+        shell: python
+        run: |
+          from pathlib import Path
+
+          p = Path('Source/Dext.Net.Nats.pas')
+          s = p.read_text(encoding='utf-8-sig')
+
+          old_uses = "implementation\n\nuses\n  Dext.Net.Security.OpenSSL,\n  Dext.Telemetry.Metrics;"
+          new_uses = "implementation\n\nuses\n  Dext.Net.Security.OpenSSL,\n  Dext.Telemetry.Metrics,\n  Dext.Net.Nats.Protocol.Writer;"
+          if old_uses not in s:
+              raise SystemExit('Implementation uses anchor not found')
+          s = s.replace(old_uses, new_uses, 1)
+
+          replacements = [
+              ('SendRaw(NatsEncodeConnect(connOpts));', 'SendRaw(NatsV2EncodeConnect(connOpts));'),
+              ('DispatchOutgoing(NatsEncodePub(ASubject, AReplyTo, APayload));', 'DispatchOutgoing(NatsV2EncodePub(ASubject, AReplyTo, APayload));'),
+              ('DispatchOutgoing(NatsEncodeHPub(ASubject, AReplyTo, AHeaders, APayload));', 'DispatchOutgoing(NatsV2EncodeHPub(ASubject, AReplyTo, AHeaders, APayload));'),
+          ]
+          for old, new in replacements:
+              if old not in s:
+                  raise SystemExit(f'Runtime writer anchor missing: {old}')
+              s = s.replace(old, new, 1)
+
+          old_flush = '''procedure TDextNatsClient.FlushOutbox;
+var
+  data: TBytes;
+begin
+  FLock.Enter;
+  try
+    while FPendingOutbox.Count > 0 do
+    begin
+      data := FPendingOutbox.Dequeue;
+      Dec(FPendingOutboxBytes, Length(data));
+      SendRaw(data);
+    end;
+  finally
+    FLock.Leave;
+  end;
+end;'''
+          new_flush = '''procedure TDextNatsClient.FlushOutbox;
+var
+  data: TBytes;
+  hasData: Boolean;
+begin
+  // Never hold the shared client-state lock across socket/TLS I/O. Dequeue one
+  // frame at a time under FLock, then send it under the dedicated send lock.
+  // FIFO ordering is preserved because this routine is the sole outbox drainer.
+  while True do
+  begin
+    FLock.Enter;
+    try
+      hasData := FPendingOutbox.Count > 0;
+      if hasData then
+      begin
+        data := FPendingOutbox.Dequeue;
+        Dec(FPendingOutboxBytes, Length(data));
+      end;
+    finally
+      FLock.Leave;
+    end;
+
+    if not hasData then
+      Break;
+    SendRaw(data);
+  end;
+end;'''
+          if old_flush not in s:
+              raise SystemExit('FlushOutbox implementation anchor not found')
+          s = s.replace(old_flush, new_flush, 1)
+          p.write_text(s, encoding='utf-8-sig')
+
+      - name: Runtime writer contract
+        run: |
+          grep -q 'Dext.Net.Nats.Protocol.Writer' Source/Dext.Net.Nats.pas
+          grep -q 'NatsV2EncodeConnect(connOpts)' Source/Dext.Net.Nats.pas
+          grep -q 'NatsV2EncodePub(ASubject, AReplyTo, APayload)' Source/Dext.Net.Nats.pas
+          grep -q 'NatsV2EncodeHPub(ASubject, AReplyTo, AHeaders, APayload)' Source/Dext.Net.Nats.pas
+          grep -q 'hasData := FPendingOutbox.Count > 0' Source/Dext.Net.Nats.pas
+          echo 'Remaining legacy encoder references:'
+          grep -RIn --exclude-dir=.git 'NatsEncodeConnect\|NatsEncodePub\|NatsEncodeHPub' Source Tests || true
+
+      - name: Commit
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add Source/Dext.Net.Nats.pas
+          git commit -m 'Wire runtime publish path to protocol writer V2'
+          git push origin HEAD:perf/parser-v2-cutover
