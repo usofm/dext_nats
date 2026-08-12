@@ -5,9 +5,7 @@ param(
   [ValidateSet('Win32', 'Win64')]
   [string]$Platform = 'Win32',
 
-  [string]$BdsRoot = '',
-
-  [switch]$ParserV2
+  [string]$BdsRoot = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -46,12 +44,11 @@ function Quote-CmdArgument {
 }
 
 $rsvars = Find-RsVars -ExplicitRoot $BdsRoot
-$parserMode = if ($ParserV2) { 'ParserV2' } else { 'ParserV1' }
-$outputDir = Join-Path $repoRoot ("Output\{0}\{1}\{2}" -f $Platform, $Config, $parserMode)
+$outputDir = Join-Path $repoRoot ("Output\{0}\{1}" -f $Platform, $Config)
 
 Write-Host "Using RAD Studio environment: $rsvars"
 Write-Host "Building: $project"
-Write-Host "Config=$Config Platform=$Platform Parser=$parserMode"
+Write-Host "Config=$Config Platform=$Platform Parser=V2"
 Write-Host "Output=$outputDir"
 
 if (Test-Path $outputDir) {
@@ -59,22 +56,12 @@ if (Test-Path $outputDir) {
 }
 New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
 
-# Keep parser modes physically isolated. This prevents a DCU compiled with one
-# conditional define from being reused by the other validation build.
 $properties = @(
   '/p:Config=' + $Config,
   '/p:Platform=' + $Platform,
   '/p:DCC_DcuOutput=' + (Quote-CmdArgument $outputDir),
   '/p:DCC_ExeOutput=' + (Quote-CmdArgument $outputDir)
 )
-
-if ($ParserV2) {
-  # Command-line global properties replace the project property. Preserve the
-  # conventional configuration symbol explicitly rather than relying on a
-  # literal $(DCC_Define) reference supplied on the command line.
-  $configDefine = if ($Config -eq 'Release') { 'RELEASE' } else { 'DEBUG' }
-  $properties += '/p:DCC_Define=' + (Quote-CmdArgument ("DEXT_NATS_PARSER_V2;$configDefine"))
-}
 
 $propertyText = $properties -join ' '
 $command = 'call "' + $rsvars + '" && msbuild "' + $project + '" /t:Rebuild ' + $propertyText
