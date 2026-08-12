@@ -15,10 +15,6 @@ uses
   Dext.Net.Nats.JetStream.Transport;
 
 type
-  /// <summary>
-  /// Extracted stream administration implementation. The public
-  /// TDextNatsJetStreamContext remains the compatibility facade.
-  /// </summary>
   TDextNatsJetStreamStreams = class
   private
     FTransport: INatsJetStreamApiTransport;
@@ -34,6 +30,7 @@ type
       const ARequest: TNatsStreamPurgeRequest): Boolean; overload;
     function PurgeStream(const AStreamName: string): Boolean; overload;
     function ListStreamNames(const ASubjectFilter: string = ''): IList<string>;
+    function ListStreams(const ASubjectFilter: string = ''): IList<TNatsStreamInfo>;
     function GetLastMessage(const AStreamName, ASubject: string;
       ATimeoutMs: Integer = 0): TNatsStoredMsg;
     function GetMessage(const AStreamName: string; ASequence: UInt64;
@@ -48,7 +45,8 @@ uses
   Dext.Net.Nats.JetStream.Json,
   Dext.Net.Nats.JetStream.Codecs,
   Dext.Net.Nats.JetStream.Parsers,
-  Dext.Net.Nats.JetStream.Paging;
+  Dext.Net.Nats.JetStream.Paging,
+  Dext.Net.Nats.JetStream.ObjectPaging;
 
 constructor TDextNatsJetStreamStreams.Create(
   const ATransport: INatsJetStreamApiTransport);
@@ -141,6 +139,25 @@ begin
   repeat
     Page := NatsJsParseNamePage(FTransport.Request('STREAM.NAMES',
       NatsJsBuildPagedListRequest(Offset, ASubjectFilter)), 'streams');
+    for I := 0 to High(Page.Items) do
+      Result.Add(Page.Items[I]);
+    if Length(Page.Items) = 0 then
+      Break;
+    Inc(Offset, Length(Page.Items));
+  until Offset >= Page.Total;
+end;
+
+function TDextNatsJetStreamStreams.ListStreams(
+  const ASubjectFilter: string): IList<TNatsStreamInfo>;
+var
+  Offset, I: Integer;
+  Page: TNatsJsStreamInfoPage;
+begin
+  Result := TCollections.CreateList<TNatsStreamInfo>;
+  Offset := 0;
+  repeat
+    Page := NatsJsParseStreamInfoPage(FTransport.Request('STREAM.LIST',
+      NatsJsBuildPagedListRequest(Offset, ASubjectFilter)));
     for I := 0 to High(Page.Items) do
       Result.Add(Page.Items[I]);
     if Length(Page.Items) = 0 then
