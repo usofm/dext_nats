@@ -24,6 +24,7 @@ jobs:
           test -f Source/Dext.Net.Nats.JetStream.pas
           test -f Source/JetStream/Dext.Net.Nats.JetStream.Json.pas
           test -f Source/JetStream/Dext.Net.Nats.JetStream.Codecs.pas
+          test -f Source/JetStream/Dext.Net.Nats.JetStream.Parsers.pas
           test -f Source/Dext.Net.Nats.KeyValue.pas
           test -f Source/Dext.Net.Nats.ObjectStore.pas
           test -f Source/Dext.Net.Nats.Services.pas
@@ -59,10 +60,14 @@ jobs:
           grep -q 'TDextNatsFrameParserV2' Source/Internal/Dext.Net.Nats.Internal.Parser.pas
           grep -q 'TDextNatsDispatchedSubscription' Source/Dext.Net.Nats.Dispatching.pas
           grep -q 'TDextNatsJsByteWriter' Source/JetStream/Dext.Net.Nats.JetStream.Json.pas
-          grep -q 'NatsJsBuildPagedListRequest' Source/JetStream/Dext.Net.Nats.JetStream.Json.pas
           grep -q 'NatsJsEncodeStreamConfig' Source/JetStream/Dext.Net.Nats.JetStream.Codecs.pas
           grep -q 'NatsJsEncodeConsumerConfig' Source/JetStream/Dext.Net.Nats.JetStream.Codecs.pas
           grep -q 'NatsJsEncodePurgeRequest' Source/JetStream/Dext.Net.Nats.JetStream.Codecs.pas
+          grep -q 'NatsJsParseStreamInfo' Source/JetStream/Dext.Net.Nats.JetStream.Parsers.pas
+          grep -q 'NatsJsParseConsumerInfo' Source/JetStream/Dext.Net.Nats.JetStream.Parsers.pas
+          grep -q 'NatsJsParseStoredMsg' Source/JetStream/Dext.Net.Nats.JetStream.Parsers.pas
+          grep -q 'NatsJsParsePublishAck' Source/JetStream/Dext.Net.Nats.JetStream.Parsers.pas
+          grep -q 'ParserError_ShouldPreserveJetStreamErrorSemantics' Tests/JetStream/Dext.Net.Nats.JetStream.Json.Tests.pas
           grep -q 'TDextNatsInternalTests' Tests/Dext.Net.Nats.Tests.dpr
           grep -q 'TDextNatsDispatchingTests' Tests/Dext.Net.Nats.Tests.dpr
           grep -q 'TDextNatsParserV2Tests' Tests/Dext.Net.Nats.Tests.dpr
