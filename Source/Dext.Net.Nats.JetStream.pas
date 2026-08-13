@@ -637,7 +637,7 @@ type
     procedure Ack(const AMsg: TNatsJsMsg); overload;
     /// <summary>Acknowledges by ReplyTo subject.</summary>
     procedure Ack(const AReplyTo: string); overload;
-    /// <summary>Negative-acknowledges a message (+NAK). Optional delay in milliseconds before redelivery.</summary>
+    /// <summary>Negative-acknowledges a message (-NAK). Optional delay in milliseconds before redelivery.</summary>
     procedure Nak(const AMsg: TNatsJsMsg; ADelayMs: Integer = 0); overload;
     procedure Nak(const AReplyTo: string; ADelayMs: Integer = 0); overload;
     /// <summary>Terminates delivery of a message (+TERM); it will not be redelivered.</summary>
@@ -3690,9 +3690,9 @@ var
   payload: string;
 begin
   if ADelayMs > 0 then
-    payload := Format('+NAK {"delay":%d}', [Int64(ADelayMs) * 1000000])
+    payload := Format('-NAK {"delay":%d}', [Int64(ADelayMs) * 1000000])
   else
-    payload := '+NAK';
+    payload := '-NAK';
   PublishAckPayload(AReplyTo, payload);
 end;
 

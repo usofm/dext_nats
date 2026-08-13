@@ -1752,8 +1752,8 @@ procedure TDextNatsProtocolTests.AckWireContract_ShouldDocumentPayloads;
 begin
   // Contract mirrored from TDextNatsJetStreamContext ack helpers (no I/O).
   Should('+ACK').Be('+ACK');
-  Should('+NAK').Be('+NAK');
-  Should(Format('+NAK {"delay":%d}', [Int64(250) * 1000000])).Be('+NAK {"delay":250000000}');
+  Should('-NAK').Be('-NAK');
+  Should(Format('-NAK {"delay":%d}', [Int64(250) * 1000000])).Be('-NAK {"delay":250000000}');
   Should('+TERM').Be('+TERM');
   Should('+WPI').Be('+WPI');
 end;
