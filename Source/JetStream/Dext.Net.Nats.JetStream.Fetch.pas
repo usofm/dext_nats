@@ -42,13 +42,6 @@ uses
   Dext.Net.Nats.Protocol;
 
 type
-  // Delphi cracker class: keeps SubscribeCore protected from the public API while
-  // allowing this protocol-extension unit to create a tiny inline completion SUB.
-  TDextNatsClientFetchAccess = class(TDextNatsClient)
-  public
-    function SubscribeInline(const ASubject: string; const AHandler: TNatsMsgHandler): Integer;
-  end;
-
   /// <summary>
   ///   Wait-state for a Fetch inbox. Lives as an interface captured by the
   ///   inline handler so RecvLoop can never Enter/SetEvent on a freed
@@ -77,12 +70,6 @@ type
     function WaitFor(ATimeoutMs: Cardinal): TWaitResult;
   end;
 
-function TDextNatsClientFetchAccess.SubscribeInline(const ASubject: string;
-  const AHandler: TNatsMsgHandler): Integer;
-begin
-  Result := SubscribeCore(ASubject, AHandler, '', True);
-end;
-
 function NatsJsBuildFetchRequest(ABatch, AExpiresMs: Integer): string;
 var
   Batch, ExpiresMs: Integer;
@@ -110,7 +97,7 @@ begin
     100, 404, 408, 409:
       Result := True;
   else
-    Result := (Length(AMsg.Payload) = 0) and (AMsg.StatusCode <> 0);
+    Result := (AMsg.PayloadSpan.Length = 0) and (AMsg.StatusCode <> 0);
   end;
 end;
 
@@ -222,7 +209,7 @@ begin
     // Fetch may itself be called from the sole application callback worker.
     // Its private inbox collector therefore completes inline on RecvLoop; only this
     // small internal collector is exempt from normal worker dispatch.
-    Sid := TDextNatsClientFetchAccess(FClient).SubscribeInline(Inbox,
+    Sid := FClient.SubscribeInline(Inbox,
       procedure(const AMsg: TNatsMsg)
       begin
         Gate.Handle(AMsg);

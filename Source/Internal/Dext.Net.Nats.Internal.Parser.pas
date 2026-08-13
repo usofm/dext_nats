@@ -18,11 +18,13 @@ uses
 
 type
   /// <summary>
-  ///   Production cursor-based NATS frame parser. It preserves the
-  ///   existing owned TNatsFrame contract while consuming bytes by advancing
-  ///   TDextNatsReadBuffer rather than shifting the unread tail after every
-  ///   frame. This type stays internal until parity tests and Delphi builds
-  ///   prove it can replace the current parser safely.
+  ///   Production cursor-based NATS frame parser. MSG/HMSG payloads are a
+  ///   borrowed <c>TNatsFrame.PayloadSpan</c> into the cursor buffer (no
+  ///   <c>CopyTo</c> owned <c>TBytes</c>). The span is valid until the next
+  ///   buffer mutation; RecvLoop runs inline handlers before that. Queued
+  ///   delivery copies via <c>TNatsFrame.CopyPayload</c>. Consuming bytes
+  ///   advances TDextNatsReadBuffer rather than shifting the unread tail
+  ///   after every frame.
   /// </summary>
   TDextNatsFrameParserV2 = class
   private
@@ -313,8 +315,8 @@ var
   Line: string;
   HeaderBytes, TotalBytes: Integer;
   NeededBytes: Integer;
-  Payload: TBytes;
   PayloadLen: Integer;
+  PayloadOffset: Integer;
 begin
   AFrame := Default(TNatsFrame);
 
@@ -356,17 +358,20 @@ begin
     NatsDecodeHeaderBlock(
       FBuffer.DataSpan.Slice(FPendingLineLength, FPendingHeaderBytes),
       FPendingFrame.Headers, FPendingFrame.StatusCode);
-
+    PayloadOffset := FPendingLineLength + FPendingHeaderBytes;
     PayloadLen := FPendingTotalBytes - FPendingHeaderBytes;
-    FBuffer.CopyTo(FPendingLineLength + FPendingHeaderBytes,
-      Payload, PayloadLen);
-    FPendingFrame.Payload := Payload;
   end
   else
   begin
-    FBuffer.CopyTo(FPendingLineLength, Payload, FPendingTotalBytes);
-    FPendingFrame.Payload := Payload;
+    PayloadOffset := FPendingLineLength;
+    PayloadLen := FPendingTotalBytes;
   end;
+
+  if PayloadLen > 0 then
+    FPendingFrame.PayloadSpan := FBuffer.DataSpan.Slice(PayloadOffset, PayloadLen)
+  else
+    FPendingFrame.PayloadSpan := Default(TByteSpan);
+  FPendingFrame.Payload := nil;
 
   AFrame := FPendingFrame;
   FBuffer.Consume(NeededBytes);

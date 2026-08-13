@@ -911,7 +911,7 @@ begin
     Should(Ord(frame.Kind)).Be(Ord(nfMsg));
     Should(frame.Subject).Be('foo.bar');
     Should(frame.Sid).Be(7);
-    Should(Utf8OfBytes(frame.Payload)).Be('hello');
+    Should(Utf8OfBytes(frame.CopyPayload)).Be('hello');
     Should(frame.StatusCode).Be(0);
   finally
     parser.Free;
@@ -937,7 +937,7 @@ begin
     Should(frame.Sid).Be(3);
     Should(frame.StatusCode).Be(503);
     Should(frame.Headers.GetValue('Nats-Msg-Id')).Be('abc');
-    Should(Length(frame.Payload)).Be(0);
+    Should(Length(frame.CopyPayload)).Be(0);
   finally
     parser.Free;
   end;
@@ -1016,7 +1016,7 @@ begin
     Should(frame.Subject).Be('foo.bar');
     Should(frame.Sid).Be(9);
     Should(frame.ReplyTo).Be('_INBOX.xyz');
-    Should(Utf8OfBytes(frame.Payload)).Be('ping');
+    Should(Utf8OfBytes(frame.CopyPayload)).Be('ping');
   finally
     parser.Free;
   end;
@@ -1042,7 +1042,7 @@ begin
     Should(parser.TryReadFrame(frame)).BeTrue;
     Should(Ord(frame.Kind)).Be(Ord(nfHMsg));
     Should(frame.Headers.GetValue('X-Test')).Be('1');
-    Should(Utf8OfBytes(frame.Payload)).Be('body');
+    Should(Utf8OfBytes(frame.CopyPayload)).Be('body');
   finally
     parser.Free;
   end;

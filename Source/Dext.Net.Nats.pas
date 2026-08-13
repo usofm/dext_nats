@@ -69,25 +69,57 @@ const
 type
   /// <summary>A fully decoded application message delivered to a subscription handler.</summary>
   TNatsMsg = record
+  private
+    FBorrowedPayload: TByteSpan;
+    FPayloadBorrowed: Boolean;
+    class operator Initialize(out Dest: TNatsMsg);
+  public
     Subject: string;
     ReplyTo: string;
-    /// <summary>Owned payload bytes (stable API). Copy or keep this field to retain data past the handler.</summary>
+    /// <summary>
+    ///   Owned payload bytes (stable API). Default <see cref="TDextNatsClient.Subscribe"/>
+    ///   fills this before the handler (required: the callback runs on a worker thread).
+    ///   <see cref="TDextNatsClient.SubscribeInline"/> (and Request/Fetch completion)
+    ///   leave it empty and bind <see cref="PayloadSpan"/> to the parser buffer instead.
+    ///   Copy this field, call <see cref="CopyPayload"/>, or <see cref="CloneOwned"/>
+    ///   to retain data past the handler.
+    /// </summary>
     Payload: TBytes;
     Headers: TNatsHeaders;
     Sid: Integer;
     /// <summary>Inline status from an HMSG header block (e.g. 503), or 0 when absent.</summary>
     StatusCode: Integer;
-    /// <summary>Decodes the payload as a UTF-8 string.</summary>
+    /// <summary>Decodes the payload as a UTF-8 string (uses <see cref="PayloadSpan"/>).</summary>
     function AsString: string;
     /// <summary>
-    ///   Zero-copy view over <see cref="Payload"/> storage (PERF-04).
-    ///   Lifetime: valid only while this record's <c>Payload</c> dynamic array remains allocated
-    ///   and is not reassigned or resized. Safe for the duration of a subscription handler that
-    ///   receives <c>const AMsg</c>. Do not store the span alone across awaits, queues, or after
-    ///   the handler returns — keep <c>Payload</c> (or call <c>PayloadSpan.ToBytes</c>) instead.
-    ///   Empty payload yields an empty span (<c>Data = nil</c>, <c>Length = 0</c>).
+    ///   Zero-copy payload view. Default Subscribe: over owned <see cref="Payload"/>
+    ///   (valid while that dynamic array remains allocated). Inline/borrowed delivery:
+    ///   over the RecvLoop parser buffer, valid <b>only until the handler returns</b>
+    ///   — RecvLoop then continues and may compact/overwrite the buffer. Do not store
+    ///   the span across awaits, queues, or after the handler returns. Keep
+    ///   <see cref="Payload"/>, call <see cref="CopyPayload"/>, <see cref="CloneOwned"/>,
+    ///   or <c>PayloadSpan.ToBytes</c> instead. Empty payload yields an empty span
+    ///   (<c>Data = nil</c>, <c>Length = 0</c>).
     /// </summary>
     function PayloadSpan: TByteSpan;
+    /// <summary>True when <see cref="PayloadSpan"/> views the parser buffer (inline delivery).</summary>
+    function HasBorrowedPayload: Boolean;
+    /// <summary>
+    ///   Owned bytes: <see cref="Payload"/> when already filled, otherwise a copy of
+    ///   the borrowed span. Safe to keep after the handler returns.
+    /// </summary>
+    function CopyPayload: TBytes;
+    /// <summary>
+    ///   Record copy whose <see cref="Payload"/> is owned <c>TBytes</c> (copies the
+    ///   borrowed span when needed). Use this before storing a message past an inline handler
+    ///   (Request/Fetch do this internally).
+    /// </summary>
+    function CloneOwned: TNatsMsg;
+    /// <summary>
+    ///   Binds a parser-buffer span and clears <see cref="Payload"/>. Used by RecvLoop
+    ///   for inline delivery; application code should not call this.
+    /// </summary>
+    procedure BindBorrowedPayload(const ASpan: TByteSpan);
     /// <summary>True when the message carries a reply subject the handler can publish to.</summary>
     function HasReplyTo: Boolean;
     /// <summary>True when the server reported no responders for a request (status 503).</summary>
@@ -180,7 +212,10 @@ type
     Subject: string;
     Queue: string;
     Handler: TNatsMsgHandler;
-    /// <summary>True only for tiny internal synchronous-request completion handlers.</summary>
+    /// <summary>
+    ///   True for <see cref="TDextNatsClient.SubscribeInline"/> and internal Request/Fetch
+    ///   completion handlers. Callback runs on RecvLoop; payload may be borrowed.
+    /// </summary>
     InlineDelivery: Boolean;
     /// <summary>Absolute message count after which the subscription auto-cancels; -1 means unlimited.</summary>
     MaxMsgs: Integer;
@@ -253,7 +288,10 @@ type
     function GetMetrics: TNatsClientMetrics;
     function NextSid: Integer;
   protected
-    /// <summary>Internal subscription seam for protocol extensions that must complete synchronously.</summary>
+    /// <summary>
+    ///   Subscription seam used by <see cref="Subscribe"/> (queued, owned payload) and
+    ///   <see cref="SubscribeInline"/> (RecvLoop, borrowed payload span).
+    /// </summary>
     function SubscribeCore(const ASubject: string; const AHandler: TNatsMsgHandler;
       const AQueue: string; AInlineDelivery: Boolean): Integer;
   private
@@ -330,9 +368,24 @@ type
     procedure PublishWithHeaders(const ASubject: string; const APayload: TBytes; const AHeaders: TNatsHeaders;
       const AReplyTo: string = '');
 
-    /// <summary>Subscribes AHandler to ASubject (optionally as part of queue group AQueue) and returns the subscription id.
-    /// May be called before Connect(); the SUB frame is sent once the client is connected.</summary>
+    /// <summary>
+    ///   Subscribes AHandler to ASubject (optionally as part of queue group AQueue) and returns the subscription id.
+    ///   May be called before Connect(); the SUB frame is sent once the client is connected.
+    ///   Delivery is queued to the bounded dispatcher; <see cref="TNatsMsg.Payload"/> is an owned
+    ///   <c>TBytes</c> copy (required: the handler runs on a worker thread).
+    /// </summary>
     function Subscribe(const ASubject: string; const AHandler: TNatsMsgHandler; const AQueue: string = ''): Integer;
+    /// <summary>
+    ///   Opt-in RecvLoop delivery: AHandler runs on the receive thread before the parser
+    ///   reuses its buffer. <see cref="TNatsMsg.PayloadSpan"/> is borrowed (no <c>TBytes</c>
+    ///   copy); <see cref="TNatsMsg.Payload"/> is empty. The span is valid <b>only until
+    ///   the handler returns</b>. Call <see cref="TNatsMsg.CopyPayload"/> /
+    ///   <see cref="TNatsMsg.CloneOwned"/> if you store the message. Do not block RecvLoop
+    ///   (no nested socket I/O); nested <c>Request</c>/<c>Fetch</c> are safe because they
+    ///   also complete inline. Default <see cref="Subscribe"/> remains the safe queued API.
+    /// </summary>
+    function SubscribeInline(const ASubject: string; const AHandler: TNatsMsgHandler;
+      const AQueue: string = ''): Integer;
     /// <summary>Cancels a subscription. If AMaxMsgs &gt; 0, it auto-cancels after that many additional messages instead of immediately.</summary>
     procedure Unsubscribe(ASid: Integer; AMaxMsgs: Integer = 0);
     /// <summary>Cancels every subscription currently registered for ASubject.</summary>
@@ -416,17 +469,60 @@ uses
 
 { TNatsMsg }
 
-function TNatsMsg.AsString: string;
+class operator TNatsMsg.Initialize(out Dest: TNatsMsg);
 begin
-  if Length(Payload) = 0 then
+  Dest.FBorrowedPayload := Default(TByteSpan);
+  Dest.FPayloadBorrowed := False;
+end;
+
+function TNatsMsg.AsString: string;
+var
+  Span: TByteSpan;
+begin
+  Span := PayloadSpan;
+  if Span.Length = 0 then
     Result := ''
   else
-    Result := TEncoding.UTF8.GetString(Payload);
+    Result := Span.ToString;
 end;
 
 function TNatsMsg.PayloadSpan: TByteSpan;
 begin
-  Result := TByteSpan.FromBytes(Payload);
+  if FPayloadBorrowed then
+    Result := FBorrowedPayload
+  else
+    Result := TByteSpan.FromBytes(Payload);
+end;
+
+function TNatsMsg.HasBorrowedPayload: Boolean;
+begin
+  Result := FPayloadBorrowed;
+end;
+
+function TNatsMsg.CopyPayload: TBytes;
+begin
+  if FPayloadBorrowed then
+    Result := FBorrowedPayload.ToBytes
+  else
+    Result := Payload;
+end;
+
+function TNatsMsg.CloneOwned: TNatsMsg;
+begin
+  Result := Self;
+  if Result.FPayloadBorrowed then
+  begin
+    Result.Payload := Result.FBorrowedPayload.ToBytes;
+    Result.FBorrowedPayload := Default(TByteSpan);
+    Result.FPayloadBorrowed := False;
+  end;
+end;
+
+procedure TNatsMsg.BindBorrowedPayload(const ASpan: TByteSpan);
+begin
+  FBorrowedPayload := ASpan;
+  FPayloadBorrowed := True;
+  Payload := nil;
 end;
 
 function TNatsMsg.HasReplyTo: Boolean;
@@ -1519,12 +1615,16 @@ begin
   if not found then
     Exit;
 
+  msg := Default(TNatsMsg);
   msg.Subject := AFrame.Subject;
   msg.ReplyTo := AFrame.ReplyTo;
-  msg.Payload := AFrame.Payload;
   msg.Headers := AFrame.Headers;
   msg.Sid := AFrame.Sid;
   msg.StatusCode := AFrame.StatusCode;
+  if inlineDelivery then
+    msg.BindBorrowedPayload(AFrame.PayloadSpan)
+  else
+    msg.Payload := AFrame.CopyPayload;
 
   NoteMetric(NATS_METRIC_MSGS_RECEIVED, FMetricMessagesReceived);
 
@@ -1674,6 +1774,12 @@ begin
   Result := SubscribeCore(ASubject, AHandler, AQueue, False);
 end;
 
+function TDextNatsClient.SubscribeInline(const ASubject: string; const AHandler: TNatsMsgHandler;
+  const AQueue: string): Integer;
+begin
+  Result := SubscribeCore(ASubject, AHandler, AQueue, True);
+end;
+
 function TDextNatsClient.SubscribeCore(const ASubject: string; const AHandler: TNatsMsgHandler;
   const AQueue: string; AInlineDelivery: Boolean): Integer;
 var
@@ -1778,17 +1884,17 @@ begin
   evt := TEvent.Create(nil, True, False, '');
   gate := TNatsRequestGate.Create;
   try
-    sid := SubscribeCore(inbox,
+    sid := SubscribeInline(inbox,
       procedure(const AMsg: TNatsMsg)
       begin
         // Internal completion only: signal the synchronous waiter immediately on
         // RecvLoop so Request() remains safe even when called from the sole callback worker.
         if gate.TryClaim then
         begin
-          reply := AMsg;
+          reply := AMsg.CloneOwned;
           evt.SetEvent;
         end;
-      end, '', True);
+      end);
     Unsubscribe(sid, 1); // ask the server to auto-cancel this subscription after exactly one reply
 
     if Length(AHeaders) > 0 then

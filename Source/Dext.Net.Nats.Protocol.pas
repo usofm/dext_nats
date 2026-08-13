@@ -168,12 +168,32 @@ type
     Subject: string;
     ReplyTo: string;
     Sid: Integer;
+    /// <summary>
+    ///   Owned payload bytes. Parser V2 leaves this empty for MSG/HMSG and sets
+    ///   <see cref="PayloadSpan"/> instead; use <see cref="CopyPayload"/> to retain bytes.
+    /// </summary>
     Payload: TBytes;
+    /// <summary>
+    ///   Zero-copy MSG/HMSG payload view into the parser read buffer.
+    ///   Lifetime: valid until the next parser mutation (<c>Append</c>,
+    ///   <c>PrepareReceive</c>/<c>CommitReceive</c>, <c>Clear</c>, or a later
+    ///   <c>TryReadFrame</c> that compacts the unread tail). RecvLoop runs an
+    ///   inline handler before those mutations. Do not store this span. Call
+    ///   <see cref="CopyPayload"/> (or <c>PayloadSpan.ToBytes</c>) to keep the bytes.
+    ///   Empty payload yields an empty span (<c>Data = nil</c>, <c>Length = 0</c>).
+    /// </summary>
+    PayloadSpan: TByteSpan;
     Headers: TNatsHeaders;
     /// <summary>Inline status code parsed from the header block first line (e.g. 503), 0 if none.</summary>
     StatusCode: Integer;
     InfoJson: string;
     ErrorText: string;
+    /// <summary>
+    ///   Owned payload when <see cref="Payload"/> is already filled; otherwise a
+    ///   copy of <see cref="PayloadSpan"/>. Safe to keep after the parser reuses
+    ///   its buffer.
+    /// </summary>
+    function CopyPayload: TBytes;
   end;
 
 /// <summary>Generates a process-unique inbox subject, e.g. "_INBOX.3f2c9e1a...".</summary>
@@ -213,6 +233,18 @@ type
     procedure WriteIntDec(AValue: Integer);
     function ToBytes: TBytes;
   end;
+
+{ TNatsFrame }
+
+function TNatsFrame.CopyPayload: TBytes;
+begin
+  if Length(Payload) > 0 then
+    Result := Payload
+  else if PayloadSpan.Length > 0 then
+    Result := PayloadSpan.ToBytes
+  else
+    Result := nil;
+end;
 
 { TNatsByteWriter }
 

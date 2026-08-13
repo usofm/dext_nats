@@ -140,13 +140,14 @@ Dext.Json.Utf8.pas
 
 1. تا وقتی `TNatsMsg.Payload: TBytes` عمومی است، یک کپی به مالکیت handler لازم است (قرارداد فعلی).
 2. داخل parser، از double-copy پرهیز شود: یک `Move` از بافر داخلی به `Payload`.
-3. (اختیاری) `TNatsMsg.PayloadSpan` / `TNatsJsMsg.PayloadSpan` — view روی `Payload: TBytes` با doc lifetime صریح؛ API پایدار `TBytes` حفظ می‌شود.
+3. (اختیاری، landed) `TNatsMsg.PayloadSpan` — view روی owned `Payload` برای `Subscribe` صف‌شده؛ برای `SubscribeInline` / Request/Fetch روی بافر parser (عمر تا بازگشت handler). `Payload: TBytes` پایدار می‌ماند.
 
 **Acceptance:**
 
 - [x] هیچ API عمومی payload را به‌صورت view ناپایدار برنگرداند مگر با doc صریح و تست lifetime.
 - [x] تست integration pub/sub و request/reply بدون رگرسیون.
 - [x] Unit: `Msg_PayloadSpan_ShouldViewOwnedBytes` / `JsMsg_PayloadSpan_ShouldViewOwnedBytes`.
+- [x] Opt-in borrowed MSG: `SubscribeInline` + parser `PayloadSpan` (بدون `CopyTo`); queued Subscribe همچنان owned `TBytes`.
 
 #### SPEC-PERF-05 — سقف ایمنی و تخصیص بافر parser
 

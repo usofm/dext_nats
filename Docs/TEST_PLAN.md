@@ -58,6 +58,7 @@
 | U-09c | `OrderedConsumerOptions_ShouldDefault` | `TNatsOrderedConsumerOptions.CreateDefault` |
 | U-10 | `JsMsg_ShouldParseAckSubjectMetadata` | `TNatsJsMsg.FromNatsMsg` از `$JS.ACK.*` |
 | U-10b | `Msg_PayloadSpan_ShouldViewOwnedBytes` / `JsMsg_PayloadSpan_ShouldViewOwnedBytes` | PERF-04 `PayloadSpan` zero-copy + lifetime (keep `TBytes`) |
+| U-10c | `Msg_ShouldBorrowPayloadSpanWithoutOwnedCopy` / `CopyPayload_ShouldSurviveSubsequentParserClear` / `TDextNatsBorrowedPayloadTests` | Borrowed MSG span (inline only); queued Subscribe keeps owned `TBytes` |
 | U-11 | `KeyValueConfig_ShouldMapToStreamConfig` | KV history/direct/rollup + Compression/Placement → STREAM.CREATE JSON |
 
 #### `TDextNatsIntegrationTests` — cleartext `127.0.0.1:4222` — **~۲۵**

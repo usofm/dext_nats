@@ -42,6 +42,10 @@ type
     procedure PrepareReceive_ShouldDecodeLikeAppend;
     [Test, Category('Unit'), Category('Protocol'), Category('Negative')]
     procedure MaxFrameBytes_ShouldRaise;
+    [Test, Category('Unit'), Category('Protocol')]
+    procedure Msg_ShouldBorrowPayloadSpanWithoutOwnedCopy;
+    [Test, Category('Unit'), Category('Protocol')]
+    procedure CopyPayload_ShouldSurviveSubsequentParserClear;
   end;
 
 implementation
@@ -97,7 +101,8 @@ begin
     Should(Frame.Subject).Be('orders.created');
     Should(Frame.ReplyTo).Be('_INBOX.reply');
     Should(Frame.Sid).Be(42);
-    Should(TEncoding.UTF8.GetString(Frame.Payload)).Be('hello');
+    Should(Length(Frame.Payload)).Be(0);
+    Should(TEncoding.UTF8.GetString(Frame.CopyPayload)).Be('hello');
   finally
     Parser.Free;
   end;
@@ -118,7 +123,8 @@ begin
     Should(Parser.TryReadFrame(Frame)).BeTrue;
     Should(Frame.Subject).Be('foo');
     Should(Frame.Sid).Be(7);
-    Should(TEncoding.UTF8.GetString(Frame.Payload)).Be('hello world');
+    Should(Length(Frame.Payload)).Be(0);
+    Should(TEncoding.UTF8.GetString(Frame.CopyPayload)).Be('hello world');
   finally
     Parser.Free;
   end;
@@ -170,7 +176,8 @@ begin
     Should(Length(Frame.Headers)).Be(1);
     Should(Frame.Headers[0].Key).Be('Content-Type');
     Should(Frame.Headers[0].Value).Be('text/plain');
-    Should(TEncoding.UTF8.GetString(Frame.Payload)).Be('data');
+    Should(Length(Frame.Payload)).Be(0);
+    Should(TEncoding.UTF8.GetString(Frame.CopyPayload)).Be('data');
   finally
     Parser.Free;
   end;
@@ -228,6 +235,45 @@ begin
     AppendText(Parser, 'MSG too.big 1 5'#13#10'hello'#13#10);
     Should(procedure var F: TNatsFrame; begin Parser.TryReadFrame(F); end)
       .Throw(EDextNatsProtocolError);
+  finally
+    Parser.Free;
+  end;
+end;
+
+procedure TDextNatsParserV2Tests.Msg_ShouldBorrowPayloadSpanWithoutOwnedCopy;
+var
+  Parser: TDextNatsFrameParserV2;
+  Frame: TNatsFrame;
+begin
+  Parser := TDextNatsFrameParserV2.Create;
+  try
+    AppendText(Parser, 'MSG foo 1 5'#13#10'hello'#13#10);
+    Should(Parser.TryReadFrame(Frame)).BeTrue;
+    Should(Length(Frame.Payload)).Be(0);
+    Should(Frame.PayloadSpan.Length).Be(5);
+    Should(Frame.PayloadSpan.EqualsString('hello')).BeTrue;
+    Should(Assigned(Frame.PayloadSpan.Data)).BeTrue;
+  finally
+    Parser.Free;
+  end;
+end;
+
+procedure TDextNatsParserV2Tests.CopyPayload_ShouldSurviveSubsequentParserClear;
+var
+  Parser: TDextNatsFrameParserV2;
+  Frame: TNatsFrame;
+  Kept: TBytes;
+begin
+  Parser := TDextNatsFrameParserV2.Create;
+  try
+    AppendText(Parser, 'MSG foo 1 5'#13#10'hello'#13#10);
+    Should(Parser.TryReadFrame(Frame)).BeTrue;
+    Kept := Frame.CopyPayload;
+    Parser.Clear;
+    AppendText(Parser, 'MSG bar 2 5'#13#10'xxxxx'#13#10);
+    Should(Parser.TryReadFrame(Frame)).BeTrue;
+    Should(TEncoding.UTF8.GetString(Kept)).Be('hello');
+    Should(TEncoding.UTF8.GetString(Frame.CopyPayload)).Be('xxxxx');
   finally
     Parser.Free;
   end;

@@ -85,13 +85,13 @@ Status: **implemented**.
 
 Status: **V2 is the production runtime parser.**
 
-`TDextNatsFrameParserV2` uses `TDextNatsReadBuffer` and preserves the owned `TNatsFrame` contract. `Dext.Net.Nats.ParserRuntime` aliases `TDextNatsRuntimeFrameParser = TDextNatsFrameParserV2`. The old contiguous/`ShiftBuffer` parser is gone. Parity tests cover control frames, INFO, MSG/HMSG, fragmented input, multi-frame input, Clear and max-frame rejection. A V2 benchmark and compaction assertion are included. Delphi 13 compile/integration of this cut-over is still an unrun gate.
+`TDextNatsFrameParserV2` uses `TDextNatsReadBuffer`. MSG/HMSG payloads are a borrowed `TNatsFrame.PayloadSpan` into that buffer (no `CopyTo` owned `TBytes`). The span is valid until the next parser mutation; RecvLoop runs inline handlers before that. Queued `Subscribe` copies via `TNatsFrame.CopyPayload` before dispatch. `Dext.Net.Nats.ParserRuntime` aliases `TDextNatsRuntimeFrameParser = TDextNatsFrameParserV2`. The old contiguous/`ShiftBuffer` parser is gone. Parity tests cover control frames, INFO, MSG/HMSG, fragmented input, multi-frame input, Clear, max-frame rejection, and borrowed-span lifetime (`CopyPayload` survives `Clear`). A V2 benchmark and compaction assertion are included. Delphi 13 compile/integration of this cut-over is still an unrun gate.
 
 ## Phase 3 — bounded message dispatch
 
 Status: **native default on `TDextNatsClient` (1 worker, bounded queue, block/backpressure).**
 
-`Source/Internal/Dext.Net.Nats.Internal.Dispatcher.pas` is the only callback dispatch layer. The obsolete `Dext.Net.Nats.Dispatching.pas` adapter was removed from production. Public `Subscribe` is worker-dispatched. Internal completion subscriptions (`Request` inbox, Fetch inbox via `TDextNatsJetStreamFetcher.SubscribeInline`) use `SubscribeCore(..., InlineDelivery=True)` so nested synchronous waits do not deadlock the sole worker.
+`Source/Internal/Dext.Net.Nats.Internal.Dispatcher.pas` is the only callback dispatch layer. The obsolete `Dext.Net.Nats.Dispatching.pas` adapter was removed from production. Public `Subscribe` is worker-dispatched with an owned `TBytes` payload (the copy is required: the handler runs on another thread). `SubscribeInline` (and internal Request/Fetch completion) runs the handler on RecvLoop with a borrowed `PayloadSpan`; `Request`/`Fetch` call `CloneOwned`/`CopyPayload` before storing the message past the handler.
 
 **P0 Fetch (source):** `TDextNatsJetStreamContext.Fetch` delegates to `TDextNatsJetStreamFetcher`. Wait-state is an interface gate; `Unsubscribe(sid, 0)` always runs before dropping it. Compiler/live validation still pending.
 
@@ -173,13 +173,13 @@ The historical `Tests/Dext.Net.Nats.Tests.pas` mega-unit remains temporary debt.
 
 Status: **partial**. Non-breaking hot-path items below are in source. Remaining items are skipped (breaking API or missing Dext primitive) or wait on compile/live measurement.
 
-1. borrowed/Span MSG callback with explicit lifetime contract — **skipped** (breaking public `TNatsMsgHandler` API);
+1. [x] borrowed/Span MSG callback with explicit lifetime contract — `SubscribeInline` (RecvLoop) binds `TNatsMsg.PayloadSpan` to the parser buffer and leaves `Payload` empty; valid **only until the handler returns**. Default `Subscribe` still copies owned `TBytes` before the dispatcher queue (borrow across threads is invalid). `Request`/`Fetch` complete inline and `CloneOwned`/`CopyPayload` so returned messages keep owned bytes. `TNatsMsgHandler` is unchanged;
 2. [x] pooled encode buffers — `TDextPool<TDextNatsEncodeScratch>` / `TDextNatsControlScratch` wrap the record writers (`TDextPool<T>` requires `class, constructor`; public `NatsV2Encode*` / `NatsControl*` still return owned `TBytes`; Publish API unchanged). Exhaustion falls back to a stack writer (`AcquireTimeoutMs=0`) so publish never blocks on the pool;
 3. [x] RecvLoop `Receive(TByteSpan)` into `TDextNatsReadBuffer.WritableSpan` via `PrepareReceive`/`CommitReceive` (plaintext TCP and TLS plaintext). RecvLoop still owns Receive; TLS encrypted path still uses `FTLSNetworkBuffer`;
 4. [x] Span-oriented header parser/writer — `NatsEncodeHeaderBlock` / `NatsDecodeHeaderBlock(TByteSpan)` in `Protocol.Headers`; public `TNatsHeaders` remains `TArray<TPair<string,string>>`. Parser V2 decodes HMSG from `DataSpan.Slice` (no `GetString`). `TNatsHeadersHelper.Encode` and `NatsParseHeaderBlock` delegate to the span codec;
 5. optional vectored write — **skipped** (`Dext.Net.Tcp` has no `writev` / vectored send);
 6. owned-vs-borrowed allocation/throughput baselines — **open** (needs a compile + `DEXT_NATS_RUN_BENCH=1` run);
-7. bounded dispatch is already the default; keep `InlineDelivery` reserved for internal completion subscriptions only.
+7. bounded dispatch remains the default for `Subscribe`. `SubscribeInline` is the opt-in RecvLoop/borrowed-span path (also used by Request/Fetch completion so nested waits do not deadlock the sole worker).
 
 Also closed this round (not originally numbered):
 

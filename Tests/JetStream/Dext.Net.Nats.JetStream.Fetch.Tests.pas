@@ -3,6 +3,8 @@
 interface
 
 uses
+  System.SysUtils,
+  Dext.Core.Span,
   Dext.Testing,
   Dext.Testing.Attributes,
   Dext.Testing.Fluent,
@@ -18,6 +20,9 @@ type
 
     [Test, Category('Unit'), Category('JetStream')]
     procedure ControlDetection_ShouldUseStatusCode;
+
+    [Test, Category('Unit'), Category('JetStream')]
+    procedure ControlDetection_ShouldUsePayloadSpanNotOwnedField;
   end;
 
 implementation
@@ -45,6 +50,19 @@ begin
   Should(NatsJsIsControlMessage(Msg)).Be(True);
   Msg.StatusCode := 409;
   Should(NatsJsIsControlMessage(Msg)).Be(True);
+end;
+
+procedure TDextNatsJetStreamFetchTests.ControlDetection_ShouldUsePayloadSpanNotOwnedField;
+var
+  Msg: TNatsMsg;
+  Bytes: TBytes;
+begin
+  Bytes := TEncoding.UTF8.GetBytes('body');
+  Msg := Default(TNatsMsg);
+  Msg.StatusCode := 200;
+  Msg.BindBorrowedPayload(TByteSpan.FromBytes(Bytes));
+  Should(Length(Msg.Payload)).Be(0);
+  Should(NatsJsIsControlMessage(Msg)).BeFalse;
 end;
 
 end.

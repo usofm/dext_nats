@@ -338,7 +338,7 @@ This is a classic self-deadlock.
 
 ### Fix
 
-The low-level subscription implementation has an `InlineDelivery` capability for **internal completion subscriptions only**.
+The low-level subscription implementation has an `InlineDelivery` capability. Public `Subscribe()` still uses worker dispatch with an owned `TBytes` payload. Opt-in `SubscribeInline()` (and Request/Fetch completion) runs on RecvLoop with a borrowed `PayloadSpan` valid only until the handler returns.
 
 The synchronous `Request()` private inbox completion handler is allowed to execute inline on RecvLoop because it performs only completion mechanics such as:
 

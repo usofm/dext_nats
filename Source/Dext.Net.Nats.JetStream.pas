@@ -404,7 +404,11 @@ type
     ///   <c>PayloadSpan.ToBytes</c> to retain data past the handler / Fetch result scope.
     /// </summary>
     function PayloadSpan: TByteSpan;
-    /// <summary>Builds a JS message from a raw NATS message, parsing metadata from ReplyTo / headers.</summary>
+    /// <summary>
+    ///   Builds a JS message from a raw NATS message, parsing metadata from ReplyTo / headers.
+    ///   Copies payload bytes (<see cref="TNatsMsg.CopyPayload"/>) so Fetch results outlive
+    ///   the inline RecvLoop handler.
+    /// </summary>
     class function FromNatsMsg(const AMsg: TNatsMsg): TNatsJsMsg; static;
   end;
 
@@ -885,7 +889,7 @@ begin
     100, 404, 408, 409:
       Result := True;
   else
-    Result := (Length(AMsg.Payload) = 0) and (AMsg.StatusCode <> 0);
+    Result := (AMsg.PayloadSpan.Length = 0) and (AMsg.StatusCode <> 0);
   end;
 end;
 
@@ -2660,7 +2664,7 @@ begin
   Result := Default(TNatsJsMsg);
   Result.Subject := AMsg.Subject;
   Result.ReplyTo := AMsg.ReplyTo;
-  Result.Payload := AMsg.Payload;
+  Result.Payload := AMsg.CopyPayload;
   Result.Headers := AMsg.Headers;
   Result.StatusCode := AMsg.StatusCode;
 

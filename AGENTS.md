@@ -48,7 +48,9 @@ Source/
                                 threading, reconnection, pub/sub, request/reply,
                                 Drain/DrainAsync/IsDraining, NKey/JWT auth,
                                 ServerInfo snapshot (handshake + async INFO),
-                                TNatsMsg.PayloadSpan (TByteSpan over Payload),
+                                TNatsMsg.PayloadSpan (owned TBytes on Subscribe;
+                                borrowed parser-buffer span on SubscribeInline /
+                                Request/Fetch RecvLoop; valid until handler returns),
                                 optional ILogger + opt-in TMetrics.
   Dext.Net.Nats.DependencyInjection.pas
                                 Dext.DI helpers: AddNatsClient (singleton),
@@ -325,7 +327,8 @@ parsing frames anywhere else.
   `TNatsByteWriter` encode path, byte `ParseControlLine`, INFO/CONNECT via
   `Dext.Json.Utf8` (`TUtf8JsonReader`/`TUtf8JsonWriter`); JetStream admin JSON
   migrated the same way (PERF-03b); `System.JSON` removed from Protocol + JetStream;
-  PERF-04 `TNatsMsg`/`TNatsJsMsg.PayloadSpan` (`TByteSpan` over owned `Payload`)
+  PERF-04 `TNatsMsg`/`TNatsJsMsg.PayloadSpan` (owned `TBytes` on queued
+  Subscribe; borrowed parser-buffer span on SubscribeInline / Request/Fetch)
 - [x] Async `RequestAsync`/`FlushAsync` via `TAsyncBuilder` (roadmap SPEC-ASYNC-01);
       callback `RequestAsync` overload retained
 - [x] JetStream Key-Value (`Dext.Net.Nats.KeyValue.pas` / SPEC-KV-01):
