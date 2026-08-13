@@ -2,13 +2,13 @@
 
 > Repository: `usofm/dext_nats`  
 > Working branch at writing: `perf/parser-v2-cutover` (merged to `main` in PR #2 / `7f510e7`)  
-> Current `main` HEAD (this execution): `3d935f61025e88c19610b8db7794ec0972ba09fa`  
+> Current `main` HEAD (this execution): `8b19853` (Phase 7 compile-fix; see git log for span-headers / SIMD / docs / Fetch-reuse)  
 > Fetch-inline commit still in history: `51f3d3d3d28287dc7e518bf8acddc89eef6fbb32`  
 > Target compiler: **Delphi 13 / RAD Studio** (compiler 37.0 is installed on this machine)  
-> Target NATS runtime: NATS Server with JetStream enabled (`nats-server` v2.12.3 found)  
-> Status: **NOT READY TO MERGE.** P0 Fetch deadlock + UAF are **fixed in source** (façade `Fetch` delegates to `TDextNatsJetStreamFetcher` with inline RecvLoop completion; wait-state is an interface gate; `Unsubscribe(sid, 0)` always runs before dropping the gate). Nested Request (100×) and nested Fetch (50×) live tests added (`HandlerWorkerCount = 1`). Debug Win32 rebuild **attempted** and failed on pre-existing `Internal.Dispatcher.pas` `TInterlocked.Read` (Fetch units not reached). Live/stress/benchmark still not executed.
+> Target NATS runtime: NATS Server with JetStream (`nats-server` **v2.14.5** at `.tools/nats-server-v2.14.5-windows-amd64`; v2.12.3 also present under Comp12 `nats.server`)  
+> Status: **NOT READY TO MERGE** (full matrix / Release / Nested Request 100× / stress / bench still open). P0 Fetch deadlock + UAF are **fixed in source** and **nested Fetch 50× passed live** on nats-server 2.14.5 `-js`. Debug Win32 rebuild **succeeded** (`scripts/build-tests.ps1 -Config Debug -Platform Win32`). OrderedConsumer + PurgeDeletes live tests also passed on 2.14.5.
 
-**Agent paths (this machine):** canonical Dext source is `C:\apps_delphi\Comp12\dext` (not `C:\dev\comp\dext`). Dext AI Coding Pack is `C:\apps_delphi\Comp12\DEXT_AI_CODING_PACK` (`v2026.08.12-r3-dext-412ed292`). This library is Net/protocol — pack ORM/web skills do not apply. See `AGENTS.md` for which pack files to load. Fetch P0 deadlock/UAF are fixed in source; remaining merge blockers are Delphi compile + live/stress/benchmark execution and the P1 façade→Runtime cut-over.
+**Agent paths (this machine):** canonical Dext source is `C:\apps_delphi\Comp12\dext` (not `C:\dev\comp\dext`). Dext AI Coding Pack is `C:\apps_delphi\Comp12\DEXT_AI_CODING_PACK` (`v2026.08.12-r3-dext-412ed292`). This library is Net/protocol — pack ORM/web skills do not apply. See `AGENTS.md` for which pack files to load. Fetch P0 deadlock/UAF are fixed in source and nested-Fetch live passed on 2.14.5. Remaining merge blockers: Release/Win64 rebuild, Nested Request 100×, remaining live matrix, stress/bench, and the P1 façade→Runtime cut-over (Streams/Consumers/Push/Ordered still duplicated).
 
 ---
 
@@ -1400,7 +1400,7 @@ Legacy identifiers `ShiftBuffer`, `FBufferLen`, `NatsEncodeConnect`/`Pub`/`HPub`
 `Docs/ARCHITECTURE_V2.md` was stale vs code (claimed V1 still runtime / opt-in Dispatching adapter); updated in this pass.
 
 ### Build
-- [ ] Debug Win32 clean rebuild — **attempted this session; FAILED** on pre-existing `Dext.Net.Nats.Internal.Dispatcher.pas(95)` `TInterlocked.Read(FState)` (E2250). Fetch units were not reached. Unrelated to P0 Fetch.
+- [x] Debug Win32 clean rebuild — **passed** (`scripts/build-tests.ps1 -Config Debug -Platform Win32` → `Output\Win32\Debug\Dext.Net.Nats.Tests.exe`). Compile fixes: duplicate `SysUtils` in Paging/Transport implementation; `IndexOfCrLf` arity in Internal tests (`8b19853`).
 - [ ] Release Win32 clean rebuild — **not run**
 - [ ] Release Win64 clean rebuild (if supported) — **not run**
 
@@ -1413,19 +1413,19 @@ powershell -ExecutionPolicy Bypass -File .\scripts\build-tests.ps1 -Config Relea
 ```
 
 Compiler errors fixed:
-1. None in Fetch/P0 this session. Debug Win32 rebuild failed on pre-existing `TInterlocked.Read` in `Internal.Dispatcher.pas` (not Fetch). Delphi 13 is installed (`Studio\37.0`).
+1. Debug Win32: duplicate `System.SysUtils` in `JetStream.Paging` / `JetStream.Transport` implementation uses; `Should(FBuffer.IndexOfCrLf)` needed `IndexOfCrLf(0)` (E2035). Delphi 13 (`Studio\37.0`).
 
 Compiler warnings reviewed:
-1. Not available without a compile log.
+1. Pre-existing: Dispatcher `Dispatch` hides `TObject.Dispatch`; unused locals; PUBLISHED RTTI on DI settings. Not treated as blockers.
 
 ### Unit Tests
-- [ ] Parser — source/tests exist (`Tests/Protocol/Dext.Net.Nats.ParserV2.Tests.pas`, `ParserRuntime.Tests.pas`); **not executed**
-- [ ] Protocol Writer/Control — tests exist (`Protocol.V2.Tests.pas`); **not executed**
-- [ ] Internal Buffer — covered by Internal tests; **not executed**
-- [ ] Internal Dispatcher — covered by Internal tests; **not executed**
-- [ ] Core client — mega-unit + Drain tests exist; **not executed**
+- [x] Parser — `TDextNatsParserV2Tests` **8/8 passed** (Debug Win32, `DEXT_NATS_SKIP_LIVE=1`)
+- [x] Protocol Writer/Control/Headers — `TDextNatsProtocolV2Tests` **8/8 passed** (includes span header decode + UTF-8 round-trip)
+- [x] Internal Buffer — `TDextNatsInternalTests` **8/8 passed** (includes SIMD `IndexOfCrLf` fallback)
+- [x] Internal Dispatcher — same Internal fixture **passed**
+- [ ] Core client — mega-unit + Drain tests exist; **not executed** (full fixture)
 - [ ] Drain — `Tests/Core/Dext.Net.Nats.Drain.Tests.pas` (duplicate also at `Tests/Dext.Net.Nats.Drain.Tests.pas`); **not executed**
-- [ ] JetStream unit tests — JSON/Streams/Consumers/Fetch/ObjectPaging fixtures exist; Fetch unit tests remain request-JSON/control-detection; nested-Fetch live test is in `TDextNatsJetStreamTests.NestedFetch_FromOneWorkerHandler_ShouldComplete`; **not executed**
+- [x] JetStream JSON unit tests — `TDextNatsJetStreamJsonTests` **14/14 passed** (includes `TBytes` parse without string round-trip). Streams/Consumers/Fetch/ObjectPaging fixtures exist; **not executed** this pass
 - [ ] KeyValue unit tests — Subjects/WatcherGate only; **not executed**
 - [ ] ObjectStore unit tests — Subjects/WatcherGate only; **not executed**
 - [ ] Services unit tests — Subjects/Validation/Routing; **not executed**
@@ -1445,7 +1445,7 @@ Start command when executing locally: `nats-server -js` (or `scripts/download-na
 
 ### Critical Concurrency
 - [ ] Nested synchronous Request from one-worker callback — **source + test added** (`TDextNatsIntegrationTests.NestedRequest_FromOneWorkerHandler_ShouldComplete`, 100×, second-client responder, `HandlerWorkerCount = 1`); **not executed**
-- [ ] Nested JetStream Fetch from one-worker callback — **P0 source fix + test added** (`TDextNatsJetStreamContext.Fetch` → `TDextNatsJetStreamFetcher` inline SUB; `NestedFetch_FromOneWorkerHandler_ShouldComplete`, 50×); **not executed**
+- [x] Nested JetStream Fetch from one-worker callback — **P0 source fix + live passed** on nats-server **v2.14.5** `-js` (`NestedFetch_FromOneWorkerHandler_ShouldComplete`, 50×, 214ms)
 - [ ] Callback FIFO with one worker — **not run**
 - [ ] Bounded queue backpressure — **not run**
 - [ ] Multi-worker callback stress — **not run**
@@ -1455,14 +1455,14 @@ Start command when executing locally: `nats-server -js` (or `scripts/download-na
 ### JetStream
 - [ ] Stream CRUD/list/purge — **not run**
 - [ ] Consumer CRUD/list — **not run**
-- [ ] Fetch — **P0 source fix**: façade delegates to `TDextNatsJetStreamFetcher` (inline SUB + Unsubscribe(0) before releasing wait-state). Live nested-Fetch test added; **not executed**
+- [x] Fetch — **P0 source fix** + **nested-Fetch live passed** on nats-server v2.14.5 (`TDextNatsJetStreamFetcher` inline SUB + Unsubscribe(0) before releasing wait-state). Broader Fetch live matrix still open
 - [ ] Push — **not run**
-- [ ] Ordered consumer — **not run**
+- [x] Ordered consumer — `OrderedConsumer_ShouldDeliverInOrder` **passed** on nats-server v2.14.5 (231ms)
 - [ ] Ack/Nak/Term/WPI — **not run**
 - [ ] Publish Ack / dedup — **not run**
 
 ### Additional Modules
-- [ ] KeyValue live tests — **not run** (KV Get/Watch can nest Fetch)
+- [ ] KeyValue live tests — **partial**: `PurgeDeletes_ShouldRemoveMarkersWhenForced` **passed** on nats-server v2.14.5 (422ms); rest of KV live matrix **not run** (KV Get/Watch can nest Fetch)
 - [ ] ObjectStore live tests — **not run** (chunk Fetch can nest)
 - [ ] Services live tests — **not run**
 - [ ] TLS tests — **not run**
@@ -1481,15 +1481,15 @@ Command:
 `.\scripts\validate-parser-cutover.ps1 -Config Release -Platform Win32 -LiveNats -Benchmark`
 
 Result:
-FAIL (not executed; static P0s already block merge)
+FAIL (full `validate-parser-cutover.ps1 -LiveNats -Benchmark` not run; Release config not built)
 
 Remaining defects:
-1. **P0 deadlock:** **fixed in source.** `TDextNatsJetStreamContext.Fetch` delegates to `TDextNatsJetStreamFetcher` (`SubscribeInline` / `SubscribeCore(..., True)`). Nested Fetch/KV/OS from a one-worker handler no longer starves the inbox collector. Live test added; not executed.
-2. **P0 UAF:** **fixed in source.** Single Fetch body in `JetStream.Fetch.pas` uses an interface wait-gate (`INatsFetchGate`) captured by the handler, always `Unsubscribe(sid, 0)` after `Gate.Stop`, and ignores late MSG after stop. Live test added; not executed.
+1. **P0 deadlock:** **fixed in source and live-proven.** Nested Fetch 50× passed on nats-server v2.14.5 (`TDextNatsJetStreamFetcher` / `SubscribeInline`).
+2. **P0 UAF:** **fixed in source.** Same Fetch body (`INatsFetchGate`, `Unsubscribe(sid, 0)` after `Gate.Stop`). Nested-Fetch live pass is the runtime evidence; dedicated UAF stress still not run.
 3. **P1:** `TDextNatsJetStreamRuntime` / extracted Streams/Consumers/Push/Ordered are still unused by the façade. **Fetch** delegates to an owned `TDextNatsJetStreamFetcher`. Remaining admin/push/ordered methods still duplicate the extracted units (empty-name checks / parallel ordered engine — not wired to avoid behavior change).
 4. Hygiene: orphan Dispatching test unit deleted; duplicate Drain/Internal units at `Tests/` root may remain.
-5. Nested Request (100×) and nested Fetch (50×) tests **added** (`HandlerWorkerCount = 1`); **not executed**.
-6. Delphi compile + live/stress/benchmark still required on this machine.
+5. Nested Request (100×) **not executed**. Nested Fetch (50×) **passed** on 2.14.5.
+6. Release Win32/Win64, remaining live matrix, stress, and `DEXT_NATS_RUN_BENCH=1` still required.
 
 Performance numbers:
 - Parser frames/sec: not measured

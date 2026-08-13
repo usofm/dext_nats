@@ -204,10 +204,10 @@ Hosted Linux GitHub Actions performs structural/hygiene checks only. It does **n
 
 Parser V2 and native dispatch are already on `main`. Remaining before treating Architecture V2 as validated:
 
-1. P0 Fetch deadlock/UAF are fixed in source; nested Request (100×) and nested Fetch (50×) tests added (`HandlerWorkerCount = 1`). Compiler/live validation still pending.
-2. Run `scripts/build-tests.ps1` on Windows with Delphi 13 (compiler 37.0 is installed; this agent session did not run it).
-3. Compile every extracted unit through `Tests/Dext.Net.Nats.Tests.dproj`.
-4. Run focused and legacy tests; then `nats-server -js` live tests.
+1. P0 Fetch deadlock/UAF are fixed in source. Nested Fetch (50×) **passed live** on nats-server v2.14.5. Nested Request (100×) still pending.
+2. Debug Win32 `scripts/build-tests.ps1` **passed** (Delphi 13 / compiler 37.0). Release Win32/Win64 not run.
+3. Extracted units compile through `Tests/Dext.Net.Nats.Tests.dproj` (Debug Win32).
+4. Focused unit fixtures passed (Parser V2, Protocol V2, Internal, JetStream JSON). Live on 2.14.5 `-js`: NestedFetch, OrderedConsumer, PurgeDeletes. Remaining live matrix still open.
 5. Capture Parser V2 benchmark output (expect 0 per-frame compactions on the batch PING case).
 6. Convert remaining JetStream public methods into thin delegates to extracted Runtime/services. **Fetch** delegates to an owned `TDextNatsJetStreamFetcher`. Streams/Consumers/Push/Ordered stay duplicated (extracted admin adds empty-name checks; ordered engine is not a drop-in for `TDextNatsOrderedConsumer`).
 7. Repeat integration/stress tests (`scripts/validate-parser-cutover.ps1 -Config Release -Platform Win32 -LiveNats -Benchmark`).
