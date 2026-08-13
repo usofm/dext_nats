@@ -539,12 +539,15 @@ type
   private
     FClient: TDextNatsClient;
     FApiPrefix: string;
+    /// <summary>Owned <c>TDextNatsJetStreamFetcher</c>; stored as TObject to avoid a JetStream.Fetch interface cycle.</summary>
+    FFetcher: TObject;
     /// <summary>Issues a plain (no-headers) JetStream API request and returns the raw reply body.</summary>
     function ApiRequest(const ASubjectSuffix, ABody: string; ATimeoutMs: Integer = 0): TBytes;
     procedure PublishAckPayload(const AReplyTo, APayload: string);
   public
     /// <summary>Wraps AClient. AApiPrefix defaults to "$JS.API." (no custom JetStream domain).</summary>
     constructor Create(AClient: TDextNatsClient; const AApiPrefix: string = '$JS.API.');
+    destructor Destroy; override;
 
     /// <summary>Creates a stream from AConfig. Raises EDextNatsJetStreamError on failure
     /// (e.g. the stream already exists with a different configuration).</summary>
@@ -2757,6 +2760,13 @@ begin
   inherited Create;
   FClient := AClient;
   FApiPrefix := AApiPrefix;
+  FFetcher := TDextNatsJetStreamFetcher.Create(FClient, FApiPrefix);
+end;
+
+destructor TDextNatsJetStreamContext.Destroy;
+begin
+  FFetcher.Free;
+  inherited;
 end;
 
 function TDextNatsJetStreamContext.ApiRequest(const ASubjectSuffix, ABody: string; ATimeoutMs: Integer): TBytes;
@@ -3652,15 +3662,8 @@ end;
 
 function TDextNatsJetStreamContext.Fetch(const AStreamName, AConsumerName: string; ABatch: Integer;
   AExpiresMs: Integer): IList<TNatsJsMsg>;
-var
-  Fetcher: TDextNatsJetStreamFetcher;
 begin
-  Fetcher := TDextNatsJetStreamFetcher.Create(FClient, FApiPrefix);
-  try
-    Result := Fetcher.Fetch(AStreamName, AConsumerName, ABatch, AExpiresMs);
-  finally
-    Fetcher.Free;
-  end;
+  Result := TDextNatsJetStreamFetcher(FFetcher).Fetch(AStreamName, AConsumerName, ABatch, AExpiresMs);
 end;
 
 procedure TDextNatsJetStreamContext.Ack(const AMsg: TNatsJsMsg);
