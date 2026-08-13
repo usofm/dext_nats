@@ -124,7 +124,7 @@ jobs:
           grep -q 'HandlerQueueCapacity := 8192' Source/Dext.Net.Nats.pas
           grep -q 'FHandlerDispatcher.Dispatch(item)' Source/Dext.Net.Nats.pas
           grep -q 'InlineDelivery: Boolean' Source/Dext.Net.Nats.pas
-          grep -q "end, '', True);" Source/Dext.Net.Nats.pas
+          grep -q 'sid := SubscribeInline(inbox' Source/Dext.Net.Nats.pas
           grep -q 'Result := SubscribeCore(ASubject, AHandler, AQueue, False)' Source/Dext.Net.Nats.pas
           grep -q 'FChannel.Close' Source/Internal/Dext.Net.Nats.Internal.Dispatcher.pas
           grep -q 'Dispatcher_Stop_ShouldDrainAcceptedItems' Tests/Internal/Dext.Net.Nats.Internal.Tests.pas
@@ -137,7 +137,7 @@ jobs:
           assert 'handler(msg);' not in block, 'Application handler must not execute directly on RecvLoop'
           assert 'FHandlerDispatcher.Dispatch(item)' in block
           req = s[s.index('function TDextNatsClient.RequestWithHeaders'):s.index('procedure TDextNatsClient.RequestAsync', s.index('function TDextNatsClient.RequestWithHeaders'))]
-          assert 'SubscribeCore(inbox' in req and "end, '', True);" in req, 'Synchronous request completion must remain inline'
+          assert 'sid := SubscribeInline(inbox' in req, 'Synchronous request completion must remain inline'
           PY
 
       - name: Feature-oriented tests contract
