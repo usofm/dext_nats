@@ -105,7 +105,7 @@ begin
     procedure(const AItem: Integer)
     begin
       TInterlocked.Add(Sum, AItem);
-      if TInterlocked.Read(Sum) = 6 then
+      if TInterlocked.CompareExchange(Sum, 0, 0) = 6 then
         Done.SetEvent;
     end);
   try
@@ -113,7 +113,7 @@ begin
     Dispatcher.Dispatch(2);
     Dispatcher.Dispatch(3);
     Should(Done.WaitFor(2000) = wrSignaled).BeTrue;
-    Should(TInterlocked.Read(Sum)).Be(6);
+    Should(TInterlocked.CompareExchange(Sum, 0, 0)).Be(6);
   finally
     Dispatcher.Free;
     Done.Free;

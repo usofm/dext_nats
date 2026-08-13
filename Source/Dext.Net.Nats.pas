@@ -72,7 +72,6 @@ type
   private
     FBorrowedPayload: TByteSpan;
     FPayloadBorrowed: Boolean;
-    class operator Initialize(out Dest: TNatsMsg);
   public
     Subject: string;
     ReplyTo: string;
@@ -89,6 +88,7 @@ type
     Sid: Integer;
     /// <summary>Inline status from an HMSG header block (e.g. 503), or 0 when absent.</summary>
     StatusCode: Integer;
+    class operator Initialize(out Dest: TNatsMsg);
     /// <summary>Decodes the payload as a UTF-8 string (uses <see cref="PayloadSpan"/>).</summary>
     function AsString: string;
     /// <summary>
