@@ -26,7 +26,6 @@ function NatsJsParseNamePage(const AJson: TBytes; const AArrayName: string): TNa
 implementation
 
 uses
-  System.SysUtils,
   Dext.Core.Span,
   Dext.Json.Utf8,
   Dext.Net.Nats.Protocol,

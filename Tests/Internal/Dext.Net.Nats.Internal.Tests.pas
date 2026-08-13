@@ -155,22 +155,22 @@ begin
   try
     Data := BytesOf('abc' + #13#10 + 'de' + #13 + 'f' + #13#10);
     Buffer.Append(Data, Length(Data));
-    Should(Buffer.IndexOfCrLf).Be(3);
+    Should(Buffer.IndexOfCrLf(0)).Be(3);
     Should(Buffer.IndexOfCrLf(4)).Be(9);
     Should(Buffer.IndexOfCrLf(10)).Be(-1);
 
     Buffer.Consume(4);
-    Should(Buffer.IndexOfCrLf).Be(5);
+    Should(Buffer.IndexOfCrLf(0)).Be(5);
 
     Buffer.Clear;
     Data := BytesOf('no-terminator' + #13);
     Buffer.Append(Data, Length(Data));
-    Should(Buffer.IndexOfCrLf).Be(-1);
+    Should(Buffer.IndexOfCrLf(0)).Be(-1);
 
     Buffer.Clear;
     Data := BytesOf(#13#10);
     Buffer.Append(Data, Length(Data));
-    Should(Buffer.IndexOfCrLf).Be(0);
+    Should(Buffer.IndexOfCrLf(0)).Be(0);
   finally
     Buffer.Free;
   end;

@@ -42,7 +42,6 @@ type
 implementation
 
 uses
-  System.SysUtils,
   Dext.Net.Nats.Protocol;
 
 constructor TDextNatsJetStreamApiTransport.Create(AClient: TDextNatsClient;
