@@ -210,6 +210,8 @@ type
     FTlsIoLock: TCriticalSection;
     FTLSEngine: IDextTLSEngine;
     FTLSNetworkBuffer: TBytes;
+    /// <summary>TCP ciphertext for RecvLoop only; must not share <see cref="FTLSNetworkBuffer"/> with SendRaw.</summary>
+    FTLSReceiveBuffer: TBytes;
     FTlsActive: Boolean;
 
     FSubscriptions: IDictionary<Integer, TDextNatsSubscription>;
@@ -276,7 +278,9 @@ type
     /// <summary>
     ///   RecvLoop/handshake fill into a caller-provided span. Plaintext uses
     ///   <c>TDextTcpClient.Receive(TByteSpan)</c>; TLS decrypts into the same
-    ///   span. RecvLoop remains the sole owner of Receive.
+    ///   span. RecvLoop remains the sole owner of Receive. TLS must not hold
+    ///   <c>FTlsIoLock</c> across the blocking socket read so SendRaw from a
+    ///   callback worker can complete (same-connection request/reply).
     /// </summary>
     function ReceiveSpan(const ASpan: TByteSpan; ATimeoutMs: Integer): Integer;
     procedure ResetTls;
@@ -540,6 +544,7 @@ begin
   FSendLock := TCriticalSection.Create;
   FTlsIoLock := TCriticalSection.Create;
   SetLength(FTLSNetworkBuffer, 16 * 1024);
+  SetLength(FTLSReceiveBuffer, 16 * 1024);
   FSubscriptions := TCollections.CreateDictionary<Integer, TDextNatsSubscription>(True);
   FPongWaiters := TCollections.CreateQueue<TEvent>;
   FPendingOutbox := TCollections.CreateQueue<TBytes>;
@@ -754,14 +759,21 @@ begin
     Result := FTLSEngine.PlaintextRead(ASpan.Data, ASpan.Length);
     if Result > 0 then
       Exit;
+  finally
+    FTlsIoLock.Leave;
+  end;
 
-    BytesRead := FTcpClient.Receive(
-      TByteSpan.Create(@FTLSNetworkBuffer[0], Length(FTLSNetworkBuffer)), ATimeoutMs);
-    if BytesRead <= 0 then
-      Exit(0);
+  // Blocking recv without FTlsIoLock: a callback worker must be able to SendRaw
+  // (e.g. request/reply on the same TLS connection) while RecvLoop waits.
+  BytesRead := FTcpClient.Receive(
+    TByteSpan.Create(@FTLSReceiveBuffer[0], Length(FTLSReceiveBuffer)), ATimeoutMs);
+  if BytesRead <= 0 then
+    Exit(0);
 
+  FTlsIoLock.Enter;
+  try
     if FTLSEngine.EncryptedIncoming(
-      @FTLSNetworkBuffer[0], BytesRead) <> BytesRead then
+      @FTLSReceiveBuffer[0], BytesRead) <> BytesRead then
       raise EDextNatsException.Create(
         'OpenSSL input BIO did not accept all encrypted bytes');
 
