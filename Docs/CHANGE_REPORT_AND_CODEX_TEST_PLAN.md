@@ -411,7 +411,7 @@ That means unnecessary queues, workers, allocations, latency, shutdown complexit
 
 Therefore the opt-in adapter was removed from the production source graph (`Source/Dext.Net.Nats.Dispatching.pas` is gone; not referenced from `Tests/Dext.Net.Nats.Tests.dpr`).
 
-Hygiene leftover (does not compile into the test exe today): `Tests/Dext.Net.Nats.Dispatching.Tests.pas` still exists in git and `uses Dext.Net.Nats.Dispatching`. Duplicate Drain/Internal units also remain at `Tests/` root beside the feature-folder copies the `.dpr` actually compiles.
+`Tests/Dext.Net.Nats.Dispatching.Tests.pas` was deleted (it was not in the `.dpr` and still `uses` the removed unit). Duplicate Drain/Internal units may still remain at `Tests/` root beside the feature-folder copies the `.dpr` actually compiles.
 
 The canonical architecture now has exactly one callback dispatch layer (`TDextNatsBoundedDispatcher` in `Internal.Dispatcher`).
 
@@ -1396,7 +1396,7 @@ Required V2 units exist (Buffer, Parser, Dispatcher, ParserRuntime, Writer, Cont
 Production parser is `TDextNatsRuntimeFrameParser = TDextNatsFrameParserV2`.
 `FlushOutbox` releases `FLock` before `SendRaw`.
 Legacy identifiers `ShiftBuffer`, `FBufferLen`, `NatsEncodeConnect`/`Pub`/`HPub`/`Sub`/`Unsub`/`Ping`/`Pong` are absent from production source (`NatsEncodePublicKey` in NKeys is unrelated).
-`Source/Dext.Net.Nats.Dispatching.pas` is absent. Orphan `Tests/Dext.Net.Nats.Dispatching.Tests.pas` remains in git (not in `.dpr`).
+`Source/Dext.Net.Nats.Dispatching.pas` is absent. Orphan `Tests/Dext.Net.Nats.Dispatching.Tests.pas` was deleted.
 `Docs/ARCHITECTURE_V2.md` was stale vs code (claimed V1 still runtime / opt-in Dispatching adapter); updated in this pass.
 
 ### Build
@@ -1486,8 +1486,8 @@ FAIL (not executed; static P0s already block merge)
 Remaining defects:
 1. **P0 deadlock:** **fixed in source.** `TDextNatsJetStreamContext.Fetch` delegates to `TDextNatsJetStreamFetcher` (`SubscribeInline` / `SubscribeCore(..., True)`). Nested Fetch/KV/OS from a one-worker handler no longer starves the inbox collector. Live test added; not executed.
 2. **P0 UAF:** **fixed in source.** Single Fetch body in `JetStream.Fetch.pas` uses an interface wait-gate (`INatsFetchGate`) captured by the handler, always `Unsubscribe(sid, 0)` after `Gate.Stop`, and ignores late MSG after stop. Live test added; not executed.
-3. **P1:** `TDextNatsJetStreamRuntime` / extracted Streams/Consumers/Fetch/Push are not used by `TDextNatsJetStreamContext` except Fetch (now delegated). Remaining admin/push/ordered methods still duplicate the extracted units.
-4. Hygiene: orphan `Tests/Dext.Net.Nats.Dispatching.Tests.pas`; duplicate Drain/Internal units at `Tests/` root.
+3. **P1:** `TDextNatsJetStreamRuntime` / extracted Streams/Consumers/Push/Ordered are still unused by the façade. **Fetch** delegates to an owned `TDextNatsJetStreamFetcher`. Remaining admin/push/ordered methods still duplicate the extracted units (empty-name checks / parallel ordered engine — not wired to avoid behavior change).
+4. Hygiene: orphan Dispatching test unit deleted; duplicate Drain/Internal units at `Tests/` root may remain.
 5. Nested Request (100×) and nested Fetch (50×) tests **added** (`HandlerWorkerCount = 1`); **not executed**.
 6. Delphi compile + live/stress/benchmark still required on this machine.
 

@@ -171,16 +171,22 @@ The historical `Tests/Dext.Net.Nats.Tests.pas` mega-unit remains temporary debt.
 
 ## Phase 7 — advanced performance API
 
-Status: **not cut over yet; design prepared**.
+Status: **partial**. Non-breaking hot-path items below are in source. Remaining items are skipped (breaking API or missing Dext primitive) or wait on compile/live measurement.
 
-After compile/integration stability:
+1. borrowed/Span MSG callback with explicit lifetime contract — **skipped** (breaking public `TNatsMsgHandler` API);
+2. [x] pooled encode buffers — `TDextPool<TDextNatsEncodeScratch>` / `TDextNatsControlScratch` wrap the record writers (`TDextPool<T>` requires `class, constructor`; public `NatsV2Encode*` / `NatsControl*` still return owned `TBytes`; Publish API unchanged). Exhaustion falls back to a stack writer (`AcquireTimeoutMs=0`) so publish never blocks on the pool;
+3. [x] RecvLoop `Receive(TByteSpan)` into `TDextNatsReadBuffer.WritableSpan` via `PrepareReceive`/`CommitReceive` (plaintext TCP and TLS plaintext). RecvLoop still owns Receive; TLS encrypted path still uses `FTLSNetworkBuffer`;
+4. [x] Span-oriented header parser/writer — `NatsEncodeHeaderBlock` / `NatsDecodeHeaderBlock(TByteSpan)` in `Protocol.Headers`; public `TNatsHeaders` remains `TArray<TPair<string,string>>`. Parser V2 decodes HMSG from `DataSpan.Slice` (no `GetString`). `TNatsHeadersHelper.Encode` and `NatsParseHeaderBlock` delegate to the span codec;
+5. optional vectored write — **skipped** (`Dext.Net.Tcp` has no `writev` / vectored send);
+6. owned-vs-borrowed allocation/throughput baselines — **open** (needs a compile + `DEXT_NATS_RUN_BENCH=1` run);
+7. bounded dispatch is already the default; keep `InlineDelivery` reserved for internal completion subscriptions only.
 
-1. borrowed/Span callback with explicit lifetime contract;
-2. pooled encode buffers;
-3. Span-oriented header parser/writer;
-4. optional vectored write if `Dext.Net.Tcp` exposes a suitable primitive;
-5. owned-vs-borrowed allocation/throughput baselines;
-6. bounded dispatch is already the default; keep `InlineDelivery` reserved for internal completion subscriptions only.
+Also closed this round (not originally numbered):
+
+- [x] JetStream admin JSON without string↔`GetBytes` into `TUtf8JsonReader` when the payload is already `TBytes` (`INatsJetStreamApiTransport.Request` / façade `ApiRequest` return `TBytes`; `NatsJsParse*` and `TNatsStreamInfo.Parse` etc. have `TBytes` overloads; public `Parse(string)` remains);
+- [x] `TDextNatsReadBuffer.IndexOfCrLf` via `TDextSimd.IndexOfByte` (CR then LF check; SIMD unit already falls back to Pascal).
+
+Skipped: FastPath/MapFast (N/A — this library is Net, not HTTP).
 
 ## Performance rule
 
@@ -203,6 +209,6 @@ Parser V2 and native dispatch are already on `main`. Remaining before treating A
 3. Compile every extracted unit through `Tests/Dext.Net.Nats.Tests.dproj`.
 4. Run focused and legacy tests; then `nats-server -js` live tests.
 5. Capture Parser V2 benchmark output (expect 0 per-frame compactions on the batch PING case).
-6. Convert remaining JetStream public methods into thin delegates to extracted Runtime/services (Fetch already delegates); delete façade duplicates.
+6. Convert remaining JetStream public methods into thin delegates to extracted Runtime/services. **Fetch** delegates to an owned `TDextNatsJetStreamFetcher`. Streams/Consumers/Push/Ordered stay duplicated (extracted admin adds empty-name checks; ordered engine is not a drop-in for `TDextNatsOrderedConsumer`).
 7. Repeat integration/stress tests (`scripts/validate-parser-cutover.ps1 -Config Release -Platform Win32 -LiveNats -Benchmark`).
 8. Apply the same façade/service split to KeyValue, ObjectStore, and Services.
