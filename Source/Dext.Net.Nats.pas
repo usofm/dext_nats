@@ -273,7 +273,12 @@ type
     procedure DrainTlsOutput;
     procedure FeedTlsInput(ATimeoutMs: Integer);
     procedure WriteTlsPlaintext(const AData: TBytes);
-    function ReceiveBytes(var ABuffer: TBytes; ATimeoutMs: Integer): Integer;
+    /// <summary>
+    ///   RecvLoop/handshake fill into a caller-provided span. Plaintext uses
+    ///   <c>TDextTcpClient.Receive(TByteSpan)</c>; TLS decrypts into the same
+    ///   span. RecvLoop remains the sole owner of Receive.
+    /// </summary>
+    function ReceiveSpan(const ASpan: TByteSpan; ATimeoutMs: Integer): Integer;
     procedure ResetTls;
 
     function TryReconnect: Boolean;
@@ -729,24 +734,24 @@ begin
   DrainTlsOutput;
 end;
 
-function TDextNatsClient.ReceiveBytes(var ABuffer: TBytes; ATimeoutMs: Integer): Integer;
+function TDextNatsClient.ReceiveSpan(const ASpan: TByteSpan; ATimeoutMs: Integer): Integer;
 var
   BytesRead: Integer;
 begin
-  if Length(ABuffer) = 0 then
+  if ASpan.Length = 0 then
     Exit(0);
   // Intentional Disconnect sets FClosing before closing the socket. Skip Receive so we
   // do not raise EDextSocketError on the recv thread. Do not key off FRunning — the
-  // connect handshake calls ReceiveBytes before FRunning becomes True.
+  // connect handshake calls ReceiveSpan before FRunning becomes True.
   if FClosing then
     Exit(0);
 
   if not FTlsActive then
-    Exit(FTcpClient.Receive(ABuffer, ATimeoutMs));
+    Exit(FTcpClient.Receive(ASpan, ATimeoutMs));
 
   FTlsIoLock.Enter;
   try
-    Result := FTLSEngine.PlaintextRead(@ABuffer[0], Length(ABuffer));
+    Result := FTLSEngine.PlaintextRead(ASpan.Data, ASpan.Length);
     if Result > 0 then
       Exit;
 
@@ -760,7 +765,7 @@ begin
       raise EDextNatsException.Create(
         'OpenSSL input BIO did not accept all encrypted bytes');
 
-    Result := FTLSEngine.PlaintextRead(@ABuffer[0], Length(ABuffer));
+    Result := FTLSEngine.PlaintextRead(ASpan.Data, ASpan.Length);
     if (Result = 0) and (FTLSEngine.GetLastIOStatus = tlsIOError) then
       raise EDextNatsException.CreateFmt(
         'TLS read failed (OpenSSL error %d)',
@@ -877,12 +882,11 @@ end;
 
 function TDextNatsClient.ReceiveFrameBlocking(ATimeoutMs: Integer): TNatsFrame;
 var
-  buf: TBytes;
+  dest: TByteSpan;
   n: Integer;
   sw: TStopwatch;
   remaining, sliceTimeout: Integer;
 begin
-  SetLength(buf, 4096);
   sw := TStopwatch.StartNew;
   while True do
   begin
@@ -898,9 +902,10 @@ begin
     if sliceTimeout > 250 then
       sliceTimeout := 250;
 
-    n := ReceiveBytes(buf, sliceTimeout);
+    dest := FParser.PrepareReceive(4096);
+    n := ReceiveSpan(dest, sliceTimeout);
     if n > 0 then
-      FParser.Append(buf, n);
+      FParser.CommitReceive(n);
   end;
 end;
 
@@ -1337,12 +1342,13 @@ begin
 end;
 
 procedure TDextNatsClient.RecvLoop;
+const
+  NATS_RECV_CHUNK_BYTES = 65536;
 var
-  buf: TBytes;
+  dest: TByteSpan;
   n: Integer;
   frame: TNatsFrame;
 begin
-  SetLength(buf, 65536);
   while FRunning do
   begin
     n := 0;
@@ -1358,7 +1364,10 @@ begin
           Break;
         Continue;
       end;
-      n := ReceiveBytes(buf, 200);
+      dest := FParser.PrepareReceive(NATS_RECV_CHUNK_BYTES);
+      n := ReceiveSpan(dest, 200);
+      if n > 0 then
+        FParser.CommitReceive(n);
     except
       on E: Exception do
       begin
@@ -1376,7 +1385,6 @@ begin
     if n > 0 then
     begin
       try
-        FParser.Append(buf, n);
         while FRunning and FParser.TryReadFrame(frame) do
           HandleFrame(frame);
       except

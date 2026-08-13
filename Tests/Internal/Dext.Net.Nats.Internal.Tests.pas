@@ -27,6 +27,10 @@ type
     procedure ReadBuffer_Consume_ShouldAdvanceWithoutLosingUnreadBytes;
     [Test, Category('Unit'), Category('Performance')]
     procedure ReadBuffer_AppendAfterConsume_ShouldReuseCapacity;
+    [Test, Category('Unit'), Category('Performance')]
+    procedure ReadBuffer_WritableSpan_ShouldFillWithoutAppendCopy;
+    [Test, Category('Unit'), Category('Performance')]
+    procedure ReadBuffer_CommitWrite_ShouldRejectOverflow;
     [Test, Category('Unit'), Category('Concurrency')]
     procedure Dispatcher_ShouldProcessQueuedItems;
     [Test, Category('Unit'), Category('Concurrency')]
@@ -87,6 +91,54 @@ begin
     Should(Buffer.Available).Be(150);
     Should(Buffer.Capacity).Be(InitialCapacity);
     Should(SpanText(Buffer.DataSpan)).Be(StringOfChar('A', 50) + StringOfChar('B', 100));
+  finally
+    Buffer.Free;
+  end;
+end;
+
+procedure TDextNatsInternalTests.ReadBuffer_WritableSpan_ShouldFillWithoutAppendCopy;
+var
+  Buffer: TDextNatsReadBuffer;
+  Dest: TByteSpan;
+  Src: TBytes;
+  InitialCapacity: Integer;
+begin
+  Buffer := TDextNatsReadBuffer.Create(256);
+  try
+    InitialCapacity := Buffer.Capacity;
+    Src := BytesOf('PING');
+    Dest := Buffer.WritableSpan(Length(Src));
+    Should(Dest.Length >= Length(Src)).BeTrue;
+    Move(Src[0], Dest.Data^, Length(Src));
+    Buffer.CommitWrite(Length(Src));
+    Should(Buffer.Available).Be(4);
+    Should(Buffer.Capacity).Be(InitialCapacity);
+    Should(SpanText(Buffer.DataSpan)).Be('PING');
+
+    Buffer.Consume(4);
+    Should(Buffer.Available).Be(0);
+    Dest := Buffer.WritableSpan(8);
+    Src := BytesOf('PONG');
+    Move(Src[0], Dest.Data^, Length(Src));
+    Buffer.CommitWrite(Length(Src));
+    Should(SpanText(Buffer.DataSpan)).Be('PONG');
+  finally
+    Buffer.Free;
+  end;
+end;
+
+procedure TDextNatsInternalTests.ReadBuffer_CommitWrite_ShouldRejectOverflow;
+var
+  Buffer: TDextNatsReadBuffer;
+  Dest: TByteSpan;
+begin
+  Buffer := TDextNatsReadBuffer.Create(256);
+  try
+    Dest := Buffer.WritableSpan(16);
+    Should(procedure begin Buffer.CommitWrite(Dest.Length + 1); end)
+      .Throw(EArgumentOutOfRangeException);
+    Buffer.CommitWrite(0);
+    Should(Buffer.Available).Be(0);
   finally
     Buffer.Free;
   end;

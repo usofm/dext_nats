@@ -1,4 +1,4 @@
-{***************************************************************************}
+﻿{***************************************************************************}
 {                                                                           }
 {           Dext.Nats                                                       }
 {                                                                           }
@@ -15,6 +15,7 @@ uses
   Dext.Testing,
   Dext.Testing.Attributes,
   Dext.Testing.Fluent,
+  Dext.Core.Span,
   Dext.Net.Nats.Protocol,
   Dext.Net.Nats.Internal.Parser;
 
@@ -37,6 +38,8 @@ type
     procedure HMsg_ShouldDecodeStatusHeadersAndPayload;
     [Test, Category('Unit'), Category('Protocol')]
     procedure Clear_ShouldDropIncompleteFrame;
+    [Test, Category('Unit'), Category('Protocol')]
+    procedure PrepareReceive_ShouldDecodeLikeAppend;
     [Test, Category('Unit'), Category('Protocol'), Category('Negative')]
     procedure MaxFrameBytes_ShouldRaise;
   end;
@@ -186,6 +189,30 @@ begin
     AppendText(Parser, 'PING'#13#10);
     Should(Parser.TryReadFrame(Frame)).BeTrue;
     Should(Ord(Frame.Kind)).Be(Ord(nfPing));
+  finally
+    Parser.Free;
+  end;
+end;
+
+procedure TDextNatsParserV2Tests.PrepareReceive_ShouldDecodeLikeAppend;
+var
+  Parser: TDextNatsFrameParserV2;
+  Frame: TNatsFrame;
+  Dest: TByteSpan;
+  Wire: RawByteString;
+begin
+  Parser := TDextNatsFrameParserV2.Create;
+  try
+    Wire := 'PING'#13#10'PONG'#13#10;
+    Dest := Parser.PrepareReceive(Length(Wire));
+    Should(Dest.Length >= Length(Wire)).BeTrue;
+    Move(Wire[1], Dest.Data^, Length(Wire));
+    Parser.CommitReceive(Length(Wire));
+    Should(Parser.TryReadFrame(Frame)).BeTrue;
+    Should(Ord(Frame.Kind)).Be(Ord(nfPing));
+    Should(Parser.TryReadFrame(Frame)).BeTrue;
+    Should(Ord(Frame.Kind)).Be(Ord(nfPong));
+    Should(Parser.TryReadFrame(Frame)).BeFalse;
   finally
     Parser.Free;
   end;

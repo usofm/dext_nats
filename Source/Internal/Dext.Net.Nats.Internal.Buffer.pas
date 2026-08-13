@@ -1,4 +1,4 @@
-{***************************************************************************}
+﻿{***************************************************************************}
 {                                                                           }
 {           Dext.Nats                                                       }
 {                                                                           }
@@ -35,6 +35,16 @@ type
     procedure Append(const AData: TBytes; ACount: Integer); overload;
     procedure Consume(ACount: Integer);
     procedure Clear;
+
+    /// <summary>
+    ///   Writable tail for a socket/TLS fill. When the buffer is empty the
+    ///   tail is sized to at least <paramref name="AMinLength"/>. When unread
+    ///   bytes remain, the existing free tail is returned so a partial frame
+    ///   does not force a 64 KiB growth. Commit with <see cref="CommitWrite"/>.
+    /// </summary>
+    function WritableSpan(AMinLength: Integer): TByteSpan;
+    /// <summary>Advance the write cursor after filling <see cref="WritableSpan"/>.</summary>
+    procedure CommitWrite(ACount: Integer);
 
     function Available: Integer;
     function DataSpan: TByteSpan;
@@ -129,6 +139,38 @@ begin
 
   Compact;
   SetLength(FBuffer, NewCapacity);
+end;
+
+function TDextNatsReadBuffer.WritableSpan(AMinLength: Integer): TByteSpan;
+var
+  FreeTail: Integer;
+begin
+  if AMinLength < 1 then
+    AMinLength := 1;
+
+  if Available = 0 then
+  begin
+    Clear;
+    EnsureWritable(AMinLength);
+  end
+  else if Length(FBuffer) - FWritePos = 0 then
+    EnsureWritable(AMinLength);
+
+  FreeTail := Length(FBuffer) - FWritePos;
+  if FreeTail <= 0 then
+    Exit(Default(TByteSpan));
+  Result := TByteSpan.Create(@FBuffer[FWritePos], FreeTail);
+end;
+
+procedure TDextNatsReadBuffer.CommitWrite(ACount: Integer);
+begin
+  if ACount < 0 then
+    raise EArgumentOutOfRangeException.Create('ACount must be >= 0');
+  if ACount = 0 then
+    Exit;
+  if FWritePos + ACount > Length(FBuffer) then
+    raise EArgumentOutOfRangeException.Create('Commit exceeds writable capacity');
+  Inc(FWritePos, ACount);
 end;
 
 procedure TDextNatsReadBuffer.Append(const AData: TByteSpan);

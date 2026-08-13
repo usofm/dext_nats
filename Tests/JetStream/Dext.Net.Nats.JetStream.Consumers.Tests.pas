@@ -1,4 +1,4 @@
-{***************************************************************************}
+﻿{***************************************************************************}
 {                                                                           }
 {           Dext.Nats                                                       }
 {                                                                           }
@@ -27,7 +27,7 @@ type
     Response: string;
     CallCount: Integer;
     function Request(const ASubjectSuffix, ABody: string;
-      ATimeoutMs: Integer = 0): string;
+      ATimeoutMs: Integer = 0): TBytes;
   end;
 
   [TestFixture('NATS JetStream Consumers')]
@@ -48,12 +48,12 @@ type
 implementation
 
 function TFakeConsumerTransport.Request(const ASubjectSuffix, ABody: string;
-  ATimeoutMs: Integer): string;
+  ATimeoutMs: Integer): TBytes;
 begin
   Inc(CallCount);
   LastSubject := ASubjectSuffix;
   LastBody := ABody;
-  Result := Response;
+  Result := TEncoding.UTF8.GetBytes(Response);
 end;
 
 function TDextNatsJetStreamConsumersTests.NewTransport(

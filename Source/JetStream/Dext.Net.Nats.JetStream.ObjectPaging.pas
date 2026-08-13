@@ -1,4 +1,4 @@
-{***************************************************************************}
+﻿{***************************************************************************}
 {                                                                           }
 {           Dext.Nats                                                       }
 {                                                                           }
@@ -10,6 +10,7 @@ unit Dext.Net.Nats.JetStream.ObjectPaging;
 interface
 
 uses
+  System.SysUtils,
   Dext.Net.Nats.JetStream;
 
 type
@@ -27,13 +28,14 @@ type
     Items: TArray<TNatsConsumerInfo>;
   end;
 
-function NatsJsParseStreamInfoPage(const AJson: string): TNatsJsStreamInfoPage;
-function NatsJsParseConsumerInfoPage(const AJson: string): TNatsJsConsumerInfoPage;
+function NatsJsParseStreamInfoPage(const AJson: string): TNatsJsStreamInfoPage; overload;
+function NatsJsParseStreamInfoPage(const AJson: TBytes): TNatsJsStreamInfoPage; overload;
+function NatsJsParseConsumerInfoPage(const AJson: string): TNatsJsConsumerInfoPage; overload;
+function NatsJsParseConsumerInfoPage(const AJson: TBytes): TNatsJsConsumerInfoPage; overload;
 
 implementation
 
 uses
-  System.SysUtils,
   Dext.Core.Span,
   Dext.Json.Utf8,
   Dext.Net.Nats.Protocol,
@@ -85,7 +87,7 @@ begin
   end;
 end;
 
-function CurrentObjectToJson(var AReader: TUtf8JsonReader): string;
+function CurrentObjectToBytes(var AReader: TUtf8JsonReader): TBytes;
 var
   Sink: TDextNatsJsByteWriter;
   Writer: TUtf8JsonWriter;
@@ -93,7 +95,7 @@ begin
   Sink.Reset;
   Writer := TUtf8JsonWriter.Create(@Sink, NatsJsUtf8Write, False);
   CopyObject(AReader, Writer);
-  Result := Sink.ToUtf8String;
+  Result := Sink.ToBytes;
 end;
 
 function WrapErrorObject(const AErrorObjectJson: string): string;
@@ -101,28 +103,33 @@ begin
   Result := '{"error":' + AErrorObjectJson + '}';
 end;
 
-function OpenReader(const AJson: string; out ABytes: TBytes): TUtf8JsonReader;
+function OpenReader(const ABytes: TBytes): TUtf8JsonReader;
 var
   Span: TByteSpan;
 begin
-  if Trim(AJson) = '' then
+  if Length(ABytes) = 0 then
     raise EDextNatsProtocolError.Create('Empty JetStream paged response');
-  ABytes := TEncoding.UTF8.GetBytes(AJson);
-  Span := TByteSpan.Create(@ABytes[0], Length(ABytes));
+  Span := TByteSpan.FromBytes(ABytes);
   Result := TUtf8JsonReader.Create(Span);
   if (not Result.Read) or (Result.TokenType <> TJsonTokenType.StartObject) then
     raise EDextNatsProtocolError.Create('Malformed JetStream paged response');
 end;
 
 function NatsJsParseStreamInfoPage(const AJson: string): TNatsJsStreamInfoPage;
+begin
+  if Trim(AJson) = '' then
+    raise EDextNatsProtocolError.Create('Empty JetStream paged response');
+  Result := NatsJsParseStreamInfoPage(TEncoding.UTF8.GetBytes(AJson));
+end;
+
+function NatsJsParseStreamInfoPage(const AJson: TBytes): TNatsJsStreamInfoPage;
 var
-  Bytes: TBytes;
   Reader: TUtf8JsonReader;
-  ItemJson: string;
+  ItemBytes: TBytes;
   Info: TNatsStreamInfo;
 begin
   Result := Default(TNatsJsStreamInfoPage);
-  Reader := OpenReader(AJson, Bytes);
+  Reader := OpenReader(AJson);
   while Reader.Read do
   begin
     if Reader.TokenType = TJsonTokenType.EndObject then Break;
@@ -137,8 +144,8 @@ begin
     begin
       if Reader.Read and (Reader.TokenType = TJsonTokenType.StartObject) then
       begin
-        ItemJson := CurrentObjectToJson(Reader);
-        NatsJsParseSuccess(WrapErrorObject(ItemJson));
+        ItemBytes := CurrentObjectToBytes(Reader);
+        NatsJsParseSuccess(WrapErrorObject(TEncoding.UTF8.GetString(ItemBytes)));
       end;
     end
     else if Reader.ValueSpanEquals('streams') then
@@ -149,8 +156,8 @@ begin
           if Reader.TokenType = TJsonTokenType.EndArray then Break;
           if Reader.TokenType = TJsonTokenType.StartObject then
           begin
-            ItemJson := CurrentObjectToJson(Reader);
-            Info := NatsJsParseStreamInfo(ItemJson);
+            ItemBytes := CurrentObjectToBytes(Reader);
+            Info := NatsJsParseStreamInfo(ItemBytes);
             SetLength(Result.Items, Length(Result.Items) + 1);
             Result.Items[High(Result.Items)] := Info;
           end
@@ -162,14 +169,20 @@ begin
 end;
 
 function NatsJsParseConsumerInfoPage(const AJson: string): TNatsJsConsumerInfoPage;
+begin
+  if Trim(AJson) = '' then
+    raise EDextNatsProtocolError.Create('Empty JetStream paged response');
+  Result := NatsJsParseConsumerInfoPage(TEncoding.UTF8.GetBytes(AJson));
+end;
+
+function NatsJsParseConsumerInfoPage(const AJson: TBytes): TNatsJsConsumerInfoPage;
 var
-  Bytes: TBytes;
   Reader: TUtf8JsonReader;
-  ItemJson: string;
+  ItemBytes: TBytes;
   Info: TNatsConsumerInfo;
 begin
   Result := Default(TNatsJsConsumerInfoPage);
-  Reader := OpenReader(AJson, Bytes);
+  Reader := OpenReader(AJson);
   while Reader.Read do
   begin
     if Reader.TokenType = TJsonTokenType.EndObject then Break;
@@ -184,8 +197,8 @@ begin
     begin
       if Reader.Read and (Reader.TokenType = TJsonTokenType.StartObject) then
       begin
-        ItemJson := CurrentObjectToJson(Reader);
-        NatsJsParseSuccess(WrapErrorObject(ItemJson));
+        ItemBytes := CurrentObjectToBytes(Reader);
+        NatsJsParseSuccess(WrapErrorObject(TEncoding.UTF8.GetString(ItemBytes)));
       end;
     end
     else if Reader.ValueSpanEquals('consumers') then
@@ -196,8 +209,8 @@ begin
           if Reader.TokenType = TJsonTokenType.EndArray then Break;
           if Reader.TokenType = TJsonTokenType.StartObject then
           begin
-            ItemJson := CurrentObjectToJson(Reader);
-            Info := NatsJsParseConsumerInfo(ItemJson);
+            ItemBytes := CurrentObjectToBytes(Reader);
+            Info := NatsJsParseConsumerInfo(ItemBytes);
             SetLength(Result.Items, Length(Result.Items) + 1);
             Result.Items[High(Result.Items)] := Info;
           end

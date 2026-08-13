@@ -1,4 +1,4 @@
-unit Dext.Net.Nats.Protocol.Writer;
+﻿unit Dext.Net.Nats.Protocol.Writer;
 
 interface
 
@@ -15,7 +15,9 @@ function NatsV2EncodeHPub(const ASubject, AReplyTo: string;
 implementation
 
 uses
-  Dext.Json.Utf8;
+  Dext.Json.Utf8,
+  Dext.Collections.Pool,
+  Dext.Net.Nats.Protocol.Headers;
 
 type
   PNatsV2Writer = ^TNatsV2Writer;
@@ -35,6 +37,23 @@ type
     procedure WriteCrLf;
     function ToBytes: TBytes;
   end;
+
+  /// <summary>
+  ///   TNatsV2Writer is a record, so it cannot be TDextPool&lt;T&gt; directly
+  ///   (constraint T: class, constructor). This parameterless class wrapper
+  ///   lets PUB/HPUB/CONNECT reuse the grown TBytes scratch. Public
+  ///   NatsV2Encode* still return an owned TBytes copy (Publish API unchanged).
+  ///   AcquireTimeoutMs=0: if the pool is exhausted, encode uses a stack writer
+  ///   instead of blocking the publish path.
+  /// </summary>
+  TDextNatsEncodeScratch = class
+  public
+    Writer: TNatsV2Writer;
+    constructor Create;
+  end;
+
+var
+  GEncodePool: IDextPool<TDextNatsEncodeScratch>;
 
 procedure TNatsV2Writer.Reset;
 begin
@@ -123,6 +142,35 @@ begin
   if FLen > 0 then Move(FBuf[0], Result[0], FLen);
 end;
 
+constructor TDextNatsEncodeScratch.Create;
+begin
+  inherited Create;
+  Writer.Reset;
+end;
+
+function AcquireEncodeWriter(out Scratch: TDextNatsEncodeScratch;
+  var Local: TNatsV2Writer): PNatsV2Writer;
+begin
+  Scratch := nil;
+  if (GEncodePool <> nil) and GEncodePool.Acquire(Scratch) then
+  begin
+    Scratch.Writer.Reset;
+    Result := @Scratch.Writer;
+  end
+  else
+  begin
+    Scratch := nil;
+    Local.Reset;
+    Result := @Local;
+  end;
+end;
+
+procedure ReleaseEncodeWriter(Scratch: TDextNatsEncodeScratch);
+begin
+  if (Scratch <> nil) and (GEncodePool <> nil) then
+    GEncodePool.Release(Scratch);
+end;
+
 procedure Utf8Sink(AContext, AData: Pointer; ALength: Integer);
 begin
   if (AContext <> nil) and (AData <> nil) and (ALength > 0) then
@@ -157,60 +205,99 @@ end;
 
 function NatsV2EncodeConnect(const AOptions: TNatsConnectOptions): TBytes;
 var
-  Writer: TNatsV2Writer;
+  Scratch: TDextNatsEncodeScratch;
+  Local: TNatsV2Writer;
+  Writer: PNatsV2Writer;
 begin
-  Writer.Reset;
-  Writer.WriteAscii('CONNECT ');
-  WriteConnectJson(AOptions, Writer);
-  Writer.WriteCrLf;
-  Result := Writer.ToBytes;
+  Writer := AcquireEncodeWriter(Scratch, Local);
+  try
+    Writer^.WriteAscii('CONNECT ');
+    WriteConnectJson(AOptions, Writer^);
+    Writer^.WriteCrLf;
+    Result := Writer^.ToBytes;
+  finally
+    ReleaseEncodeWriter(Scratch);
+  end;
 end;
 
 function NatsV2EncodePub(const ASubject, AReplyTo: string;
   const APayload: TBytes): TBytes;
 var
-  Writer: TNatsV2Writer;
+  Scratch: TDextNatsEncodeScratch;
+  Local: TNatsV2Writer;
+  Writer: PNatsV2Writer;
 begin
-  Writer.Reset;
-  Writer.WriteAscii('PUB ');
-  Writer.WriteUtf8(ASubject);
-  Writer.WriteByte(Ord(' '));
-  if AReplyTo <> '' then
-  begin
-    Writer.WriteUtf8(AReplyTo);
-    Writer.WriteByte(Ord(' '));
+  Writer := AcquireEncodeWriter(Scratch, Local);
+  try
+    Writer^.WriteAscii('PUB ');
+    Writer^.WriteUtf8(ASubject);
+    Writer^.WriteByte(Ord(' '));
+    if AReplyTo <> '' then
+    begin
+      Writer^.WriteUtf8(AReplyTo);
+      Writer^.WriteByte(Ord(' '));
+    end;
+    Writer^.WriteIntDec(Length(APayload));
+    Writer^.WriteCrLf;
+    Writer^.WriteBytes(APayload);
+    Writer^.WriteCrLf;
+    Result := Writer^.ToBytes;
+  finally
+    ReleaseEncodeWriter(Scratch);
   end;
-  Writer.WriteIntDec(Length(APayload));
-  Writer.WriteCrLf;
-  Writer.WriteBytes(APayload);
-  Writer.WriteCrLf;
-  Result := Writer.ToBytes;
 end;
 
 function NatsV2EncodeHPub(const ASubject, AReplyTo: string;
   const AHeaders: TNatsHeaders; const APayload: TBytes): TBytes;
 var
-  Writer: TNatsV2Writer;
+  Scratch: TDextNatsEncodeScratch;
+  Local: TNatsV2Writer;
+  Writer: PNatsV2Writer;
   HeaderBlock: TBytes;
 begin
-  HeaderBlock := AHeaders.Encode;
-  Writer.Reset;
-  Writer.WriteAscii('HPUB ');
-  Writer.WriteUtf8(ASubject);
-  Writer.WriteByte(Ord(' '));
-  if AReplyTo <> '' then
-  begin
-    Writer.WriteUtf8(AReplyTo);
-    Writer.WriteByte(Ord(' '));
+  HeaderBlock := NatsEncodeHeaderBlock(AHeaders);
+  Writer := AcquireEncodeWriter(Scratch, Local);
+  try
+    Writer^.WriteAscii('HPUB ');
+    Writer^.WriteUtf8(ASubject);
+    Writer^.WriteByte(Ord(' '));
+    if AReplyTo <> '' then
+    begin
+      Writer^.WriteUtf8(AReplyTo);
+      Writer^.WriteByte(Ord(' '));
+    end;
+    Writer^.WriteIntDec(Length(HeaderBlock));
+    Writer^.WriteByte(Ord(' '));
+    Writer^.WriteIntDec(Length(HeaderBlock) + Length(APayload));
+    Writer^.WriteCrLf;
+    Writer^.WriteBytes(HeaderBlock);
+    Writer^.WriteBytes(APayload);
+    Writer^.WriteCrLf;
+    Result := Writer^.ToBytes;
+  finally
+    ReleaseEncodeWriter(Scratch);
   end;
-  Writer.WriteIntDec(Length(HeaderBlock));
-  Writer.WriteByte(Ord(' '));
-  Writer.WriteIntDec(Length(HeaderBlock) + Length(APayload));
-  Writer.WriteCrLf;
-  Writer.WriteBytes(HeaderBlock);
-  Writer.WriteBytes(APayload);
-  Writer.WriteCrLf;
-  Result := Writer.ToBytes;
 end;
+
+procedure InitEncodePool;
+var
+  Config: TDextPoolConfig;
+begin
+  Config := TDextPoolConfig.Default;
+  Config.MinSize := 2;
+  Config.MaxSize := 16;
+  Config.AcquireTimeoutMs := 0;
+  GEncodePool := TDextPool<TDextNatsEncodeScratch>.Create(Config,
+    procedure(Item: TDextNatsEncodeScratch)
+    begin
+      Item.Writer.Reset;
+    end);
+end;
+
+initialization
+  InitEncodePool;
+
+finalization
+  GEncodePool := nil;
 
 end.

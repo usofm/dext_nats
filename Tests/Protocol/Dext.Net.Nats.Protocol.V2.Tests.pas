@@ -1,4 +1,4 @@
-unit Dext.Net.Nats.Protocol.V2.Tests;
+﻿unit Dext.Net.Nats.Protocol.V2.Tests;
 
 interface
 
@@ -7,6 +7,7 @@ uses
   Dext.Testing,
   Dext.Testing.Attributes,
   Dext.Testing.Fluent,
+  Dext.Core.Span,
   Dext.Net.Nats.Protocol,
   Dext.Net.Nats.Protocol.Headers,
   Dext.Net.Nats.Protocol.Control,
@@ -19,11 +20,19 @@ type
     [Test, Category('Unit'), Category('Protocol')]
     procedure HeaderCodec_ShouldEncodeAndDecode;
     [Test, Category('Unit'), Category('Protocol')]
+    procedure HeaderCodec_ShouldDecodeFromByteSpan;
+    [Test, Category('Unit'), Category('Protocol')]
+    procedure HeaderCodec_ShouldRoundTripUtf8Values;
+    [Test, Category('Unit'), Category('Protocol')]
     procedure ControlFrames_ShouldMatchWireContract;
     [Test, Category('Unit'), Category('Protocol')]
     procedure PublishFrames_ShouldMatchWireContract;
     [Test, Category('Unit'), Category('Protocol')]
     procedure ConnectFrame_ShouldMatchWireContract;
+    [Test, Category('Unit'), Category('Protocol')]
+    procedure EncodePub_ShouldNotLeakPriorPayloadIntoNextFrame;
+    [Test, Category('Unit'), Category('Protocol')]
+    procedure EncodeSub_ShouldNotLeakPriorSubjectIntoNextFrame;
   end;
 
 implementation
@@ -46,6 +55,40 @@ begin
     'X-Test: one' + NATS_CRLF + NATS_CRLF, Parsed, Status);
   Should(Status).Be(503);
   Should(Parsed.GetValue('X-Test')).Be('one');
+end;
+
+procedure TDextNatsProtocolV2Tests.HeaderCodec_ShouldDecodeFromByteSpan;
+var
+  Headers, Parsed: TNatsHeaders;
+  Block: TBytes;
+  Status: Integer;
+begin
+  Headers := nil;
+  Headers.Add('Content-Type', 'text/plain');
+  Headers.Add('X-Id', '42');
+  Block := NatsEncodeHeaderBlock(Headers);
+  NatsDecodeHeaderBlock(TByteSpan.FromBytes(Block), Parsed, Status);
+  Should(Status).Be(0);
+  Should(Parsed.Count).Be(2);
+  Should(Parsed.GetValue('Content-Type')).Be('text/plain');
+  Should(Parsed.GetValue('X-Id')).Be('42');
+
+  NatsParseHeaderBlock(Block, Parsed, Status);
+  Should(Parsed.GetValue('Content-Type')).Be('text/plain');
+end;
+
+procedure TDextNatsProtocolV2Tests.HeaderCodec_ShouldRoundTripUtf8Values;
+var
+  Headers, Parsed: TNatsHeaders;
+  Block: TBytes;
+  Status: Integer;
+begin
+  Headers := nil;
+  Headers.Add('X-Note', 'café سلام');
+  Block := NatsEncodeHeaderBlock(Headers);
+  NatsDecodeHeaderBlock(Block, Parsed, Status);
+  Should(Parsed.GetValue('X-Note')).Be('café سلام');
+  Should(TEncoding.UTF8.GetString(Headers.Encode)).Be(TEncoding.UTF8.GetString(Block));
 end;
 
 procedure TDextNatsProtocolV2Tests.ControlFrames_ShouldMatchWireContract;
@@ -101,6 +144,26 @@ begin
   Should(Wire.Contains('"user":"u"')).BeTrue;
   Should(Wire.Contains('"pass":"p"')).BeTrue;
   Should(Wire.Contains('"no_responders":true')).BeTrue;
+end;
+
+procedure TDextNatsProtocolV2Tests.EncodePub_ShouldNotLeakPriorPayloadIntoNextFrame;
+var
+  Large, Small: TBytes;
+begin
+  Large := NatsV2EncodePub('s', '', TEncoding.UTF8.GetBytes(StringOfChar('X', 1024)));
+  Small := NatsV2EncodePub('s', '', TEncoding.UTF8.GetBytes('Y'));
+  Should(TEncoding.UTF8.GetString(Small)).Be('PUB s 1' + NATS_CRLF + 'Y' + NATS_CRLF);
+  Should(Length(Small) < Length(Large)).BeTrue;
+end;
+
+procedure TDextNatsProtocolV2Tests.EncodeSub_ShouldNotLeakPriorSubjectIntoNextFrame;
+var
+  Large, Small: TBytes;
+begin
+  Large := NatsControlSub(StringOfChar('a', 256), 'q', 9);
+  Small := NatsControlSub('b', '', 1);
+  Should(TEncoding.UTF8.GetString(Small)).Be('SUB b 1' + NATS_CRLF);
+  Should(Length(Small) < Length(Large)).BeTrue;
 end;
 
 end.

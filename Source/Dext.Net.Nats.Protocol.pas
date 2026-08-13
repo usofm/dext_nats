@@ -185,9 +185,14 @@ function NatsBoolStr(AValue: Boolean): string;
 function NatsJsonEscape(const S: string): string;
 
 /// <summary>Parses a decoded NATS header block (NATS/1.0 status line + name: value lines).</summary>
-procedure NatsParseHeaderBlock(const ABlock: string; out AHeaders: TNatsHeaders; out AStatusCode: Integer);
+procedure NatsParseHeaderBlock(const ABlock: string; out AHeaders: TNatsHeaders; out AStatusCode: Integer); overload;
+procedure NatsParseHeaderBlock(const ABlock: TByteSpan; out AHeaders: TNatsHeaders; out AStatusCode: Integer); overload;
+procedure NatsParseHeaderBlock(const ABlock: TBytes; out AHeaders: TNatsHeaders; out AStatusCode: Integer); overload;
 
 implementation
+
+uses
+  Dext.Net.Nats.Protocol.Headers;
 
 type
   /// <summary>Growable byte sink used by frame encoders and CONNECT JSON (implementation only).</summary>
@@ -541,47 +546,25 @@ begin
 end;
 
 function TNatsHeadersHelper.Encode: TBytes;
-var
-  s: string;
-  h: TNatsHeader;
 begin
-  s := NATS_HEADER_VERSION + NATS_CRLF;
-  for h in Self do
-    s := s + h.Key + ': ' + h.Value + NATS_CRLF;
-  s := s + NATS_CRLF;
-  Result := TEncoding.UTF8.GetBytes(s);
+  Result := NatsEncodeHeaderBlock(Self);
 end;
 
 /// <summary>Parses a decoded HMSG header block (including the NATS/1.0 status line)
 /// into individual headers plus an optional inline status code.</summary>
-procedure NatsParseHeaderBlock(const ABlock: string; out AHeaders: TNatsHeaders; out AStatusCode: Integer);
-var
-  lines: TArray<string>;
-  i, colonPos: Integer;
-  firstLine, statusPart: string;
+procedure NatsParseHeaderBlock(const ABlock: TByteSpan; out AHeaders: TNatsHeaders; out AStatusCode: Integer);
 begin
-  AHeaders := nil;
-  AStatusCode := 0;
-  if ABlock = '' then Exit;
+  NatsDecodeHeaderBlock(ABlock, AHeaders, AStatusCode);
+end;
 
-  lines := ABlock.Split([NATS_CRLF]);
-  if Length(lines) = 0 then Exit;
+procedure NatsParseHeaderBlock(const ABlock: TBytes; out AHeaders: TNatsHeaders; out AStatusCode: Integer);
+begin
+  NatsDecodeHeaderBlock(ABlock, AHeaders, AStatusCode);
+end;
 
-  firstLine := lines[0];
-  if firstLine.StartsWith(NATS_HEADER_VERSION) then
-  begin
-    statusPart := Trim(Copy(firstLine, Length(NATS_HEADER_VERSION) + 1, MaxInt));
-    if Length(statusPart) >= 3 then
-      AStatusCode := StrToIntDef(Copy(statusPart, 1, 3), 0);
-  end;
-
-  for i := 1 to High(lines) do
-  begin
-    if Trim(lines[i]) = '' then Continue;
-    colonPos := Pos(':', lines[i]);
-    if colonPos > 0 then
-      AHeaders.Add(Trim(Copy(lines[i], 1, colonPos - 1)), Trim(Copy(lines[i], colonPos + 1, MaxInt)));
-  end;
+procedure NatsParseHeaderBlock(const ABlock: string; out AHeaders: TNatsHeaders; out AStatusCode: Integer);
+begin
+  NatsDecodeHeaderBlock(ABlock, AHeaders, AStatusCode);
 end;
 
 { TNatsServerInfo }

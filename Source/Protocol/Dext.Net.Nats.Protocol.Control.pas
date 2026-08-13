@@ -12,7 +12,11 @@ function NatsControlUnsub(ASid: Integer; AMaxMsgs: Integer = 0): TBytes;
 
 implementation
 
+uses
+  Dext.Collections.Pool;
+
 type
+  PNatsControlWriter = ^TNatsControlWriter;
   TNatsControlWriter = record
   private
     FBuffer: TBytes;
@@ -28,9 +32,20 @@ type
     function ToBytes: TBytes;
   end;
 
+  /// <summary>
+  ///   TNatsControlWriter is a record (TDextPool requires class + constructor).
+  ///   Wrapper reuses SUB/UNSUB encode scratch. PING/PONG stay interned.
+  /// </summary>
+  TDextNatsControlScratch = class
+  public
+    Writer: TNatsControlWriter;
+    constructor Create;
+  end;
+
 var
   GNatsPingFrame: TBytes;
   GNatsPongFrame: TBytes;
+  GControlPool: IDextPool<TDextNatsControlScratch>;
 
 procedure TNatsControlWriter.Reset;
 begin
@@ -138,6 +153,35 @@ begin
     Move(FBuffer[0], Result[0], FLength);
 end;
 
+constructor TDextNatsControlScratch.Create;
+begin
+  inherited Create;
+  Writer.Reset;
+end;
+
+function AcquireControlWriter(out Scratch: TDextNatsControlScratch;
+  var Local: TNatsControlWriter): PNatsControlWriter;
+begin
+  Scratch := nil;
+  if (GControlPool <> nil) and GControlPool.Acquire(Scratch) then
+  begin
+    Scratch.Writer.Reset;
+    Result := @Scratch.Writer;
+  end
+  else
+  begin
+    Scratch := nil;
+    Local.Reset;
+    Result := @Local;
+  end;
+end;
+
+procedure ReleaseControlWriter(Scratch: TDextNatsControlScratch);
+begin
+  if (Scratch <> nil) and (GControlPool <> nil) then
+    GControlPool.Release(Scratch);
+end;
+
 function NatsControlPing: TBytes;
 begin
   Result := GNatsPingFrame;
@@ -151,40 +195,71 @@ end;
 function NatsControlSub(const ASubject, AQueue: string;
   ASid: Integer): TBytes;
 var
-  Writer: TNatsControlWriter;
+  Scratch: TDextNatsControlScratch;
+  Local: TNatsControlWriter;
+  Writer: PNatsControlWriter;
 begin
-  Writer.Reset;
-  Writer.WriteAscii('SUB ');
-  Writer.WriteUtf8(ASubject);
-  Writer.WriteByte(Ord(' '));
-  if AQueue <> '' then
-  begin
-    Writer.WriteUtf8(AQueue);
-    Writer.WriteByte(Ord(' '));
+  Writer := AcquireControlWriter(Scratch, Local);
+  try
+    Writer^.WriteAscii('SUB ');
+    Writer^.WriteUtf8(ASubject);
+    Writer^.WriteByte(Ord(' '));
+    if AQueue <> '' then
+    begin
+      Writer^.WriteUtf8(AQueue);
+      Writer^.WriteByte(Ord(' '));
+    end;
+    Writer^.WriteInt(ASid);
+    Writer^.WriteCrLf;
+    Result := Writer^.ToBytes;
+  finally
+    ReleaseControlWriter(Scratch);
   end;
-  Writer.WriteInt(ASid);
-  Writer.WriteCrLf;
-  Result := Writer.ToBytes;
 end;
 
 function NatsControlUnsub(ASid, AMaxMsgs: Integer): TBytes;
 var
-  Writer: TNatsControlWriter;
+  Scratch: TDextNatsControlScratch;
+  Local: TNatsControlWriter;
+  Writer: PNatsControlWriter;
 begin
-  Writer.Reset;
-  Writer.WriteAscii('UNSUB ');
-  Writer.WriteInt(ASid);
-  if AMaxMsgs > 0 then
-  begin
-    Writer.WriteByte(Ord(' '));
-    Writer.WriteInt(AMaxMsgs);
+  Writer := AcquireControlWriter(Scratch, Local);
+  try
+    Writer^.WriteAscii('UNSUB ');
+    Writer^.WriteInt(ASid);
+    if AMaxMsgs > 0 then
+    begin
+      Writer^.WriteByte(Ord(' '));
+      Writer^.WriteInt(AMaxMsgs);
+    end;
+    Writer^.WriteCrLf;
+    Result := Writer^.ToBytes;
+  finally
+    ReleaseControlWriter(Scratch);
   end;
-  Writer.WriteCrLf;
-  Result := Writer.ToBytes;
+end;
+
+procedure InitControlPool;
+var
+  Config: TDextPoolConfig;
+begin
+  Config := TDextPoolConfig.Default;
+  Config.MinSize := 1;
+  Config.MaxSize := 8;
+  Config.AcquireTimeoutMs := 0;
+  GControlPool := TDextPool<TDextNatsControlScratch>.Create(Config,
+    procedure(Item: TDextNatsControlScratch)
+    begin
+      Item.Writer.Reset;
+    end);
 end;
 
 initialization
   GNatsPingFrame := BytesOf(RawByteString('PING'#13#10));
   GNatsPongFrame := BytesOf(RawByteString('PONG'#13#10));
+  InitControlPool;
+
+finalization
+  GControlPool := nil;
 
 end.

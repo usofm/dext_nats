@@ -13,6 +13,7 @@ uses
   System.SysUtils,
   Dext.Core.Span,
   Dext.Net.Nats.Protocol,
+  Dext.Net.Nats.Protocol.Headers,
   Dext.Net.Nats.Internal.Buffer;
 
 type
@@ -46,6 +47,13 @@ type
 
     procedure Append(const AData: TByteSpan); overload;
     procedure Append(const AData: TBytes; ACount: Integer); overload;
+    /// <summary>
+    ///   Writable chunk of the cursor buffer for RecvLoop/handshake
+    ///   <c>Receive(TByteSpan)</c>. Valid until the next buffer mutation;
+    ///   commit with <see cref="CommitReceive"/>.
+    /// </summary>
+    function PrepareReceive(AMinWritable: Integer): TByteSpan;
+    procedure CommitReceive(ACount: Integer);
     procedure Clear;
     function TryReadFrame(out AFrame: TNatsFrame): Boolean;
 
@@ -82,6 +90,16 @@ end;
 procedure TDextNatsFrameParserV2.Append(const AData: TBytes; ACount: Integer);
 begin
   FBuffer.Append(AData, ACount);
+end;
+
+function TDextNatsFrameParserV2.PrepareReceive(AMinWritable: Integer): TByteSpan;
+begin
+  Result := FBuffer.WritableSpan(AMinWritable);
+end;
+
+procedure TDextNatsFrameParserV2.CommitReceive(ACount: Integer);
+begin
+  FBuffer.CommitWrite(ACount);
 end;
 
 procedure TDextNatsFrameParserV2.Clear;
@@ -295,7 +313,6 @@ var
   Line: string;
   HeaderBytes, TotalBytes: Integer;
   NeededBytes: Integer;
-  HeaderBlock: TBytes;
   Payload: TBytes;
   PayloadLen: Integer;
 begin
@@ -336,8 +353,8 @@ begin
 
   if FPendingFrame.Kind = nfHMsg then
   begin
-    FBuffer.CopyTo(FPendingLineLength, HeaderBlock, FPendingHeaderBytes);
-    NatsParseHeaderBlock(TEncoding.UTF8.GetString(HeaderBlock),
+    NatsDecodeHeaderBlock(
+      FBuffer.DataSpan.Slice(FPendingLineLength, FPendingHeaderBytes),
       FPendingFrame.Headers, FPendingFrame.StatusCode);
 
     PayloadLen := FPendingTotalBytes - FPendingHeaderBytes;

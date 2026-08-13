@@ -1,4 +1,4 @@
-{***************************************************************************}
+﻿{***************************************************************************}
 {                                                                           }
 {           Dext.Nats                                                       }
 {                                                                           }
@@ -10,18 +10,23 @@ unit Dext.Net.Nats.JetStream.Parsers;
 interface
 
 uses
+  System.SysUtils,
   Dext.Net.Nats.JetStream;
 
-function NatsJsParseStreamInfo(const AJson: string): TNatsStreamInfo;
-function NatsJsParseConsumerInfo(const AJson: string): TNatsConsumerInfo;
-function NatsJsParseStoredMsg(const AJson: string): TNatsStoredMsg;
-function NatsJsParsePublishAck(const AJson: string): TNatsPublishAck;
-function NatsJsParseSuccess(const AJson: string): Boolean;
+function NatsJsParseStreamInfo(const AJson: string): TNatsStreamInfo; overload;
+function NatsJsParseStreamInfo(const AJson: TBytes): TNatsStreamInfo; overload;
+function NatsJsParseConsumerInfo(const AJson: string): TNatsConsumerInfo; overload;
+function NatsJsParseConsumerInfo(const AJson: TBytes): TNatsConsumerInfo; overload;
+function NatsJsParseStoredMsg(const AJson: string): TNatsStoredMsg; overload;
+function NatsJsParseStoredMsg(const AJson: TBytes): TNatsStoredMsg; overload;
+function NatsJsParsePublishAck(const AJson: string): TNatsPublishAck; overload;
+function NatsJsParsePublishAck(const AJson: TBytes): TNatsPublishAck; overload;
+function NatsJsParseSuccess(const AJson: string): Boolean; overload;
+function NatsJsParseSuccess(const AJson: TBytes): Boolean; overload;
 
 implementation
 
 uses
-  System.SysUtils,
   System.NetEncoding,
   Dext.Core.Span,
   Dext.Json.Utf8,
@@ -39,17 +44,29 @@ begin
     SkipValue(AReader);
 end;
 
-function OpenReader(const AJson, AEmptyMessage: string;
-  out ABytes: TBytes): TUtf8JsonReader;
-var
-  Span: TByteSpan;
+function JsonBytes(const AJson, AEmptyMessage: string): TBytes;
 begin
   if Trim(AJson) = '' then
     raise EDextNatsProtocolError.Create(AEmptyMessage);
-  ABytes := TEncoding.UTF8.GetBytes(AJson);
+  Result := TEncoding.UTF8.GetBytes(AJson);
+  if Length(Result) = 0 then
+    raise EDextNatsProtocolError.Create(AEmptyMessage);
+end;
+
+function JsonPreview(const ABytes: TBytes): string;
+begin
+  if Length(ABytes) = 0 then
+    Exit('');
+  Result := TEncoding.UTF8.GetString(ABytes);
+end;
+
+function OpenReader(const ABytes: TBytes; const AEmptyMessage: string): TUtf8JsonReader;
+var
+  Span: TByteSpan;
+begin
   if Length(ABytes) = 0 then
     raise EDextNatsProtocolError.Create(AEmptyMessage);
-  Span := TByteSpan.Create(@ABytes[0], Length(ABytes));
+  Span := TByteSpan.FromBytes(ABytes);
   Result := TUtf8JsonReader.Create(Span);
 end;
 
@@ -463,15 +480,19 @@ begin
 end;
 
 function NatsJsParseStreamInfo(const AJson: string): TNatsStreamInfo;
+begin
+  Result := NatsJsParseStreamInfo(JsonBytes(AJson, 'Empty JetStream API response'));
+end;
+
+function NatsJsParseStreamInfo(const AJson: TBytes): TNatsStreamInfo;
 var
-  Bytes: TBytes;
   Reader: TUtf8JsonReader;
 begin
   Result := Default(TNatsStreamInfo);
   try
-    Reader := OpenReader(AJson, 'Empty JetStream API response', Bytes);
+    Reader := OpenReader(AJson, 'Empty JetStream API response');
     if (not Reader.Read) or (Reader.TokenType <> TJsonTokenType.StartObject) then
-      raise EDextNatsProtocolError.CreateFmt('Malformed JetStream API response: %s', [AJson]);
+      raise EDextNatsProtocolError.CreateFmt('Malformed JetStream API response: %s', [JsonPreview(AJson)]);
 
     while Reader.Read do
     begin
@@ -511,20 +532,24 @@ begin
   except
     on E: EDextNatsProtocolError do raise;
     on E: EDextNatsJetStreamError do raise;
-    on E: EJsonException do raise EDextNatsProtocolError.CreateFmt('Malformed JetStream API response: %s',[AJson]);
+    on E: EJsonException do raise EDextNatsProtocolError.CreateFmt('Malformed JetStream API response: %s',[JsonPreview(AJson)]);
   end;
 end;
 
 function NatsJsParseConsumerInfo(const AJson: string): TNatsConsumerInfo;
+begin
+  Result := NatsJsParseConsumerInfo(JsonBytes(AJson, 'Empty JetStream API response'));
+end;
+
+function NatsJsParseConsumerInfo(const AJson: TBytes): TNatsConsumerInfo;
 var
-  Bytes: TBytes;
   Reader: TUtf8JsonReader;
 begin
   Result := Default(TNatsConsumerInfo);
   try
-    Reader := OpenReader(AJson, 'Empty JetStream API response', Bytes);
+    Reader := OpenReader(AJson, 'Empty JetStream API response');
     if (not Reader.Read) or (Reader.TokenType <> TJsonTokenType.StartObject) then
-      raise EDextNatsProtocolError.CreateFmt('Malformed JetStream API response: %s',[AJson]);
+      raise EDextNatsProtocolError.CreateFmt('Malformed JetStream API response: %s',[JsonPreview(AJson)]);
     while Reader.Read do
     begin
       if Reader.TokenType=TJsonTokenType.EndObject then Break;
@@ -557,24 +582,29 @@ begin
   except
     on E: EDextNatsProtocolError do raise;
     on E: EDextNatsJetStreamError do raise;
-    on E: EJsonException do raise EDextNatsProtocolError.CreateFmt('Malformed JetStream API response: %s',[AJson]);
+    on E: EJsonException do raise EDextNatsProtocolError.CreateFmt('Malformed JetStream API response: %s',[JsonPreview(AJson)]);
   end;
 end;
 
 function NatsJsParseStoredMsg(const AJson: string): TNatsStoredMsg;
+begin
+  Result := NatsJsParseStoredMsg(JsonBytes(AJson,'Empty JetStream STREAM.MSG.GET response'));
+end;
+
+function NatsJsParseStoredMsg(const AJson: TBytes): TNatsStoredMsg;
 var
-  Bytes: TBytes;
   Reader: TUtf8JsonReader;
-  DataB64, HeadersB64, HeaderBlock: string;
+  DataB64, HeadersB64: string;
+  HdrBytes: TBytes;
   Status: Integer;
 begin
   Result := Default(TNatsStoredMsg);
   DataB64 := '';
   HeadersB64 := '';
   try
-    Reader := OpenReader(AJson,'Empty JetStream STREAM.MSG.GET response',Bytes);
+    Reader := OpenReader(AJson,'Empty JetStream STREAM.MSG.GET response');
     if (not Reader.Read) or (Reader.TokenType<>TJsonTokenType.StartObject) then
-      raise EDextNatsProtocolError.CreateFmt('Malformed STREAM.MSG.GET response: %s',[AJson]);
+      raise EDextNatsProtocolError.CreateFmt('Malformed STREAM.MSG.GET response: %s',[JsonPreview(AJson)]);
     while Reader.Read do
     begin
       if Reader.TokenType=TJsonTokenType.EndObject then Break;
@@ -601,26 +631,30 @@ begin
     if DataB64<>'' then Result.Data:=TNetEncoding.Base64.DecodeStringToBytes(DataB64);
     if HeadersB64<>'' then
     begin
-      HeaderBlock:=TEncoding.UTF8.GetString(TNetEncoding.Base64.DecodeStringToBytes(HeadersB64));
-      NatsParseHeaderBlock(HeaderBlock,Result.Headers,Status);
+      HdrBytes:=TNetEncoding.Base64.DecodeStringToBytes(HeadersB64);
+      NatsParseHeaderBlock(HdrBytes,Result.Headers,Status);
     end;
   except
     on E: EDextNatsProtocolError do raise;
     on E: EDextNatsJetStreamError do raise;
-    on E: EJsonException do raise EDextNatsProtocolError.CreateFmt('Malformed STREAM.MSG.GET response: %s',[AJson]);
+    on E: EJsonException do raise EDextNatsProtocolError.CreateFmt('Malformed STREAM.MSG.GET response: %s',[JsonPreview(AJson)]);
   end;
 end;
 
 function NatsJsParsePublishAck(const AJson: string): TNatsPublishAck;
+begin
+  Result := NatsJsParsePublishAck(JsonBytes(AJson,'Empty JetStream publish acknowledgement payload'));
+end;
+
+function NatsJsParsePublishAck(const AJson: TBytes): TNatsPublishAck;
 var
-  Bytes: TBytes;
   Reader: TUtf8JsonReader;
 begin
   Result:=Default(TNatsPublishAck);
   try
-    Reader:=OpenReader(AJson,'Empty JetStream publish acknowledgement payload',Bytes);
+    Reader:=OpenReader(AJson,'Empty JetStream publish acknowledgement payload');
     if (not Reader.Read) or (Reader.TokenType<>TJsonTokenType.StartObject) then
-      raise EDextNatsProtocolError.CreateFmt('Malformed JetStream publish acknowledgement payload: %s',[AJson]);
+      raise EDextNatsProtocolError.CreateFmt('Malformed JetStream publish acknowledgement payload: %s',[JsonPreview(AJson)]);
     while Reader.Read do
     begin
       if Reader.TokenType=TJsonTokenType.EndObject then Break;
@@ -635,20 +669,24 @@ begin
   except
     on E: EDextNatsProtocolError do raise;
     on E: EDextNatsJetStreamError do raise;
-    on E: EJsonException do raise EDextNatsProtocolError.CreateFmt('Malformed JetStream publish acknowledgement payload: %s',[AJson]);
+    on E: EJsonException do raise EDextNatsProtocolError.CreateFmt('Malformed JetStream publish acknowledgement payload: %s',[JsonPreview(AJson)]);
   end;
 end;
 
 function NatsJsParseSuccess(const AJson: string): Boolean;
+begin
+  Result := NatsJsParseSuccess(JsonBytes(AJson,'Empty JetStream API response'));
+end;
+
+function NatsJsParseSuccess(const AJson: TBytes): Boolean;
 var
-  Bytes: TBytes;
   Reader: TUtf8JsonReader;
 begin
   Result:=False;
   try
-    Reader:=OpenReader(AJson,'Empty JetStream API response',Bytes);
+    Reader:=OpenReader(AJson,'Empty JetStream API response');
     if (not Reader.Read) or (Reader.TokenType<>TJsonTokenType.StartObject) then
-      raise EDextNatsProtocolError.CreateFmt('Malformed JetStream API response: %s',[AJson]);
+      raise EDextNatsProtocolError.CreateFmt('Malformed JetStream API response: %s',[JsonPreview(AJson)]);
     while Reader.Read do
     begin
       if Reader.TokenType=TJsonTokenType.EndObject then Break;
@@ -660,7 +698,7 @@ begin
   except
     on E: EDextNatsProtocolError do raise;
     on E: EDextNatsJetStreamError do raise;
-    on E: EJsonException do raise EDextNatsProtocolError.CreateFmt('Malformed JetStream API response: %s',[AJson]);
+    on E: EJsonException do raise EDextNatsProtocolError.CreateFmt('Malformed JetStream API response: %s',[JsonPreview(AJson)]);
   end;
 end;
 

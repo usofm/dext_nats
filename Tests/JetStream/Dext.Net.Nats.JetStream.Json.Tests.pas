@@ -51,6 +51,10 @@ type
     procedure PublishAckParser_ShouldMatchFacade;
     [Test, Category('Unit'), Category('JetStream'), Category('Parity')]
     procedure ParserError_ShouldPreserveJetStreamErrorSemantics;
+    [Test, Category('Unit'), Category('JetStream')]
+    procedure StreamInfoParser_ShouldParseUtf8BytesWithoutStringRoundTrip;
+    [Test, Category('Unit'), Category('JetStream')]
+    procedure PublishAckParser_ShouldParseUtf8Bytes;
   end;
 
 implementation
@@ -268,6 +272,37 @@ begin
   Should(NewErrCode).Be(OldErrCode);
   Should(NewCode).Be(404);
   Should(NewErrCode).Be(10059);
+end;
+
+procedure TDextNatsJetStreamJsonTests.StreamInfoParser_ShouldParseUtf8BytesWithoutStringRoundTrip;
+const
+  Json = '{"config":{"name":"ORDERS","subjects":["orders.*"],"retention":"limits","storage":"memory","max_consumers":-1,"max_msgs":100,"max_bytes":4096,"max_age":0,"max_msg_size":-1,"discard":"old","num_replicas":1,"duplicate_window":120000000000},"state":{"messages":12,"bytes":345,"first_seq":2,"last_seq":20,"consumer_count":3}}';
+var
+  Bytes: TBytes;
+  FromString, FromBytes: TNatsStreamInfo;
+begin
+  Bytes := TEncoding.UTF8.GetBytes(Json);
+  FromString := NatsJsParseStreamInfo(Json);
+  FromBytes := NatsJsParseStreamInfo(Bytes);
+  Should(FromBytes.Name).Be(FromString.Name);
+  Should(FromBytes.Messages).Be(FromString.Messages);
+  Should(FromBytes.LastSeq).Be(FromString.LastSeq);
+  Should(TNatsStreamInfo.Parse(Bytes).Name).Be('ORDERS');
+end;
+
+procedure TDextNatsJetStreamJsonTests.PublishAckParser_ShouldParseUtf8Bytes;
+const
+  Json = '{"stream":"ORDERS","seq":55,"duplicate":true,"domain":"EU"}';
+var
+  Bytes: TBytes;
+  Ack: TNatsPublishAck;
+begin
+  Bytes := TEncoding.UTF8.GetBytes(Json);
+  Ack := NatsJsParsePublishAck(Bytes);
+  Should(Ack.Stream).Be('ORDERS');
+  Should(Ack.Sequence).Be(UInt64(55));
+  Should(Ack.Duplicate).BeTrue;
+  Should(TNatsPublishAck.Parse(Bytes).Domain).Be('EU');
 end;
 
 end.

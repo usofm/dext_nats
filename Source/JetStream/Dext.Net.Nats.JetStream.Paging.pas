@@ -1,4 +1,4 @@
-{***************************************************************************}
+﻿{***************************************************************************}
 {                                                                           }
 {           Dext.Nats                                                       }
 {                                                                           }
@@ -9,6 +9,9 @@ unit Dext.Net.Nats.JetStream.Paging;
 
 interface
 
+uses
+  System.SysUtils;
+
 type
   TNatsJsNamePage = record
     Total: Integer;
@@ -17,7 +20,8 @@ type
     Items: TArray<string>;
   end;
 
-function NatsJsParseNamePage(const AJson, AArrayName: string): TNatsJsNamePage;
+function NatsJsParseNamePage(const AJson, AArrayName: string): TNatsJsNamePage; overload;
+function NatsJsParseNamePage(const AJson: TBytes; const AArrayName: string): TNatsJsNamePage; overload;
 
 implementation
 
@@ -76,19 +80,24 @@ begin
 end;
 
 function NatsJsParseNamePage(const AJson, AArrayName: string): TNatsJsNamePage;
+begin
+  if Trim(AJson) = '' then
+    raise EDextNatsProtocolError.Create('Empty JetStream paged response');
+  Result := NatsJsParseNamePage(TEncoding.UTF8.GetBytes(AJson), AArrayName);
+end;
+
+function NatsJsParseNamePage(const AJson: TBytes; const AArrayName: string): TNatsJsNamePage;
 var
-  Bytes: TBytes;
   Span: TByteSpan;
   Reader: TUtf8JsonReader;
   Items: TArray<string>;
   Count: Integer;
 begin
   Result := Default(TNatsJsNamePage);
-  if Trim(AJson) = '' then
+  if Length(AJson) = 0 then
     raise EDextNatsProtocolError.Create('Empty JetStream paged response');
 
-  Bytes := TEncoding.UTF8.GetBytes(AJson);
-  Span := TByteSpan.FromBytes(Bytes);
+  Span := TByteSpan.FromBytes(AJson);
   Reader := TUtf8JsonReader.Create(Span);
   if (not Reader.Read) or (Reader.TokenType <> TJsonTokenType.StartObject) then
     raise EDextNatsProtocolError.Create('Malformed JetStream paged response');

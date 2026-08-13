@@ -10,6 +10,7 @@ unit Dext.Net.Nats.JetStream.Transport;
 interface
 
 uses
+  System.SysUtils,
   Dext.Net.Nats;
 
 type
@@ -21,7 +22,7 @@ type
   INatsJetStreamApiTransport = interface
     ['{17FC6DD7-62A3-44CE-9393-F5988DA70430}']
     function Request(const ASubjectSuffix, ABody: string;
-      ATimeoutMs: Integer = 0): string;
+      ATimeoutMs: Integer = 0): TBytes;
   end;
 
   /// <summary>Production transport backed by an already-connected NATS client.</summary>
@@ -33,7 +34,7 @@ type
     constructor Create(AClient: TDextNatsClient;
       const AApiPrefix: string = '$JS.API.');
     function Request(const ASubjectSuffix, ABody: string;
-      ATimeoutMs: Integer = 0): string;
+      ATimeoutMs: Integer = 0): TBytes;
     property Client: TDextNatsClient read FClient;
     property ApiPrefix: string read FApiPrefix;
   end;
@@ -55,10 +56,10 @@ begin
 end;
 
 function TDextNatsJetStreamApiTransport.Request(const ASubjectSuffix,
-  ABody: string; ATimeoutMs: Integer): string;
+  ABody: string; ATimeoutMs: Integer): TBytes;
 begin
   Result := FClient.Request(FApiPrefix + ASubjectSuffix,
-    TEncoding.UTF8.GetBytes(ABody), ATimeoutMs).AsString;
+    TEncoding.UTF8.GetBytes(ABody), ATimeoutMs).Payload;
 end;
 
 end.
