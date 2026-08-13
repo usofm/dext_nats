@@ -48,7 +48,7 @@ type
 
     procedure Start;
     procedure Stop;
-    procedure Dispatch(const AItem: T);
+    procedure Dispatch(const AItem: T); reintroduce;
     function TryDispatch(const AItem: T): Boolean;
     function IsRunning: Boolean;
 

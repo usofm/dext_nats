@@ -1459,7 +1459,6 @@ var
 begin
   while FRunning do
   begin
-    n := 0;
     try
       // PingLoop may only Disconnect the socket; detect the closed flag here and
       // drive reconnect. Soft recv results (timeout / WSAEINTR) return n=0.
@@ -1479,11 +1478,11 @@ begin
     except
       on E: Exception do
       begin
-        n := 0;
         // Disconnect sets FRunning=False before closing; swallow teardown errors.
         if not FRunning then
           Break;
         HandleConnectionLost(E.Message);
+        Continue;
       end;
     end;
 
@@ -1592,7 +1591,6 @@ var
   found, removeAfter, inlineDelivery: Boolean;
   handler: TNatsMsgHandler;
 begin
-  found := False;
   removeAfter := False;
   inlineDelivery := False;
   handler := nil;
@@ -1817,7 +1815,6 @@ var
   sub: TDextNatsSubscription;
   sendNow: Boolean;
 begin
-  sendNow := False;
   FLock.Enter;
   try
     if not FSubscriptions.TryGetValue(ASid, sub) then

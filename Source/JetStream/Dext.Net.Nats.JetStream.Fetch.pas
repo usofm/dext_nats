@@ -123,7 +123,6 @@ var
   IsControl, Signal: Boolean;
 begin
   IsControl := NatsJsIsControlMessage(AMsg);
-  Signal := False;
   FLock.Enter;
   try
     if FStopped then
