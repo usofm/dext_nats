@@ -1626,6 +1626,32 @@ begin
   Should(js.Timestamp).Be(1700000000);
   Should(js.NumPending).Be(3);
   Should(js.AsString).Be('payload');
+
+  { ADR-15 v2: domain + account hash after $JS.ACK (nats-server 2.2+ / 2.14.5). }
+  raw.ReplyTo := '$JS.ACK._.ACCHASH.ORDERS.pull1.1.42.7.1700000000.3';
+  js := TNatsJsMsg.FromNatsMsg(raw);
+  Should(js.Stream).Be('ORDERS');
+  Should(js.Consumer).Be('pull1');
+  Should(Int64(js.StreamSequence)).Be(42);
+  Should(Int64(js.ConsumerSequence)).Be(7);
+  Should(js.Timestamp).Be(1700000000);
+  Should(js.NumPending).Be(3);
+
+  { v2 may grow extra trailing tokens; metadata fields stay at the same indexes. }
+  raw.ReplyTo := '$JS.ACK._.ACCHASH.ORDERS.pull1.1.42.7.1700000000.3.1';
+  js := TNatsJsMsg.FromNatsMsg(raw);
+  Should(js.Stream).Be('ORDERS');
+  Should(Int64(js.StreamSequence)).Be(42);
+  Should(Int64(js.ConsumerSequence)).Be(7);
+  Should(js.NumPending).Be(3);
+
+  { nats-server may suffix the ACK reply with @inbox. }
+  raw.ReplyTo := '$JS.ACK._.ACCHASH.ORDERS.pull1.1.42.7.1700000000.3@_INBOX.x';
+  js := TNatsJsMsg.FromNatsMsg(raw);
+  Should(js.Stream).Be('ORDERS');
+  Should(Int64(js.StreamSequence)).Be(42);
+  Should(Int64(js.ConsumerSequence)).Be(7);
+  Should(js.NumPending).Be(3);
 end;
 
 procedure TDextNatsProtocolTests.JsMsg_PayloadSpan_ShouldViewOwnedBytes;
@@ -1831,14 +1857,14 @@ begin
 
   req.Subject := '$KV.DEMO.gone';
   json := req.ToJson;
-  Should(json.Contains('"subject":"$KV.DEMO.gone"')).BeTrue;
+  Should(json.Contains('"filter":"$KV.DEMO.gone"')).BeTrue;
   Should(json.Contains('"keep"')).BeFalse;
   Should(json.Contains('"seq"')).BeFalse;
 
   req.Keep := 1;
   req.Sequence := 42;
   json := req.ToJson;
-  Should(json.Contains('"subject":"$KV.DEMO.gone"')).BeTrue;
+  Should(json.Contains('"filter":"$KV.DEMO.gone"')).BeTrue;
   Should(json.Contains('"keep":1')).BeTrue;
   Should(json.Contains('"seq":42')).BeTrue;
 end;

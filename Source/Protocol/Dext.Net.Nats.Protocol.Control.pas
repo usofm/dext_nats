@@ -1,4 +1,4 @@
-unit Dext.Net.Nats.Protocol.Control;
+﻿unit Dext.Net.Nats.Protocol.Control;
 
 interface
 
@@ -19,6 +19,7 @@ type
     FLength: Integer;
     procedure EnsureCapacity(AAdditional: Integer);
   public
+    procedure Reset;
     procedure WriteByte(AValue: Byte);
     procedure WriteAscii(const AValue: RawByteString);
     procedure WriteUtf8(const AValue: string);
@@ -30,6 +31,11 @@ type
 var
   GNatsPingFrame: TBytes;
   GNatsPongFrame: TBytes;
+
+procedure TNatsControlWriter.Reset;
+begin
+  FLength := 0;
+end;
 
 procedure TNatsControlWriter.EnsureCapacity(AAdditional: Integer);
 var
@@ -147,6 +153,7 @@ function NatsControlSub(const ASubject, AQueue: string;
 var
   Writer: TNatsControlWriter;
 begin
+  Writer.Reset;
   Writer.WriteAscii('SUB ');
   Writer.WriteUtf8(ASubject);
   Writer.WriteByte(Ord(' '));
@@ -164,6 +171,7 @@ function NatsControlUnsub(ASid, AMaxMsgs: Integer): TBytes;
 var
   Writer: TNatsControlWriter;
 begin
+  Writer.Reset;
   Writer.WriteAscii('UNSUB ');
   Writer.WriteInt(ASid);
   if AMaxMsgs > 0 then

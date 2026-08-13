@@ -1137,7 +1137,7 @@ var
   consInfo: TNatsConsumerInfo;
   consumerName: string;
   msgs: IList<TNatsJsMsg>;
-  batch, i, pending: Integer;
+  batch, i, pending, expiresMs: Integer;
   entry: TNatsKeyValueEntry;
 begin
   if Length(AFilterSubjects) = 0 then
@@ -1153,18 +1153,26 @@ begin
   cons.DeliverPolicy := ADeliver;
   cons.AckPolicy := apNone;
   cons.MaxDeliver := 1;
+  { ack_policy=none rejects a positive max_ack_pending (JS API 10082). }
+  cons.MaxAckPending := 0;
   consInfo := FJs.CreateConsumer(FStreamName, cons);
   try
     pending := Integer(consInfo.NumPending);
+    expiresMs := 5000;
+    { CONSUMER.CREATE may omit num_pending; probe once with a short expire. }
     if pending <= 0 then
-      Exit;
+    begin
+      pending := PULL_BATCH;
+      expiresMs := 250;
+    end;
 
     while pending > 0 do
     begin
       batch := pending;
       if batch > PULL_BATCH then
         batch := PULL_BATCH;
-      msgs := FJs.Fetch(FStreamName, consInfo.Name, batch, 5000);
+      msgs := FJs.Fetch(FStreamName, consInfo.Name, batch, expiresMs);
+      expiresMs := 5000;
       if msgs.Count = 0 then
         Break;
 

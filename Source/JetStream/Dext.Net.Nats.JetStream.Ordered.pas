@@ -1,4 +1,4 @@
-{***************************************************************************}
+﻿{***************************************************************************}
 {                                                                           }
 {           Dext.Nats                                                       }
 {                                                                           }
@@ -303,7 +303,15 @@ begin
     begin
       SelfRef.HandleRawMsg(ASerial, AMsg);
     end);
-  FDeliverSubject := Deliver;
+  FLock.Enter;
+  try
+    FDeliverSubject := Deliver;
+    { CONSUMER.CREATE can push before it returns; accept delivery immediately. }
+    FActive := True;
+  finally
+    FLock.Leave;
+  end;
+  FClient.Flush;
 end;
 
 procedure TDextNatsOrderedConsumerEngine.HandleRawMsg(ASerial: Integer;
@@ -360,7 +368,14 @@ begin
   FLock.Enter;
   try
     if FStopping or (not FActive) or (ASerial <> FSerial) then Exit;
-    if JsMsg.ConsumerSequence <> FExpectedDseq then
+    if JsMsg.ConsumerSequence = 0 then
+    begin
+      { AckNone / missing ADR-15 reply: deliver in arrival order. }
+      if JsMsg.StreamSequence > 0 then
+        FLastStreamSeq := JsMsg.StreamSequence;
+      Handler := FHandler;
+    end
+    else if JsMsg.ConsumerSequence <> FExpectedDseq then
       NeedReset := True
     else
     begin

@@ -1,4 +1,4 @@
-{***************************************************************************}
+﻿{***************************************************************************}
 {                                                                           }
 {           Dext.Nats                                                       }
 {                                                                           }
@@ -418,7 +418,7 @@ begin
   Json.WriteStartObject;
   if ARequest.Subject <> '' then
   begin
-    Json.WritePropertyName('subject');
+    Json.WritePropertyName('filter');
     Json.WriteString(ARequest.Subject);
   end;
   if ARequest.Sequence > 0 then

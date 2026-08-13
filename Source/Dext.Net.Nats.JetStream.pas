@@ -227,7 +227,10 @@ type
   ///   from JSON; an all-default request purges the entire stream.
   /// </summary>
   TNatsStreamPurgeRequest = record
-    /// <summary>Optional subject filter (wildcards allowed). Empty = whole stream.</summary>
+    /// <summary>
+    ///   Optional subject filter (wildcards allowed). Empty = whole stream.
+    ///   Serialized as JSON <c>filter</c> (nats-server 2.2+; 2.14+ rejects <c>subject</c>).
+    /// </summary>
     Subject: string;
     /// <summary>Purge messages with sequence below this value (exclusive). 0 = omit.</summary>
     Sequence: UInt64;
@@ -2201,7 +2204,7 @@ begin
   jw.WriteStartObject;
   if Subject <> '' then
   begin
-    jw.WritePropertyName('subject');
+    jw.WritePropertyName('filter');
     jw.WriteString(Subject);
   end;
   if Sequence > 0 then
@@ -2607,27 +2610,62 @@ end;
 class function TNatsJsMsg.FromNatsMsg(const AMsg: TNatsMsg): TNatsJsMsg;
 var
   parts: TArray<string>;
-  hdr: string;
+  hdr, reply: string;
+  atPos, n, streamIdx, consumerIdx, sseqIdx, cseqIdx, tsIdx, pendingIdx: Integer;
 begin
-  FillChar(Result, SizeOf(Result), 0);
+  Result := Default(TNatsJsMsg);
   Result.Subject := AMsg.Subject;
   Result.ReplyTo := AMsg.ReplyTo;
   Result.Payload := AMsg.Payload;
   Result.Headers := AMsg.Headers;
   Result.StatusCode := AMsg.StatusCode;
 
-  { $JS.ACK.<stream>.<consumer>.<delivered>.<stream_seq>.<consumer_seq>.<timestamp>.<pending> }
-  if Result.ReplyTo.StartsWith('$JS.ACK.') then
+  { ADR-15: v1 is 9 tokens; v2 is 11+ (domain + account hash after $JS.ACK).
+    nats.go GetMetadataFields: 10 tokens are invalid; extra tokens after v2 are ignored.
+    Newer servers may suffix the reply with @inbox. }
+  reply := Result.ReplyTo;
+  atPos := reply.LastIndexOf('@');
+  if atPos > 0 then
+    reply := reply.Substring(0, atPos);
+  streamIdx := -1;
+  consumerIdx := 0;
+  sseqIdx := 0;
+  cseqIdx := 0;
+  tsIdx := 0;
+  pendingIdx := 0;
+  if reply.StartsWith('$JS.ACK.') then
   begin
-    parts := Result.ReplyTo.Split(['.']);
-    if Length(parts) >= 9 then
+    parts := reply.Split(['.']);
+    n := Length(parts);
+    if (n >= 9) and (parts[0] = '$JS') and (parts[1] = 'ACK') then
     begin
-      Result.Stream := parts[2];
-      Result.Consumer := parts[3];
-      Result.StreamSequence := UInt64(StrToInt64Def(parts[5], 0));
-      Result.ConsumerSequence := UInt64(StrToInt64Def(parts[6], 0));
-      Result.Timestamp := StrToInt64Def(parts[7], 0);
-      Result.NumPending := StrToIntDef(parts[8], 0);
+      if n = 9 then
+      begin
+        streamIdx := 2;
+        consumerIdx := 3;
+        sseqIdx := 5;
+        cseqIdx := 6;
+        tsIdx := 7;
+        pendingIdx := 8;
+      end
+      else if n >= 11 then
+      begin
+        streamIdx := 4;
+        consumerIdx := 5;
+        sseqIdx := 7;
+        cseqIdx := 8;
+        tsIdx := 9;
+        pendingIdx := 10;
+      end;
+    end;
+    if (streamIdx >= 0) and (pendingIdx < n) then
+    begin
+      Result.Stream := parts[streamIdx];
+      Result.Consumer := parts[consumerIdx];
+      Result.StreamSequence := UInt64(StrToInt64Def(parts[sseqIdx], 0));
+      Result.ConsumerSequence := UInt64(StrToInt64Def(parts[cseqIdx], 0));
+      Result.Timestamp := StrToInt64Def(parts[tsIdx], 0);
+      Result.NumPending := StrToIntDef(parts[pendingIdx], 0);
     end;
   end;
 
@@ -2645,9 +2683,29 @@ begin
   end;
   if Result.StreamSequence = 0 then
   begin
-    hdr := Result.Headers.GetValue('Nats-Sequence');
+    hdr := Result.Headers.GetValue('Nats-Stream-Sequence');
+    if hdr = '' then
+      hdr := Result.Headers.GetValue('Nats-Sequence');
     if hdr <> '' then
       Result.StreamSequence := UInt64(StrToInt64Def(hdr, 0));
+  end;
+  if Result.ConsumerSequence = 0 then
+  begin
+    hdr := Result.Headers.GetValue('Nats-Consumer-Sequence');
+    if hdr <> '' then
+      Result.ConsumerSequence := UInt64(StrToInt64Def(hdr, 0));
+  end;
+  if Result.Timestamp = 0 then
+  begin
+    hdr := Result.Headers.GetValue('Nats-Time-Stamp');
+    if hdr <> '' then
+      Result.Timestamp := StrToInt64Def(hdr, 0);
+  end;
+  if Result.NumPending = 0 then
+  begin
+    hdr := Result.Headers.GetValue('Nats-Pending');
+    if hdr <> '' then
+      Result.NumPending := StrToIntDef(hdr, 0);
   end;
 end;
 
@@ -3209,9 +3267,13 @@ begin
   try
     FPush := TDextNatsJetStreamPushSubscription.Create(FJs.Client, sid, deliver);
     FDeliverSubject := deliver;
+    { CONSUMER.CREATE can push before it returns; accept delivery immediately. }
+    FActive := True;
   finally
     FLock.Leave;
   end;
+  { Ensure the server has processed SUB before CONSUMER.CREATE. }
+  FJs.Client.Flush;
 end;
 
 function TDextNatsOrderedConsumer.TryReset(AInitial: Boolean): Boolean;
@@ -3374,7 +3436,14 @@ begin
   try
     if FStopping or (not FActive) or (ASerial <> FSerial) then
       Exit;
-    if jsMsg.ConsumerSequence <> FExpectedDseq then
+    if jsMsg.ConsumerSequence = 0 then
+    begin
+      { AckNone / missing ADR-15 reply: deliver in arrival order. }
+      if jsMsg.StreamSequence > 0 then
+        FLastStreamSeq := jsMsg.StreamSequence;
+      handler := FHandler;
+    end
+    else if jsMsg.ConsumerSequence <> FExpectedDseq then
     begin
       needReset := True;
     end
