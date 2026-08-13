@@ -11,7 +11,8 @@ interface
 
 uses
   System.SysUtils,
-  Dext.Core.Span;
+  Dext.Core.Span,
+  Dext.Collections.Simd;
 
 type
   /// <summary>
@@ -227,16 +228,30 @@ end;
 
 function TDextNatsReadBuffer.IndexOfCrLf(AStartOffset: Integer): Integer;
 var
-  I: Integer;
+  Base: PByte;
+  Remaining: Integer;
+  Found: Integer;
+  Rel: Integer;
 begin
   if AStartOffset < 0 then
     AStartOffset := 0;
-  I := AStartOffset;
-  while I < Available - 1 do
+  Remaining := Available - AStartOffset;
+  if Remaining < 2 then
+    Exit(-1);
+
+  Base := @FBuffer[FReadPos + AStartOffset];
+  Rel := 0;
+  while Rel <= Remaining - 2 do
   begin
-    if (ByteAt(I) = 13) and (ByteAt(I + 1) = 10) then
-      Exit(I);
-    Inc(I);
+    Found := TDextSimd.IndexOfByte(Base + Rel, Remaining - Rel, 13);
+    if Found < 0 then
+      Exit(-1);
+    Inc(Rel, Found);
+    if Rel + 1 >= Remaining then
+      Exit(-1);
+    if (Base + Rel + 1)^ = 10 then
+      Exit(AStartOffset + Rel);
+    Inc(Rel);
   end;
   Result := -1;
 end;

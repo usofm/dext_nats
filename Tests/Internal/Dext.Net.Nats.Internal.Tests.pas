@@ -31,6 +31,8 @@ type
     procedure ReadBuffer_WritableSpan_ShouldFillWithoutAppendCopy;
     [Test, Category('Unit'), Category('Performance')]
     procedure ReadBuffer_CommitWrite_ShouldRejectOverflow;
+    [Test, Category('Unit'), Category('Performance')]
+    procedure ReadBuffer_IndexOfCrLf_ShouldFindPairWithSimdFallback;
     [Test, Category('Unit'), Category('Concurrency')]
     procedure Dispatcher_ShouldProcessQueuedItems;
     [Test, Category('Unit'), Category('Concurrency')]
@@ -139,6 +141,36 @@ begin
       .Throw(EArgumentOutOfRangeException);
     Buffer.CommitWrite(0);
     Should(Buffer.Available).Be(0);
+  finally
+    Buffer.Free;
+  end;
+end;
+
+procedure TDextNatsInternalTests.ReadBuffer_IndexOfCrLf_ShouldFindPairWithSimdFallback;
+var
+  Buffer: TDextNatsReadBuffer;
+  Data: TBytes;
+begin
+  Buffer := TDextNatsReadBuffer.Create(256);
+  try
+    Data := BytesOf('abc' + #13#10 + 'de' + #13 + 'f' + #13#10);
+    Buffer.Append(Data, Length(Data));
+    Should(Buffer.IndexOfCrLf).Be(3);
+    Should(Buffer.IndexOfCrLf(4)).Be(9);
+    Should(Buffer.IndexOfCrLf(10)).Be(-1);
+
+    Buffer.Consume(4);
+    Should(Buffer.IndexOfCrLf).Be(5);
+
+    Buffer.Clear;
+    Data := BytesOf('no-terminator' + #13);
+    Buffer.Append(Data, Length(Data));
+    Should(Buffer.IndexOfCrLf).Be(-1);
+
+    Buffer.Clear;
+    Data := BytesOf(#13#10);
+    Buffer.Append(Data, Length(Data));
+    Should(Buffer.IndexOfCrLf).Be(0);
   finally
     Buffer.Free;
   end;
