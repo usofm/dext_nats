@@ -12,6 +12,26 @@ socket library — it deliberately reuses `Dext.Net.Tcp` for the transport and
 `Dext.Core.Span` / `Dext.Collections` for buffers and collections, so it looks
 and feels like a first-party Dext component.
 
+## Dext AI Coding Pack (this library is Net, not ORM/web)
+
+Canonical pack: `C:\apps_delphi\Comp12\DEXT_AI_CODING_PACK`  
+Release: `v2026.08.12-r3-dext-412ed292` (audited upstream `cesarliws/dext@412ed292`).  
+Cursor skill: `C:\Users\Hamyar\.cursor\skills\dext-ai-coding-pack\SKILL.md`  
+User-level pack mirror: `C:\Users\Hamyar\.cursor\dext-ai-coding-pack`  
+Dext-repo Cursor rule (not in this repo): `C:\apps_delphi\Comp12\dext\.cursor\rules\dext-ai-coding-pack.mdc`
+
+Load these pack files for NATS work; skip ORM/web/financial/MCP/FastPath skills unless a task actually needs them:
+
+- `DEXT_DECISION_TREE.md` — collections (`IList` / bounded `IChannel<T>`), background work, logging, testing
+- `DEXT_ANTI_PATTERNS.md` — ownership/lifetime, `Mock<T>` is a record (never `.Free`), unbounded receive, API hallucination
+- `DEXT_API_SYMBOL_INDEX.md` — Span / Collections / `IChannel` / Testing symbols
+- `DEXT_CODE_RECIPES.md` — `TCollections.*`, `TChannel<T>.CreateBounded`
+- `skills/dext-testing/SKILL.md`
+- `prompts/review-dext-code.md` (correctness, invented APIs, ownership/lifetime first)
+- `prompts/create-test-suite.md`
+
+Pack precedence: **current Comp12 Dext `.pas` source wins** over pack text and over example READMEs. Do not invent Dext APIs from ASP.NET Core.
+
 ## Repository layout
 
 ```
@@ -149,25 +169,33 @@ objects) and Services discovery JSON use `Dext.Json.Utf8`
 There is no Delphi compiler available in this environment (no `dcc32`/`dcc64`
 on PATH), so **there is no build/test loop**. Changes are reviewed by careful
 manual reading against known-good Dext code. Always cross-check new code
-against these existing, compiling sources rather than guessing at APIs:
+against these existing, compiling sources rather than guessing at APIs.
 
-- `C:\dev\comp\dext\Sources\Net\Dext.Net.Tcp.pas` — the `TDextTcpClient` this
+**Canonical Dext source is `C:\apps_delphi\Comp12\dext`** (not `C:\dev\comp\dext`,
+which is absent on this machine). Pack text is pinned to `cesarliws/dext@412ed292`;
+local Comp12 `dext` may be a later `usofm/dext` revision — **grep Comp12 source
+for exact signatures**.
+
+- `C:\apps_delphi\Comp12\dext\Sources\Net\Dext.Net.Tcp.pas` — the `TDextTcpClient` this
   library wraps. Check exact method signatures here before calling them
   (`Connect`, `Disconnect`, `Send`, `Receive`, `Connected`).
-- `C:\dev\comp\dext\Sources\Net\Dext.Net.Mqtt.pas` and
+- `C:\apps_delphi\Comp12\dext\Sources\Net\Dext.Net.Mqtt.pas` and
   `Dext.Net.Mqtt.Parser.pas` — closest architectural sibling: a text/binary
   protocol client with a receive thread, a ping thread, and a stateful
   incremental parser. Mirror its patterns (thread creation, buffering,
   reconnection) rather than inventing new ones.
-- `C:\dev\comp\dext\Sources\Net\Dext.Net.RestClient.pas`,
+- `C:\apps_delphi\Comp12\dext\Sources\Net\Dext.Net.RestClient.pas`,
   `Dext.Net.ConnectionPool.pas`, `Dext.Net.Engine.pas` — general Dext.Net
   coding style (doc comments, error types, options-record pattern).
-- `C:\dev\comp\dext\Sources\Core\Base\Dext.Core.Span.pas` — `TByteSpan` API
+- `C:\apps_delphi\Comp12\dext\Sources\Core\Base\Dext.Core.Span.pas` — `TByteSpan` API
   used for zero-copy buffer append in the parser.
-- `C:\dev\comp\dext\Sources\Core\Dext.Collections*.pas` — the collections
-  actually used (see below); the factory is `Dext.Collections.Factory` /
-  `TCollections`, interfaces live in `Dext.Collections.pas` and
-  `Dext.Collections.Dict.pas`.
+- `C:\apps_delphi\Comp12\dext\Sources\Core\Dext.Collections*.pas` — the collections
+  actually used (see below); `TCollections` lives in `Dext.Collections.pas`
+  (`CreateList` / `CreateDictionary` / `CreateQueue`); `TPair` is in
+  `Dext.Collections.Dict.pas`; bounded `IChannel<T>` is
+  `TChannel<T>.CreateBounded` in `Dext.Collections.Channels.pas`.
+  `Dext.Collections.Factory.pas` is the code-folding classifier, not the
+  collection factory.
 - `C:\dev\comp\indy_nats\Source\` — a separate Indy-based NATS client, useful
   purely as a NATS-protocol reference (framing, CONNECT options, inbox
   generation), not as a Delphi-style reference.
@@ -325,9 +353,11 @@ parsing frames anywhere else.
 ## Working style expected of an agent here
 
 - Since there's no compiler in this environment, be conservative: re-read
-  the exact method you're calling in its source unit before using it, and
-  re-read your own diff afterwards looking for the kind of concurrency bugs
-  described above (they don't show up as compile errors).
+  the exact method you're calling in **Comp12 Dext source**
+  (`C:\apps_delphi\Comp12\dext`) before using it, and re-read your own diff
+  afterwards looking for the kind of concurrency bugs described above (they
+  don't show up as compile errors). Pack `review-dext-code.md` ranks
+  compile/runtime correctness, invented APIs, and ownership/lifetime first.
 - Prefer extending the existing unit structure (protocol / client / JetStream)
   over adding new units unless a new concern (e.g. tests, TLS) genuinely needs
   its own file.

@@ -1,4 +1,4 @@
-<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+﻿<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
     <PropertyGroup>
         <Base>True</Base>
         <AppType>Console</AppType>
@@ -83,6 +83,7 @@
         <DCCReference Include="..\..\Source\Dext.Net.Nats.Protocol.pas"/>
         <DCCReference Include="..\..\Source\Dext.Net.Nats.pas"/>
         <DCCReference Include="..\..\Source\Dext.Net.Nats.JetStream.pas"/>
+        <DCCReference Include="..\..\Source\JetStream\Dext.Net.Nats.JetStream.Fetch.pas"/>
         <BuildConfiguration Include="Base">
             <Key>Base</Key>
         </BuildConfiguration>

@@ -591,6 +591,8 @@ type
     ///   Pulls up to ABatch messages from a pull consumer. AExpiresMs is how long the server
     ///   may hold the request open (sent as nanoseconds in the NEXT request body).
     ///   Control messages (100/404/408/409) end the wait and are not included in the result.
+    ///   Completes inline on RecvLoop (same as Request), so it is safe to call from a
+    ///   one-worker subscription/Services/KV/OS handler.
     /// </summary>
     function Fetch(const AStreamName, AConsumerName: string; ABatch: Integer = 1;
       AExpiresMs: Integer = 5000): IList<TNatsJsMsg>;
@@ -653,8 +655,8 @@ implementation
 
 uses
   System.NetEncoding,
-  Dext.Core.Span,
-  Dext.Json.Utf8;
+  Dext.Json.Utf8,
+  Dext.Net.Nats.JetStream.Fetch;
 
 const
   NATS_JS_NS_PER_MS = Int64(1000000);
@@ -2213,7 +2215,6 @@ begin
     jw.WriteNumber(Int64(Keep));
   end;
   jw.WriteEndObject;
-  jw.Flush;
   Result := TEncoding.UTF8.GetString(w.ToBytes);
 end;
 
@@ -3542,106 +3543,13 @@ end;
 function TDextNatsJetStreamContext.Fetch(const AStreamName, AConsumerName: string; ABatch: Integer;
   AExpiresMs: Integer): IList<TNatsJsMsg>;
 var
-  batch: Integer;
-  expiresMs: Integer;
-  expiresNs: Int64;
-  waitMs: Integer;
-  inbox: string;
-  sid: Integer;
-  nextSubject: string;
-  requestBody: string;
-  done: TEvent;
-  lock: TCriticalSection;
-  messages: IList<TNatsJsMsg>;
-  receivedCount: Integer;
-  waitResult: TWaitResult;
+  Fetcher: TDextNatsJetStreamFetcher;
 begin
-  if (AStreamName = '') or (AConsumerName = '') then
-    raise EDextNatsException.Create('Fetch requires stream and consumer names');
-  if not FClient.Connected then
-    raise EDextNatsException.Create('Cannot Fetch: NATS client is not connected');
-
-  batch := ABatch;
-  if batch <= 0 then
-    batch := 1;
-  expiresMs := AExpiresMs;
-  if expiresMs < 0 then
-    expiresMs := 0;
-  expiresNs := Int64(expiresMs) * 1000000;
-  waitMs := expiresMs + 5000;
-  if waitMs < 1000 then
-    waitMs := 1000;
-
-  messages := TCollections.CreateList<TNatsJsMsg>;
-  Result := messages;
-  receivedCount := 0;
-
-  done := TEvent.Create(nil, True, False, '');
-  lock := TCriticalSection.Create;
+  Fetcher := TDextNatsJetStreamFetcher.Create(FClient, FApiPrefix);
   try
-    inbox := FClient.NewInbox;
-    sid := FClient.Subscribe(inbox,
-      procedure(const AMsg: TNatsMsg)
-      var
-        jsMsg: TNatsJsMsg;
-        isControl: Boolean;
-        signal: Boolean;
-      begin
-        isControl := NatsJSIsFetchControl(AMsg);
-        signal := False;
-
-        lock.Enter;
-        try
-          if not isControl then
-          begin
-            jsMsg := TNatsJsMsg.FromNatsMsg(AMsg);
-            messages.Add(jsMsg);
-            Inc(receivedCount);
-          end;
-          if isControl or (receivedCount >= batch) then
-            signal := True;
-        finally
-          lock.Leave;
-        end;
-
-        if signal then
-          done.SetEvent;
-      end);
-
-    try
-      FClient.Unsubscribe(sid, batch + 5);
-
-      nextSubject := Format('%sCONSUMER.MSG.NEXT.%s.%s', [FApiPrefix, AStreamName, AConsumerName]);
-      if expiresNs > 0 then
-        requestBody := Format('{"batch":%d,"expires":%d}', [batch, expiresNs])
-      else
-        requestBody := Format('{"batch":%d}', [batch]);
-
-      FClient.Publish(nextSubject, requestBody, inbox);
-
-      waitResult := done.WaitFor(Cardinal(waitMs));
-      case waitResult of
-        wrSignaled:
-          ; // ok — messages and/or a control frame arrived
-        wrTimeout:
-          begin
-            { Soft timeout: return whatever was collected (may be empty). }
-            FClient.Unsubscribe(sid, 0);
-          end;
-      else
-        FClient.Unsubscribe(sid, 0);
-        raise EDextNatsException.Create('Error waiting for JetStream Fetch response');
-      end;
-    except
-      try
-        FClient.Unsubscribe(sid, 0);
-      except
-      end;
-      raise;
-    end;
+    Result := Fetcher.Fetch(AStreamName, AConsumerName, ABatch, AExpiresMs);
   finally
-    lock.Free;
-    done.Free;
+    Fetcher.Free;
   end;
 end;
 

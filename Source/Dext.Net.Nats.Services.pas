@@ -49,6 +49,7 @@ uses
   System.Classes,
   System.SyncObjs,
   Dext.Collections,
+  Dext.Collections.Dict,
   Dext.Net.Nats.Protocol,
   Dext.Net.Nats;
 
@@ -372,6 +373,7 @@ uses
   System.Diagnostics,
   System.DateUtils,
   System.RegularExpressions,
+  Dext.Core.Span,
   Dext.Json.Utf8;
 
 const
@@ -569,6 +571,89 @@ begin
   AWriter.WritePropertyName('version');
   AWriter.WriteString(AVersion);
   SrvWriteMetadataObject(AWriter, AMetadata);
+end;
+
+procedure SrvCopyJsonValue(var AReader: TUtf8JsonReader; var AWriter: TUtf8JsonWriter); forward;
+
+procedure SrvCopyJsonObject(var AReader: TUtf8JsonReader; var AWriter: TUtf8JsonWriter);
+begin
+  AWriter.WriteStartObject;
+  while AReader.Read do
+  begin
+    if AReader.TokenType = TJsonTokenType.EndObject then
+      Break;
+    if AReader.TokenType <> TJsonTokenType.PropertyName then
+      Continue;
+    AWriter.WritePropertyName(AReader.GetString);
+    if not AReader.Read then
+      Break;
+    SrvCopyJsonValue(AReader, AWriter);
+  end;
+  AWriter.WriteEndObject;
+end;
+
+procedure SrvCopyJsonArray(var AReader: TUtf8JsonReader; var AWriter: TUtf8JsonWriter);
+begin
+  AWriter.WriteStartArray;
+  while AReader.Read do
+  begin
+    if AReader.TokenType = TJsonTokenType.EndArray then
+      Break;
+    SrvCopyJsonValue(AReader, AWriter);
+  end;
+  AWriter.WriteEndArray;
+end;
+
+procedure SrvCopyJsonValue(var AReader: TUtf8JsonReader; var AWriter: TUtf8JsonWriter);
+var
+  NumText: string;
+begin
+  case AReader.TokenType of
+    TJsonTokenType.StartObject:
+      SrvCopyJsonObject(AReader, AWriter);
+    TJsonTokenType.StartArray:
+      SrvCopyJsonArray(AReader, AWriter);
+    TJsonTokenType.StringValue:
+      AWriter.WriteString(AReader.GetString);
+    TJsonTokenType.Number:
+      begin
+        NumText := AReader.ValueSpan.ToString;
+        if (Pos('.', NumText) > 0) or (Pos('e', NumText) > 0) or (Pos('E', NumText) > 0) then
+          AWriter.WriteNumber(AReader.GetDouble)
+        else
+          AWriter.WriteNumber(AReader.GetInt64);
+      end;
+    TJsonTokenType.TrueValue:
+      AWriter.WriteBoolean(True);
+    TJsonTokenType.FalseValue:
+      AWriter.WriteBoolean(False);
+    TJsonTokenType.NullValue:
+      AWriter.WriteNull;
+  else
+    AWriter.WriteNull;
+  end;
+end;
+
+procedure SrvWriteJsonValue(var AWriter: TUtf8JsonWriter; const AJson: string);
+var
+  Bytes: TBytes;
+  Span: TByteSpan;
+  Reader: TUtf8JsonReader;
+begin
+  Bytes := TEncoding.UTF8.GetBytes(AJson);
+  if Length(Bytes) = 0 then
+  begin
+    AWriter.WriteNull;
+    Exit;
+  end;
+  Span := TByteSpan.Create(@Bytes[0], Length(Bytes));
+  Reader := TUtf8JsonReader.Create(Span);
+  if not Reader.Read then
+  begin
+    AWriter.WriteNull;
+    Exit;
+  end;
+  SrvCopyJsonValue(Reader, AWriter);
 end;
 
 { TNatsServiceErrorInfo }
@@ -1430,7 +1515,7 @@ begin
     begin
       { Embed user JSON value as endpoint "data" (ADR-32 / nats.go StatsHandler). }
       jw.WritePropertyName('data');
-      jw.WriteRaw(snaps[i].DataJson);
+      SrvWriteJsonValue(jw, snaps[i].DataJson);
     end;
     jw.WriteEndObject;
   end;

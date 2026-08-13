@@ -1,4 +1,4 @@
-{***************************************************************************}
+﻿{***************************************************************************}
 {                                                                           }
 {           Dext.Nats                                                       }
 {                                                                           }
@@ -42,6 +42,7 @@ implementation
 uses
   System.SysUtils,
   Dext.Net.Nats,
+  Dext.Net.Nats.Protocol,
   Dext.Net.Nats.JetStream.Json,
   Dext.Net.Nats.JetStream.Codecs,
   Dext.Net.Nats.JetStream.Parsers,

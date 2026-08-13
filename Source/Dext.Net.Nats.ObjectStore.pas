@@ -256,11 +256,6 @@ type
     function GetObjectInfo: TNatsObjectInfo;
   protected
     function GetSize: Int64; override;
-    function GetPosition: Int64; override;
-    procedure SetPosition(const Pos: Int64); override;
-    function GetCanRead: Boolean; override;
-    function GetCanSeek: Boolean; override;
-    function GetCanWrite: Boolean; override;
   public
     /// <summary>
     ///   Binds to an already-resolved object (links followed by
@@ -1401,32 +1396,6 @@ begin
   Result := Int64(FInfo.Size);
 end;
 
-function TDextNatsObjectResult.GetPosition: Int64;
-begin
-  Result := Int64(FBytesRead);
-end;
-
-procedure TDextNatsObjectResult.SetPosition(const Pos: Int64);
-begin
-  if Pos <> Int64(FBytesRead) then
-    raise EDextNatsObjectStoreError.Create('Object Store result is not seekable');
-end;
-
-function TDextNatsObjectResult.GetCanRead: Boolean;
-begin
-  Result := (not FClosed) and (not FFailed);
-end;
-
-function TDextNatsObjectResult.GetCanSeek: Boolean;
-begin
-  Result := False;
-end;
-
-function TDextNatsObjectResult.GetCanWrite: Boolean;
-begin
-  Result := False;
-end;
-
 procedure TDextNatsObjectResult.Fail(const AMsg: string);
 begin
   FFailed := True;
@@ -2361,6 +2330,7 @@ var
   push: TDextNatsJetStreamPushSubscription;
   js: TDextNatsJetStreamContext;
   gate: TNatsOsWatchGate;
+  handler: TNatsJsMsgHandler;
 begin
   if not Assigned(AHandler) then
     raise EDextNatsObjectStoreError.Create('Watch requires a handler');
@@ -2375,8 +2345,7 @@ begin
   push := nil;
   try
     { Subscribe before CONSUMER.CREATE so the deliver subject has interest. }
-    push := js.SubscribePush(deliver,
-      procedure(const AMsg: TNatsJsMsg)
+    handler := procedure(const AMsg: TNatsJsMsg)
       var
         info: TNatsObjectInfo;
       begin
@@ -2384,7 +2353,8 @@ begin
         if info.Name = '' then
           Exit;
         gate.HandleJsMsg(info, AMsg.NumPending);
-      end);
+      end;
+    push := js.SubscribePush(deliver, handler, '');
     cons := TNatsConsumerConfig.CreateDefault;
     cons.Name := consumerName;
     cons.FilterSubject := AFilterSubject;

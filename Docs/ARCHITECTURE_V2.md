@@ -1,4 +1,4 @@
-# Dext.Nats Architecture V2
+﻿# Dext.Nats Architecture V2
 
 This document defines the refactor path for Dext.Nats after the 1.0 feature-complete baseline.
 
@@ -34,6 +34,9 @@ Source/
   Protocol/
     Dext.Net.Nats.Protocol.Headers.pas
     Dext.Net.Nats.Protocol.Control.pas
+    Dext.Net.Nats.Protocol.Writer.pas
+
+  Dext.Net.Nats.ParserRuntime.pas         # TDextNatsRuntimeFrameParser = V2
 
   JetStream/
     Dext.Net.Nats.JetStream.Json.pas
@@ -47,6 +50,7 @@ Source/
     Dext.Net.Nats.JetStream.Fetch.pas
     Dext.Net.Nats.JetStream.Push.pas
     Dext.Net.Nats.JetStream.Ordered.pas
+    Dext.Net.Nats.JetStream.Runtime.pas    # compiled; not used by façade yet
 
   KeyValue/
     Dext.Net.Nats.KeyValue.Subjects.pas
@@ -79,22 +83,17 @@ Status: **implemented**.
 
 ## Phase 2 — parser migration
 
-Status: **V2 implementation + parity + benchmark ready; runtime cut-over gated by Delphi compile/integration**.
+Status: **V2 is the production runtime parser.**
 
-`TDextNatsFrameParserV2` uses `TDextNatsReadBuffer` and preserves the owned `TNatsFrame` contract. Parity tests cover control frames, INFO, MSG/HMSG, fragmented input, multi-frame input, Clear and max-frame rejection. A V1/V2 benchmark and compaction assertion are included.
-
-The old parser remains the runtime parser until the self-hosted Delphi 13 gate passes. This is intentional rollback safety, not forgotten work.
+`TDextNatsFrameParserV2` uses `TDextNatsReadBuffer` and preserves the owned `TNatsFrame` contract. `Dext.Net.Nats.ParserRuntime` aliases `TDextNatsRuntimeFrameParser = TDextNatsFrameParserV2`. The old contiguous/`ShiftBuffer` parser is gone. Parity tests cover control frames, INFO, MSG/HMSG, fragmented input, multi-frame input, Clear and max-frame rejection. A V2 benchmark and compaction assertion are included. Delphi 13 compile/integration of this cut-over is still an unrun gate.
 
 ## Phase 3 — bounded message dispatch
 
-Status: **opt-in implementation ready**.
+Status: **native default on `TDextNatsClient` (1 worker, bounded queue, block/backpressure).**
 
-`Dext.Net.Nats.Dispatching.pas` adds bounded worker dispatch backed by Dext Channels. Existing inline `Subscribe` behavior remains unchanged for compatibility.
+`Source/Internal/Dext.Net.Nats.Internal.Dispatcher.pas` is the only callback dispatch layer. The obsolete `Dext.Net.Nats.Dispatching.pas` adapter was removed from production. Public `Subscribe` is worker-dispatched. Internal completion subscriptions (`Request` inbox, Fetch inbox via `TDextNatsJetStreamFetcher.SubscribeInline`) use `SubscribeCore(..., InlineDelivery=True)` so nested synchronous waits do not deadlock the sole worker.
 
-```text
-Inline          existing TDextNatsClient.Subscribe behavior
-BoundedWorkers  opt-in channel-backed worker dispatch
-```
+**P0 Fetch (source):** `TDextNatsJetStreamContext.Fetch` delegates to `TDextNatsJetStreamFetcher`. Wait-state is an interface gate; `Unsubscribe(sid, 0)` always runs before dropping it. Compiler/live validation still pending.
 
 ## Phase 4 — JetStream decomposition
 
@@ -117,7 +116,9 @@ Status: **all major implementation seams extracted; facade delegation/cut-over g
 - `Push`: push subscription orchestration and consumer deliver-subject resolution.
 - `Ordered`: extracted ordered-consumer engine/state machine prepared for facade cut-over.
 
-The historical `TDextNatsJetStreamContext` remains the public ABI/API facade until the Windows Delphi gate validates all extracted units. At cut-over, facade methods become thin delegators and duplicate implementations can be removed.
+The historical `TDextNatsJetStreamContext` remains the public ABI/API facade and **still contains duplicate implementations** except Fetch, which now delegates to `TDextNatsJetStreamFetcher`. `TDextNatsJetStreamRuntime` is compiled but unused by the façade (P1). At cut-over, remaining facade methods become thin delegators and duplicate implementations can be removed.
+
+**P0 Fetch (source):** façade `Fetch` uses the extracted inline collector. Wait-state is an interface gate; `Unsubscribe(sid, 0)` always runs before the gate is released so a late MSG cannot Enter/SetEvent on freed sync objects.
 
 ## Phase 5 — large non-JetStream units
 
@@ -146,7 +147,7 @@ Next physical move after compile gate: lazy reader and watcher lifecycle.
 - `Dext.Net.Nats.Protocol.Control.pas`: extracted PING/PONG/SUB/UNSUB writer with parity fixture.
 - Parser V2 already lives in `Internal.Parser`.
 
-The remaining PUB/HPUB/CONNECT writer will be migrated after the extracted units compile on Delphi 13, because that path is throughput-sensitive and should be benchmarked before replacing the current byte writer.
+PUB/HPUB/CONNECT live in `Dext.Net.Nats.Protocol.Writer.pas` (`NatsV2Encode*`). PING/PONG/SUB/UNSUB live in `Protocol.Control`. The old `NatsEncode*` duplicates are gone.
 
 ## Phase 6 — feature-oriented tests
 
@@ -179,7 +180,7 @@ After compile/integration stability:
 3. Span-oriented header parser/writer;
 4. optional vectored write if `Dext.Net.Tcp` exposes a suitable primitive;
 5. owned-vs-borrowed allocation/throughput baselines;
-6. evaluate making bounded dispatch the recommended server-workload mode while preserving inline compatibility.
+6. bounded dispatch is already the default; keep `InlineDelivery` reserved for internal completion subscriptions only.
 
 ## Performance rule
 
@@ -195,15 +196,13 @@ No optimization is accepted because it merely looks faster. A hot-path change re
 
 Hosted Linux GitHub Actions performs structural/hygiene checks only. It does **not** prove Delphi compilation.
 
-Before merging Architecture V2 to `main`:
+Parser V2 and native dispatch are already on `main`. Remaining before treating Architecture V2 as validated:
 
-1. run `scripts/build-tests.ps1` on Windows with Delphi 13;
-2. compile every extracted unit through `Tests/Dext.Net.Nats.Tests.dproj`;
-3. run focused and legacy tests;
-4. run integration tests against `nats-server -js`;
-5. capture Parser V1/V2 benchmark output;
-6. resolve any Delphi language/API mismatches;
-7. cut over `TDextNatsClient` to Parser V2 behind a reversible define first;
-8. convert JetStream public methods into thin delegates to extracted services;
-9. repeat integration/stress tests;
-10. only then remove duplicated old implementations and merge the PR.
+1. P0 Fetch deadlock/UAF are fixed in source; nested Request (100×) and nested Fetch (50×) tests added (`HandlerWorkerCount = 1`). Compiler/live validation still pending.
+2. Run `scripts/build-tests.ps1` on Windows with Delphi 13 (compiler 37.0 is installed; this agent session did not run it).
+3. Compile every extracted unit through `Tests/Dext.Net.Nats.Tests.dproj`.
+4. Run focused and legacy tests; then `nats-server -js` live tests.
+5. Capture Parser V2 benchmark output (expect 0 per-frame compactions on the batch PING case).
+6. Convert remaining JetStream public methods into thin delegates to extracted Runtime/services (Fetch already delegates); delete façade duplicates.
+7. Repeat integration/stress tests (`scripts/validate-parser-cutover.ps1 -Config Release -Platform Win32 -LiveNats -Benchmark`).
+8. Apply the same façade/service split to KeyValue, ObjectStore, and Services.

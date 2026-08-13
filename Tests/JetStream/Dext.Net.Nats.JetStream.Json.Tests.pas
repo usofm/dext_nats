@@ -1,4 +1,4 @@
-{***************************************************************************}
+﻿{***************************************************************************}
 {                                                                           }
 {           Dext.Nats                                                       }
 {                                                                           }
@@ -15,6 +15,7 @@ uses
   Dext.Testing,
   Dext.Testing.Attributes,
   Dext.Testing.Fluent,
+  Dext.Net.Nats.Protocol,
   Dext.Net.Nats.JetStream,
   Dext.Net.Nats.JetStream.Json,
   Dext.Net.Nats.JetStream.Codecs,

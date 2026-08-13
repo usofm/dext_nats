@@ -59,6 +59,7 @@ uses
   Dext.Net.Nats.Protocol in '..\..\Source\Dext.Net.Nats.Protocol.pas',
   Dext.Net.Nats in '..\..\Source\Dext.Net.Nats.pas',
   Dext.Net.Nats.JetStream in '..\..\Source\Dext.Net.Nats.JetStream.pas',
+  Dext.Net.Nats.JetStream.Fetch in '..\..\Source\JetStream\Dext.Net.Nats.JetStream.Fetch.pas',
   Dext.Net.Nats.KeyValue in '..\..\Source\Dext.Net.Nats.KeyValue.pas';
 
 const

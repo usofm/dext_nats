@@ -101,6 +101,7 @@
         <DCCReference Include="..\..\Source\Dext.Net.Nats.Protocol.pas"/>
         <DCCReference Include="..\..\Source\Dext.Net.Nats.pas"/>
         <DCCReference Include="..\..\Source\Dext.Net.Nats.JetStream.pas"/>
+        <DCCReference Include="..\..\Source\JetStream\Dext.Net.Nats.JetStream.Fetch.pas"/>
         <DCCReference Include="..\..\Source\Dext.Net.Nats.KeyValue.pas"/>
         <DCCReference Include="..\..\Source\Dext.Net.Nats.ObjectStore.pas"/>
         <BuildConfiguration Include="Base">

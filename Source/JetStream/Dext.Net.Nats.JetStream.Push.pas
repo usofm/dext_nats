@@ -1,4 +1,4 @@
-{***************************************************************************}
+﻿{***************************************************************************}
 {                                                                           }
 {           Dext.Nats                                                       }
 {                                                                           }
@@ -46,6 +46,7 @@ implementation
 
 uses
   System.SysUtils,
+  Dext.Net.Nats.Protocol,
   Dext.Net.Nats.JetStream.Fetch;
 
 constructor TDextNatsJetStreamPush.Create(AClient: TDextNatsClient;

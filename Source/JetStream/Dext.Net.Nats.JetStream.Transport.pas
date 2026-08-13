@@ -1,4 +1,4 @@
-{***************************************************************************}
+﻿{***************************************************************************}
 {                                                                           }
 {           Dext.Nats                                                       }
 {                                                                           }
@@ -41,7 +41,8 @@ type
 implementation
 
 uses
-  System.SysUtils;
+  System.SysUtils,
+  Dext.Net.Nats.Protocol;
 
 constructor TDextNatsJetStreamApiTransport.Create(AClient: TDextNatsClient;
   const AApiPrefix: string);

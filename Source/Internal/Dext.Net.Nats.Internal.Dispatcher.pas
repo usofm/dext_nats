@@ -1,4 +1,4 @@
-{***************************************************************************}
+﻿{***************************************************************************}
 {                                                                           }
 {           Dext.Nats                                                       }
 {                                                                           }
@@ -92,7 +92,8 @@ end;
 
 function TDextNatsBoundedDispatcher<T>.IsRunning: Boolean;
 begin
-  Result := TInterlocked.Read(FState) = 1;
+  // TInterlocked.Read has no Integer overload on Delphi 12/13 (Int64/UInt64 only).
+  Result := TInterlocked.CompareExchange(FState, 0, 0) = 1;
 end;
 
 procedure TDextNatsBoundedDispatcher<T>.Start;

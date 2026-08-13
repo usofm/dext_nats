@@ -281,6 +281,13 @@ type
     procedure HandlerException_ShouldFireOnError;
     [Test, Category('Integration'), Category('Negative')]
     procedure Request_Timeout_ShouldRaise;
+    /// <summary>
+    /// Nested synchronous Request from a HandlerWorkerCount=1 subscription
+    /// handler. Inbox completion is inline on RecvLoop; the inner responder
+    /// is a second client so the sole worker is not asked to run both sides.
+    /// </summary>
+    [Test, Category('Integration')]
+    procedure NestedRequest_FromOneWorkerHandler_ShouldComplete;
   end;
 
   [TestFixture('NATS JetStream Integration (requires nats-server -js)')]
@@ -327,6 +334,12 @@ type
     procedure Publish_ExpectedStreamMismatch_ShouldRaise;
     [Test, Category('JetStream')]
     procedure Fetch_Empty_ShouldReturnZero;
+    /// <summary>
+    /// Nested JetStream Fetch from a HandlerWorkerCount=1 subscription handler.
+    /// Must complete via inline inbox delivery, not hang until Fetch WaitMs.
+    /// </summary>
+    [Test, Category('JetStream')]
+    procedure NestedFetch_FromOneWorkerHandler_ShouldComplete;
     [Test, Category('JetStream')]
     procedure StreamExists_Missing_ShouldBeFalse;
     [Test, Category('JetStream')]
@@ -2932,6 +2945,65 @@ begin
     end).Throw(EDextNatsTimeoutError);
 end;
 
+procedure TDextNatsIntegrationTests.NestedRequest_FromOneWorkerHandler_ShouldComplete;
+var
+  opts: TDextNatsOptions;
+  responder: TDextNatsClient;
+  outerSubject, innerSubject: string;
+  done: TEvent;
+  nestedReply: string;
+  i: Integer;
+begin
+  opts := TDextNatsOptions.CreateDefault;
+  opts.HandlerWorkerCount := 1;
+  FreeAndNil(FClient);
+  FClient := TDextNatsClient.Create(opts);
+  if not EnsureServerOrFail then
+    Exit;
+  Should(FClient.Options.HandlerWorkerCount).Be(1);
+
+  outerSubject := UniqueSubject('dext.nats.test.nested.outer');
+  innerSubject := UniqueSubject('dext.nats.test.nested.inner');
+  nestedReply := '';
+  responder := TDextNatsClient.Create(opts);
+  done := TEvent.Create(nil, True, False, '');
+  try
+    responder.Connect(NatsTestHost, NatsTestPort);
+    responder.Subscribe(innerSubject,
+      procedure(const AMsg: TNatsMsg)
+      begin
+        if AMsg.HasReplyTo then
+          responder.Publish(AMsg.ReplyTo, 'pong:' + AMsg.AsString);
+      end);
+
+    FClient.Subscribe(outerSubject,
+      procedure(const AMsg: TNatsMsg)
+      var
+        reply: TNatsMsg;
+      begin
+        reply := FClient.Request(innerSubject, AMsg.AsString, 3000);
+        nestedReply := reply.AsString;
+        done.SetEvent;
+      end);
+
+    for i := 1 to 100 do
+    begin
+      nestedReply := '';
+      done.ResetEvent;
+      FClient.Publish(outerSubject, 'n' + IntToStr(i));
+      Should(done.WaitFor(3000) = wrSignaled).BeTrue;
+      Should(nestedReply).Be('pong:n' + IntToStr(i));
+    end;
+  finally
+    done.Free;
+    try
+      responder.Disconnect;
+    except
+    end;
+    responder.Free;
+  end;
+end;
+
 { TDextNatsJetStreamTests }
 
 function TDextNatsJetStreamTests.UniqueName(const APrefix: string): string;
@@ -3548,6 +3620,78 @@ begin
     FJs.CreateConsumer(stream, consumerCfg);
     msgs := FJs.Fetch(stream, consumer, 1, 400);
     Should(msgs.Count).Be(0);
+  finally
+    FJs.DeleteStream(stream);
+  end;
+end;
+
+procedure TDextNatsJetStreamTests.NestedFetch_FromOneWorkerHandler_ShouldComplete;
+var
+  opts: TDextNatsOptions;
+  stream, consumer, subject, outerSubject: string;
+  streamCfg: TNatsStreamConfig;
+  consumerCfg: TNatsConsumerConfig;
+  done: TEvent;
+  fetched: string;
+  fetchCount: Integer;
+  i: Integer;
+  sw: TStopwatch;
+begin
+  opts := TDextNatsOptions.CreateDefault;
+  opts.HandlerWorkerCount := 1;
+  FreeAndNil(FJs);
+  FreeAndNil(FClient);
+  FClient := TDextNatsClient.Create(opts);
+  if not EnsureJetStreamOrFail then
+    Exit;
+  Should(FClient.Options.HandlerWorkerCount).Be(1);
+
+  stream := UniqueName('DEXT_JS_NESTF');
+  consumer := UniqueName('DEXT_JS_NESTC');
+  subject := JsUniqueSubject(stream);
+  outerSubject := UniqueName('dext.nats.nested.fetch');
+  streamCfg := TNatsStreamConfig.CreateDefault(stream, [subject]);
+  streamCfg.Storage := ssMemory;
+  FJs.CreateStream(streamCfg);
+  try
+    consumerCfg := TNatsConsumerConfig.CreateDefault(consumer, subject);
+    FJs.CreateConsumer(stream, consumerCfg);
+    done := TEvent.Create(nil, True, False, '');
+    try
+      FClient.Subscribe(outerSubject,
+        procedure(const AMsg: TNatsMsg)
+        var
+          msgs: IList<TNatsJsMsg>;
+        begin
+          msgs := FJs.Fetch(stream, consumer, 1, 1000);
+          fetchCount := msgs.Count;
+          if msgs.Count > 0 then
+          begin
+            fetched := msgs[0].AsString;
+            FJs.Ack(msgs[0]);
+          end
+          else
+            fetched := '';
+          done.SetEvent;
+        end);
+
+      for i := 1 to 50 do
+      begin
+        fetched := '';
+        fetchCount := -1;
+        done.ResetEvent;
+        FJs.Publish(subject, 'payload-' + IntToStr(i));
+        sw := TStopwatch.StartNew;
+        FClient.Publish(outerSubject, 'go');
+        Should(done.WaitFor(3000) = wrSignaled).BeTrue;
+        // Deadlock would wait Fetch WaitMs (expires 1000 + 5000 = 6000) then return empty.
+        Should(sw.ElapsedMilliseconds < 4000).BeTrue;
+        Should(fetchCount).Be(1);
+        Should(fetched).Be('payload-' + IntToStr(i));
+      end;
+    finally
+      done.Free;
+    end;
   finally
     FJs.DeleteStream(stream);
   end;

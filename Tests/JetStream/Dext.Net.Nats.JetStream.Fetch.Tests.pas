@@ -1,4 +1,4 @@
-unit Dext.Net.Nats.JetStream.Fetch.Tests;
+﻿unit Dext.Net.Nats.JetStream.Fetch.Tests;
 
 interface
 
@@ -40,6 +40,10 @@ begin
   Msg.StatusCode := 408;
   Should(NatsJsIsControlMessage(Msg)).Be(True);
   Msg.StatusCode := 100;
+  Should(NatsJsIsControlMessage(Msg)).Be(True);
+  Msg.StatusCode := 404;
+  Should(NatsJsIsControlMessage(Msg)).Be(True);
+  Msg.StatusCode := 409;
   Should(NatsJsIsControlMessage(Msg)).Be(True);
 end;
 

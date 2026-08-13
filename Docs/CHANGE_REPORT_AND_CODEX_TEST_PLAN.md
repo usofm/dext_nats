@@ -1,11 +1,14 @@
 # Dext.Nats — Architecture Change Report & Codex Test Plan
 
 > Repository: `usofm/dext_nats`  
-> Working branch: `perf/parser-v2-cutover`  
-> Current baseline at time of writing: `51f3d3d3d28287dc7e518bf8acddc89eef6fbb32`  
-> Target compiler: **Delphi 13 / RAD Studio**  
-> Target NATS runtime: NATS Server with JetStream enabled  
-> Status: hosted CI validates structure/hygiene only; a real Delphi compile/test run is still required.
+> Working branch at writing: `perf/parser-v2-cutover` (merged to `main` in PR #2 / `7f510e7`)  
+> Current `main` HEAD (this execution): `3d935f61025e88c19610b8db7794ec0972ba09fa`  
+> Fetch-inline commit still in history: `51f3d3d3d28287dc7e518bf8acddc89eef6fbb32`  
+> Target compiler: **Delphi 13 / RAD Studio** (compiler 37.0 is installed on this machine)  
+> Target NATS runtime: NATS Server with JetStream enabled (`nats-server` v2.12.3 found)  
+> Status: **NOT READY TO MERGE.** P0 Fetch deadlock + UAF are **fixed in source** (façade `Fetch` delegates to `TDextNatsJetStreamFetcher` with inline RecvLoop completion; wait-state is an interface gate; `Unsubscribe(sid, 0)` always runs before dropping the gate). Nested Request (100×) and nested Fetch (50×) live tests added (`HandlerWorkerCount = 1`). Debug Win32 rebuild **attempted** and failed on pre-existing `Internal.Dispatcher.pas` `TInterlocked.Read` (Fetch units not reached). Live/stress/benchmark still not executed.
+
+**Agent paths (this machine):** canonical Dext source is `C:\apps_delphi\Comp12\dext` (not `C:\dev\comp\dext`). Dext AI Coding Pack is `C:\apps_delphi\Comp12\DEXT_AI_CODING_PACK` (`v2026.08.12-r3-dext-412ed292`). This library is Net/protocol — pack ORM/web skills do not apply. See `AGENTS.md` for which pack files to load. Fetch P0 deadlock/UAF are fixed in source; remaining merge blockers are Delphi compile + live/stress/benchmark execution and the P1 façade→Runtime cut-over.
 
 ---
 
@@ -366,22 +369,21 @@ JetStream Fetch creates a temporary inbox subscription and blocks waiting for on
 
 If Fetch is called from the sole callback worker and its private inbox is also worker-dispatched, the same self-deadlock can occur.
 
-### Fix
+### Intended fix (only half-applied)
 
-The core subscription primitive is being exposed only as protected/internal functionality, and JetStream Fetch uses an internal access path for its private completion collector.
+Commit `51f3d3d` extracted `TDextNatsJetStreamFetcher` with a cracker `SubscribeInline` → `SubscribeCore(..., InlineDelivery=True)` so the private inbox collector can complete on RecvLoop.
 
-The latest branch baseline includes the commit:
+**P0 — public façade does not use that path.** `TDextNatsJetStreamContext.Fetch` in `Source/Dext.Net.Nats.JetStream.pas` still calls public `FClient.Subscribe` (dispatcher, default 1 worker, `dopBlock`). Nested Fetch / KV / Object Store from a user handler on that worker deadlocks. `TDextNatsJetStreamRuntime` owns a `TDextNatsJetStreamFetcher` but the façade never constructs or delegates to Runtime.
 
-```text
-51f3d3d3d28287dc7e518bf8acddc89eef6fbb32
-Keep JetStream Fetch completion off callback queue
-```
+**P0 — use-after-free on both Fetch implementations.** On `wrSignaled`, neither `JetStream.pas` Fetch nor `JetStream.Fetch.pas` unsubscribes the inbox before the `finally` that frees `Lock` / `Done`. `Unsubscribe(sid, batch+5)` can leave the SUB live; a late MSG/HMSG can still enter the anonymous handler and touch freed sync objects.
 
 ### Required invariant
 
 Only framework/internal completion subscriptions may request inline delivery.
 
 Normal user-visible subscriptions must remain dispatcher-based.
+
+Public `TDextNatsJetStreamContext.Fetch` (and any KV/OS path that calls it) must use the inline completion collector, then unsubscribe/drain before freeing handler-captured `TEvent` / `TCriticalSection`.
 
 ---
 
@@ -407,9 +409,11 @@ RecvLoop
 
 That means unnecessary queues, workers, allocations, latency, shutdown complexity, and duplicated backpressure semantics.
 
-Therefore the opt-in adapter and its dedicated tests were removed from the project graph.
+Therefore the opt-in adapter was removed from the production source graph (`Source/Dext.Net.Nats.Dispatching.pas` is gone; not referenced from `Tests/Dext.Net.Nats.Tests.dpr`).
 
-The canonical architecture now has exactly one callback dispatch layer.
+Hygiene leftover (does not compile into the test exe today): `Tests/Dext.Net.Nats.Dispatching.Tests.pas` still exists in git and `uses Dext.Net.Nats.Dispatching`. Duplicate Drain/Internal units also remain at `Tests/` root beside the feature-folder copies the `.dpr` actually compiles.
+
+The canonical architecture now has exactly one callback dispatch layer (`TDextNatsBoundedDispatcher` in `Internal.Dispatcher`).
 
 ---
 
@@ -467,6 +471,8 @@ Source/JetStream/Dext.Net.Nats.JetStream.Runtime.pas
 ```
 
 ### Why this is not finished yet
+
+**P1 — Architecture V2 extract unused by the public façade.** `TDextNatsJetStreamContext` still contains the full Fetch/Streams/Consumers implementations. `TDextNatsJetStreamRuntime` is compiled into the test project but never constructed by the façade. Nested Fetch therefore cannot pick up `SubscribeInline` until the façade delegates (or inlines the same collector).
 
 Many extracted implementation units still consume public types declared in the giant facade unit.
 
@@ -1372,103 +1378,128 @@ Do not introduce unsafe borrowed lifetimes without dedicated tests.
 ```markdown
 ## Codex Validation Result
 
-Date:
-Machine:
-Windows:
-Delphi/RAD Studio:
-NATS Server:
-Branch:
-Commit tested:
+Date: 2026-08-13
+Machine: MACBOOKPRO16-US
+Windows: Microsoft Windows NT 10.0.19045.0
+Delphi/RAD Studio: Delphi 13 Florence — `C:\Program Files (x86)\Embarcadero\Studio\37.0` (`dcc32`/`dcc64` 37.0, `rsvars.bat` present). Also Studio 22.0 / 23.0 on disk; build script would pick 37.0.
+BDS path: `C:\Program Files (x86)\Embarcadero\Studio\37.0`
+MSBuild path: `C:\Windows\Microsoft.NET\Framework64\v4.0.30319\MSBuild.exe`
+Win32 compiler: `...\Studio\37.0\bin\dcc32.EXE` present
+Win64 compiler: `...\Studio\37.0\bin\dcc64.exe` present
+NATS Server: `nats-server: v2.12.3` at `C:\apps_delphi\Comp12\nats.server\server\nats-server.exe`
+Branch: `main` (cutover branch `perf/parser-v2-cutover` exists locally/remotely; already merged via PR #2 / `7f510e7`. Continuing on `main` is correct.)
+Commit tested: `3d935f61025e88c19610b8db7794ec0972ba09fa` (static review only; no compile/test exe run)
+
+### Phase 0 / 1 — executed
+
+Required V2 units exist (Buffer, Parser, Dispatcher, ParserRuntime, Writer, Control, Headers).
+Production parser is `TDextNatsRuntimeFrameParser = TDextNatsFrameParserV2`.
+`FlushOutbox` releases `FLock` before `SendRaw`.
+Legacy identifiers `ShiftBuffer`, `FBufferLen`, `NatsEncodeConnect`/`Pub`/`HPub`/`Sub`/`Unsub`/`Ping`/`Pong` are absent from production source (`NatsEncodePublicKey` in NKeys is unrelated).
+`Source/Dext.Net.Nats.Dispatching.pas` is absent. Orphan `Tests/Dext.Net.Nats.Dispatching.Tests.pas` remains in git (not in `.dpr`).
+`Docs/ARCHITECTURE_V2.md` was stale vs code (claimed V1 still runtime / opt-in Dispatching adapter); updated in this pass.
 
 ### Build
-- [ ] Debug Win32 clean rebuild
-- [ ] Release Win32 clean rebuild
-- [ ] Release Win64 clean rebuild (if supported)
+- [ ] Debug Win32 clean rebuild — **attempted this session; FAILED** on pre-existing `Dext.Net.Nats.Internal.Dispatcher.pas(95)` `TInterlocked.Read(FState)` (E2250). Fetch units were not reached. Unrelated to P0 Fetch.
+- [ ] Release Win32 clean rebuild — **not run**
+- [ ] Release Win64 clean rebuild (if supported) — **not run**
+
+Commands recorded, not executed:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\build-tests.ps1 -Config Debug -Platform Win32
+powershell -ExecutionPolicy Bypass -File .\scripts\build-tests.ps1 -Config Release -Platform Win32
+powershell -ExecutionPolicy Bypass -File .\scripts\build-tests.ps1 -Config Release -Platform Win64
+```
 
 Compiler errors fixed:
-1.
-2.
+1. None in Fetch/P0 this session. Debug Win32 rebuild failed on pre-existing `TInterlocked.Read` in `Internal.Dispatcher.pas` (not Fetch). Delphi 13 is installed (`Studio\37.0`).
 
 Compiler warnings reviewed:
-1.
-2.
+1. Not available without a compile log.
 
 ### Unit Tests
-- [ ] Parser
-- [ ] Protocol Writer/Control
-- [ ] Internal Buffer
-- [ ] Internal Dispatcher
-- [ ] Core client
-- [ ] Drain
-- [ ] JetStream unit tests
-- [ ] KeyValue unit tests
-- [ ] ObjectStore unit tests
-- [ ] Services unit tests
+- [ ] Parser — source/tests exist (`Tests/Protocol/Dext.Net.Nats.ParserV2.Tests.pas`, `ParserRuntime.Tests.pas`); **not executed**
+- [ ] Protocol Writer/Control — tests exist (`Protocol.V2.Tests.pas`); **not executed**
+- [ ] Internal Buffer — covered by Internal tests; **not executed**
+- [ ] Internal Dispatcher — covered by Internal tests; **not executed**
+- [ ] Core client — mega-unit + Drain tests exist; **not executed**
+- [ ] Drain — `Tests/Core/Dext.Net.Nats.Drain.Tests.pas` (duplicate also at `Tests/Dext.Net.Nats.Drain.Tests.pas`); **not executed**
+- [ ] JetStream unit tests — JSON/Streams/Consumers/Fetch/ObjectPaging fixtures exist; Fetch unit tests remain request-JSON/control-detection; nested-Fetch live test is in `TDextNatsJetStreamTests.NestedFetch_FromOneWorkerHandler_ShouldComplete`; **not executed**
+- [ ] KeyValue unit tests — Subjects/WatcherGate only; **not executed**
+- [ ] ObjectStore unit tests — Subjects/WatcherGate only; **not executed**
+- [ ] Services unit tests — Subjects/Validation/Routing; **not executed**
 
 ### Live NATS
-- [ ] Connect/Disconnect
-- [ ] Pub/Sub
-- [ ] Headers
-- [ ] Queue groups
-- [ ] Request/Reply
-- [ ] Request timeout
-- [ ] No responders
-- [ ] Reconnect
-- [ ] Outbox replay
+- [ ] Connect/Disconnect — **not run**
+- [ ] Pub/Sub — **not run**
+- [ ] Headers — **not run**
+- [ ] Queue groups — **not run**
+- [ ] Request/Reply — **not run**
+- [ ] Request timeout — **not run**
+- [ ] No responders — **not run**
+- [ ] Reconnect — **not run**
+- [ ] Outbox replay — **not run**
+
+Start command when executing locally: `nats-server -js` (or `scripts/download-nats-server.ps1` then isolated data dir). Do not point tests at production.
 
 ### Critical Concurrency
-- [ ] Nested synchronous Request from one-worker callback
-- [ ] Nested JetStream Fetch from one-worker callback
-- [ ] Callback FIFO with one worker
-- [ ] Bounded queue backpressure
-- [ ] Multi-worker callback stress
-- [ ] Drain queued callbacks
-- [ ] Disconnect during active callbacks
+- [ ] Nested synchronous Request from one-worker callback — **source + test added** (`TDextNatsIntegrationTests.NestedRequest_FromOneWorkerHandler_ShouldComplete`, 100×, second-client responder, `HandlerWorkerCount = 1`); **not executed**
+- [ ] Nested JetStream Fetch from one-worker callback — **P0 source fix + test added** (`TDextNatsJetStreamContext.Fetch` → `TDextNatsJetStreamFetcher` inline SUB; `NestedFetch_FromOneWorkerHandler_ShouldComplete`, 50×); **not executed**
+- [ ] Callback FIFO with one worker — **not run**
+- [ ] Bounded queue backpressure — **not run**
+- [ ] Multi-worker callback stress — **not run**
+- [ ] Drain queued callbacks — tests exist; **not executed**
+- [ ] Disconnect during active callbacks — **not run**
 
 ### JetStream
-- [ ] Stream CRUD/list/purge
-- [ ] Consumer CRUD/list
-- [ ] Fetch
-- [ ] Push
-- [ ] Ordered consumer
-- [ ] Ack/Nak/Term/WPI
-- [ ] Publish Ack / dedup
+- [ ] Stream CRUD/list/purge — **not run**
+- [ ] Consumer CRUD/list — **not run**
+- [ ] Fetch — **P0 source fix**: façade delegates to `TDextNatsJetStreamFetcher` (inline SUB + Unsubscribe(0) before releasing wait-state). Live nested-Fetch test added; **not executed**
+- [ ] Push — **not run**
+- [ ] Ordered consumer — **not run**
+- [ ] Ack/Nak/Term/WPI — **not run**
+- [ ] Publish Ack / dedup — **not run**
 
 ### Additional Modules
-- [ ] KeyValue live tests
-- [ ] ObjectStore live tests
-- [ ] Services live tests
-- [ ] TLS tests
+- [ ] KeyValue live tests — **not run** (KV Get/Watch can nest Fetch)
+- [ ] ObjectStore live tests — **not run** (chunk Fetch can nest)
+- [ ] Services live tests — **not run**
+- [ ] TLS tests — **not run**
 
 ### Stress / Performance
-- [ ] 100k+ message stress
-- [ ] concurrent publishers
-- [ ] concurrent requests
-- [ ] reconnect storm
-- [ ] parser benchmark
-- [ ] dispatcher throughput
-- [ ] memory/lifecycle checks
+- [ ] 100k+ message stress — **not run**
+- [ ] concurrent publishers — **not run**
+- [ ] concurrent requests — **not run**
+- [ ] reconnect storm — **not run**
+- [ ] parser benchmark — **not run** (`DEXT_NATS_RUN_BENCH=1`)
+- [ ] dispatcher throughput — **not run**
+- [ ] memory/lifecycle checks — **not run**
 
 ### Final Gate
 Command:
-`./scripts/validate-parser-cutover.ps1 -Config Release -Platform Win32 -LiveNats -Benchmark`
+`.\scripts\validate-parser-cutover.ps1 -Config Release -Platform Win32 -LiveNats -Benchmark`
 
 Result:
-PASS / FAIL
+FAIL (not executed; static P0s already block merge)
 
 Remaining defects:
-1.
-2.
+1. **P0 deadlock:** **fixed in source.** `TDextNatsJetStreamContext.Fetch` delegates to `TDextNatsJetStreamFetcher` (`SubscribeInline` / `SubscribeCore(..., True)`). Nested Fetch/KV/OS from a one-worker handler no longer starves the inbox collector. Live test added; not executed.
+2. **P0 UAF:** **fixed in source.** Single Fetch body in `JetStream.Fetch.pas` uses an interface wait-gate (`INatsFetchGate`) captured by the handler, always `Unsubscribe(sid, 0)` after `Gate.Stop`, and ignores late MSG after stop. Live test added; not executed.
+3. **P1:** `TDextNatsJetStreamRuntime` / extracted Streams/Consumers/Fetch/Push are not used by `TDextNatsJetStreamContext` except Fetch (now delegated). Remaining admin/push/ordered methods still duplicate the extracted units.
+4. Hygiene: orphan `Tests/Dext.Net.Nats.Dispatching.Tests.pas`; duplicate Drain/Internal units at `Tests/` root.
+5. Nested Request (100×) and nested Fetch (50×) tests **added** (`HandlerWorkerCount = 1`); **not executed**.
+6. Delphi compile + live/stress/benchmark still required on this machine.
 
 Performance numbers:
-- Parser frames/sec:
-- Parser compactions:
-- Publish throughput:
-- Callback throughput:
-- Request/reply throughput:
+- Parser frames/sec: not measured
+- Parser compactions: not measured (code invariant: V2 cursor; batch PING benchmark expects 0 compactions — unproven this session)
+- Publish throughput: not measured
+- Callback throughput: not measured
+- Request/reply throughput: not measured
 
 Final recommendation:
-READY TO MERGE / NOT READY TO MERGE
+NOT READY TO MERGE
 ```
 
 ---
@@ -1504,12 +1535,14 @@ Recommended additional gates before first production release:
 
 ## 39. Current architectural direction after validation
 
+P0 Fetch deadlock (façade now uses inline completion via `TDextNatsJetStreamFetcher`) and Fetch UAF (stop + `Unsubscribe(sid, 0)` before releasing handler-captured wait-state) are fixed in source; nested Request/Fetch regression tests are added. Compiler/runtime validation is still required.
+
 Once this branch is compiler/runtime validated, continue in this order:
 
 ```text
 1. Extract JetStream Types/Models from giant facade.
 2. Remove circular dependencies from Streams/Consumers/Fetch/Push/Ordered.
-3. Make TDextNatsJetStreamContext delegate to focused Runtime/services.
+3. Make remaining `TDextNatsJetStreamContext` methods delegate to focused Runtime/services (Fetch already delegates to `TDextNatsJetStreamFetcher`).
 4. Delete duplicate JetStream implementations from giant facade.
 5. Apply same facade/service decomposition to KeyValue.
 6. Apply same decomposition to ObjectStore.
